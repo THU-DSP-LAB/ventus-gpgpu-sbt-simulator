@@ -1,0 +1,118 @@
+.version 7.0
+.target sm_75
+.address_size 64
+
+// Manual PTX for lab/01_start
+// Emulates the Ventus kernel ABI used by crt0.S + ventus.h metadata.
+//
+// Inputs:
+// - heap_base: CUDA device pointer to a contiguous heap buffer.
+// - knl_addr:  Ventus (u32) address of the kernel metadata buffer (CSR_KNL).
+//
+// Ventus address mapping:
+//   global_ptr = heap_base + (ventus_u32_addr - VENTUS_BASE)
+// where VENTUS_BASE = 0x90000000.
+//
+// Metadata layout (u32 fields) from lab/01_start/reference/ventus.h:
+//   KNL_ARG_BASE    @ +4
+//   KNL_GL_SIZE_X   @ +12
+//   KNL_LC_SIZE_X   @ +24
+//   KNL_GL_OFFSET_X @ +36
+//
+// Arg buffer layout (u32 fields):
+//   arg0=a_ptr_u32, arg1=b_ptr_u32, arg2=c_ptr_u32
+
+.visible .entry ventus_start(
+    .param .u64 heap_base,
+    .param .u32 knl_addr
+)
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<17>;
+    .reg .f32   %f<3>;
+
+    // Load params
+    ld.param.u64 %rd0, [heap_base];
+    ld.param.u32 %r0,  [knl_addr];
+
+    // Constants
+    mov.u32 %r1, 0x90000000;        // VENTUS_BASE
+
+    // Convert knl_addr (u32 Ventus) -> knl_ptr (u64 CUDA global)
+    sub.u32 %r2, %r0, %r1;          // knl_offset
+    cvt.u64.u32 %rd1, %r2;
+    add.u64 %rd2, %rd0, %rd1;       // knl_ptr
+
+    // Load metadata fields (all u32)
+    // KNL_ARG_BASE @ +4
+    add.u64 %rd3, %rd2, 4;
+    ld.global.u32 %r3, [%rd3];      // arg_base_u32
+
+    // KNL_GL_SIZE_X @ +12
+    add.u64 %rd4, %rd2, 12;
+    ld.global.u32 %r4, [%rd4];      // global_size_x (N)
+
+    // KNL_LC_SIZE_X @ +24 (kept for ABI fidelity; not strictly needed)
+    add.u64 %rd5, %rd2, 24;
+    ld.global.u32 %r5, [%rd5];      // local_size_x
+
+    // KNL_GL_OFFSET_X @ +36
+    add.u64 %rd6, %rd2, 36;
+    ld.global.u32 %r6, [%rd6];      // global_offset_x
+
+    // Compute linear_tid = ctaid.x * ntid.x + tid.x
+    mov.u32 %r7, %ctaid.x;
+    mov.u32 %r8, %ntid.x;
+    mov.u32 %r9, %tid.x;
+    mad.lo.u32 %r10, %r7, %r8, %r9; // linear_tid
+
+    // Guard: if linear_tid >= global_size_x return
+    setp.ge.u32 %p0, %r10, %r4;
+    @%p0 bra DONE;
+
+    // gid = linear_tid + global_offset_x
+    add.u32 %r11, %r10, %r6;
+
+    // Arg base pointer: arg_base_u32 -> arg_base_ptr
+    sub.u32 %r12, %r3, %r1;         // arg_base_offset
+    cvt.u64.u32 %rd7, %r12;
+    add.u64 %rd8, %rd0, %rd7;       // arg_base_ptr
+
+    // Load a/b/c Ventus pointers (u32) from arg buffer
+    ld.global.u32 %r13, [%rd8];     // a_ptr_u32
+    add.u64 %rd9, %rd8, 4;
+    ld.global.u32 %r14, [%rd9];     // b_ptr_u32
+    add.u64 %rd10, %rd8, 8;
+    ld.global.u32 %r15, [%rd10];    // c_ptr_u32
+
+    // byte_off = gid << 2
+    shl.b32 %r16, %r11, 2;
+
+    // a_ptr = heap_base + (a_ptr_u32 - VENTUS_BASE) + byte_off
+    sub.u32 %r17, %r13, %r1;
+    add.u32 %r18, %r17, %r16;
+    cvt.u64.u32 %rd11, %r18;
+    add.u64 %rd12, %rd0, %rd11;
+
+    // b_ptr
+    sub.u32 %r19, %r14, %r1;
+    add.u32 %r20, %r19, %r16;
+    cvt.u64.u32 %rd13, %r20;
+    add.u64 %rd14, %rd0, %rd13;
+
+    // c_ptr
+    sub.u32 %r21, %r15, %r1;
+    add.u32 %r22, %r21, %r16;
+    cvt.u64.u32 %rd15, %r22;
+    add.u64 %rd16, %rd0, %rd15;
+
+    // Load, add, store
+    ld.global.f32 %f0, [%rd12];
+    ld.global.f32 %f1, [%rd14];
+    add.rn.f32 %f2, %f0, %f1;
+    st.global.f32 [%rd16], %f2;
+
+DONE:
+    ret;
+}

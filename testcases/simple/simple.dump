@@ -1,0 +1,14 @@
+
+simple.riscv:	file format elf32-littleriscv
+
+Disassembly of section .text:
+
+80000000 <_start>:
+80000000: b7 02 00 90  	lui	t0, 589824
+80000004: 57 a1 08 52  	vid.v	v2
+80000008: d7 31 21 96  	vsll.vi	v3, v2, 2
+8000000c: 57 c0 32 02  	vadd.vx	v0, v3, t0
+80000010: fb 20 00 00  	vlw12.v	v1, 0(v0)
+80000014: d7 00 11 02  	vadd.vv	v1, v1, v2
+80000018: 7b 60 10 00  	vsw12.v	v1, 0(v0)
+8000001c: 0b 40 00 00  	endprg	x0, x0, x0

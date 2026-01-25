@@ -1,0 +1,27 @@
+.version 8.1
+.target sm_89
+.address_size 64
+
+// out[tid] = a + 7  (a 是 kernel param，按 warp 视角可证明 uniform)
+.visible .entry k_add_uniform(
+    .param .u64 p_out,
+    .param .u32 p_a
+)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<8>;
+
+    ld.param.u64 %rd1, [p_out];
+    ld.param.u32 %r1, [p_a];
+
+    // per-thread address
+    mov.u32 %r2, %tid.x;
+    mul.wide.u32 %rd2, %r2, 4;
+    add.u64 %rd3, %rd1, %rd2;
+
+    // uniform integer op
+    add.u32 %r3, %r1, 7;
+
+    st.global.u32 [%rd3], %r3;
+    ret;
+}

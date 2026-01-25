@@ -1,0 +1,198 @@
++ for f in build/*.sass
+++ __vsc_preexec_only /home/wangyh/gpusim/uniform_sass_lab
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only /home/wangyh/gpusim/uniform_sass_lab
+++ '[' 1 = 0 ']'
+++ basename build/add_nonuniform.sass
++ b=add_nonuniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== add_nonuniform.sass ====='
+===== add_nonuniform.sass =====
+++ __vsc_preexec_only '===== add_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== add_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/add_nonuniform.sass
++ head -n 40
+13:        /*0030*/                   ULDC.64 UR4, c[0x0][0x118] ;               /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== add_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/addr_uniform_base.sass
++ b=addr_uniform_base.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== addr_uniform_base.sass ====='
+===== addr_uniform_base.sass =====
+++ __vsc_preexec_only '===== addr_uniform_base.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== addr_uniform_base.sass ====='
+++ '[' 1 = 0 ']'
++ head -n 40
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/addr_uniform_base.sass
+13:        /*0030*/                   ULDC.64 UR4, c[0x0][0x118] ;               /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== addr_uniform_base.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/add_uniform.sass
++ b=add_uniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== add_uniform.sass ====='
+===== add_uniform.sass =====
+++ __vsc_preexec_only '===== add_uniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== add_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/add_uniform.sass
++ head -n 40
+13:        /*0030*/                   ULDC.64 UR4, c[0x0][0x118] ;               /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== add_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/and_nonuniform.sass
++ b=and_nonuniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== and_nonuniform.sass ====='
+===== and_nonuniform.sass =====
+++ __vsc_preexec_only '===== and_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== and_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ head -n 40
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/and_nonuniform.sass
+13:        /*0030*/                   ULDC.64 UR4, c[0x0][0x118] ;                  /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== and_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/and_uniform.sass
++ b=and_uniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== and_uniform.sass ====='
+===== and_uniform.sass =====
+++ __vsc_preexec_only '===== and_uniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== and_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/and_uniform.sass
++ head -n 40
+15:        /*0040*/                   ULDC.64 UR4, c[0x0][0x118] ;                  /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== and_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/muladd_nonuniform.sass
++ b=muladd_nonuniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== muladd_nonuniform.sass ====='
+===== muladd_nonuniform.sass =====
+++ __vsc_preexec_only '===== muladd_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== muladd_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ head -n 40
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/muladd_nonuniform.sass
+13:        /*0030*/                   ULDC.64 UR4, c[0x0][0x118] ;               /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== muladd_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/muladd_uniform.sass
++ b=muladd_uniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== muladd_uniform.sass ====='
+===== muladd_uniform.sass =====
+++ __vsc_preexec_only '===== muladd_uniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== muladd_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/muladd_uniform.sass
++ head -n 40
+13:        /*0030*/                   ULDC.64 UR4, c[0x0][0x118] ;               /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== muladd_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/shift_nonuniform.sass
++ b=shift_nonuniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== shift_nonuniform.sass ====='
+===== shift_nonuniform.sass =====
+++ __vsc_preexec_only '===== shift_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== shift_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/shift_nonuniform.sass
++ head -n 40
+15:        /*0040*/                   ULDC.64 UR4, c[0x0][0x118] ;                  /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== shift_nonuniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+
++ for f in build/*.sass
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only echo
+++ '[' 1 = 0 ']'
+++ basename build/shift_uniform.sass
++ b=shift_uniform.sass
+++ __vsc_preexec_only ''
+++ '[' 1 = 0 ']'
++ echo '===== shift_uniform.sass ====='
+===== shift_uniform.sass =====
+++ __vsc_preexec_only '===== shift_uniform.sass ====='
+++ '[' 1 = 0 ']'
+++ __vsc_preexec_only '===== shift_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ head -n 40
++ grep --color=auto -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z][A-Z0-9_.]*\b' build/shift_uniform.sass
+15:        /*0040*/                   ULDC.64 UR4, c[0x0][0x118] ;                  /* 0x0000460000047ab9 */
+++ __vsc_preexec_only '===== shift_uniform.sass ====='
+++ '[' 1 = 0 ']'
++ echo
+

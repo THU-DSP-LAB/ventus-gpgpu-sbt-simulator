@@ -1,0 +1,37 @@
+.version 8.1
+.target sm_89
+.address_size 64
+
+// 常量内存 + uniform 索引：idx = (ctaid.x & 3)
+// 期望触发：uniform 地址计算 + ULDC 相关的 uniform datapath 指令
+
+.const .align 4 .u32 cdata[4] = { 10, 20, 30, 40 };
+
+.visible .entry k_ldconst_uniform(
+    .param .u64 p_out
+)
+{
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<16>;
+
+    // idx = ctaid.x & 3   (uniform)
+    mov.u32 %r1, %ctaid.x;
+    and.b32 %r2, %r1, 3;
+
+    // addr = &cdata[idx]
+    mov.u64 %rd1, cdata;
+    cvta.to.const.u64 %rd1, %rd1;
+    mul.wide.u32 %rd2, %r2, 4;
+    add.u64 %rd3, %rd1, %rd2;
+
+    ld.const.u32 %r3, [%rd3];
+
+    // out[tid] = cdata[idx]
+    ld.param.u64 %rd4, [p_out];
+    mov.u32 %r4, %tid.x;
+    mul.wide.u32 %rd5, %r4, 4;
+    add.u64 %rd6, %rd4, %rd5;
+    st.global.u32 [%rd6], %r3;
+
+    ret;
+}

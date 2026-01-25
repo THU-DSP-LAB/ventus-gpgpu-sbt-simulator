@@ -1,0 +1,35 @@
+ROOT_DIR=/home/wangyh/gpusim/uniform_sass_lab
+ARCH=sm_89
+[nvcc] add_nonuniform (sm_89)
+[cuobjdump] add_nonuniform
+[nvcc] addr_uniform_base (sm_89)
+[cuobjdump] addr_uniform_base
+[nvcc] add_uniform (sm_89)
+[cuobjdump] add_uniform
+[nvcc] and_nonuniform (sm_89)
+[cuobjdump] and_nonuniform
+[nvcc] and_uniform (sm_89)
+[cuobjdump] and_uniform
+[nvcc] branch_nonuniform (sm_89)
+[cuobjdump] branch_nonuniform
+[nvcc] branch_uniform_brauni (sm_89)
+[cuobjdump] branch_uniform_brauni
+[nvcc] branch_uniform (sm_89)
+[cuobjdump] branch_uniform
+[nvcc] ldconst_nonuniform (sm_89)
+[cuobjdump] ldconst_nonuniform
+[nvcc] ldconst_uniform (sm_89)
+[cuobjdump] ldconst_uniform
+[nvcc] muladd_nonuniform (sm_89)
+[cuobjdump] muladd_nonuniform
+[nvcc] muladd_uniform (sm_89)
+[cuobjdump] muladd_uniform
+[nvcc] shift_nonuniform (sm_89)
+[cuobjdump] shift_nonuniform
+[nvcc] shift_uniform (sm_89)
+[cuobjdump] shift_uniform
+[nvcc] uadd_brauni (sm_89)
+[cuobjdump] uadd_brauni
+[nvcc] uimad_brauni (sm_89)
+[cuobjdump] uimad_brauni
+wrote /home/wangyh/gpusim/uniform_sass_lab/build/summary.txt

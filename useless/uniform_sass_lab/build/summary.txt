@@ -1,0 +1,25 @@
+ARCH=sm_89
+PTXAS_O=-O3
+CUDA_NVCC=/usr/local/cuda/bin/nvcc
+
+add_nonuniform_O0       UR_refs=2      U_mnems=<none>
+add_nonuniform          UR_refs=1      U_mnems=ULDC.64 
+addr_uniform_base       UR_refs=1      U_mnems=ULDC.64 
+add_uniform_O0          UR_refs=2      U_mnems=<none>
+add_uniform             UR_refs=1      U_mnems=ULDC.64 
+and_nonuniform          UR_refs=1      U_mnems=ULDC.64 
+and_uniform             UR_refs=1      U_mnems=ULDC.64 
+branch_nonuniform       UR_refs=1      U_mnems=ULDC.64 
+branch_uniform_brauni   UR_refs=5      U_mnems=UISETP.GE.U32.AND ULDC ULDC.64 
+branch_uniform          UR_refs=1      U_mnems=ULDC.64 
+ldconst_nonuniform      UR_refs=1      U_mnems=ULDC.64 
+ldconst_uniform         UR_refs=1      U_mnems=ULDC.64 
+muladd_nonuniform       UR_refs=1      U_mnems=ULDC.64 
+muladd_uniform          UR_refs=1      U_mnems=ULDC.64 
+shift_nonuniform        UR_refs=1      U_mnems=ULDC.64 
+shift_uniform           UR_refs=1      U_mnems=ULDC.64 
+uadd_brauni             UR_refs=7      U_mnems=UIADD3 UISETP.GE.U32.AND ULDC ULDC.64 
+uimad_brauni            UR_refs=9      U_mnems=UIMAD UISETP.GE.U32.AND ULDC ULDC.64 UMOV 
+
+Tip: 想看某个样例的关键行，可用：
+  grep -nE '\bUR[0-9]+|\bULDC\b|\bU[A-Z]' build/<name>.sass | head

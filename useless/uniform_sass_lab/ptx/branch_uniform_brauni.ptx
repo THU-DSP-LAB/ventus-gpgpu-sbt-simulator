@@ -1,0 +1,34 @@
+.version 8.1
+.target sm_89
+.address_size 64
+
+// 使用 bra.uni 明确告诉 ptxas 该分支是 uniform
+.visible .entry k_branch_uniform_brauni(
+    .param .u64 p_out,
+    .param .u32 p_a,
+    .param .u32 p_n
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<8>;
+
+    mov.u32 %r1, %ctaid.x;
+    ld.param.u32 %r2, [p_n];
+
+    setp.ge.u32 %p1, %r1, %r2;
+    @%p1 bra.uni DONE;
+
+    ld.param.u64 %rd1, [p_out];
+    ld.param.u32 %r3, [p_a];
+
+    mov.u32 %r4, %tid.x;
+    mul.wide.u32 %rd2, %r4, 4;
+    add.u64 %rd3, %rd1, %rd2;
+
+    add.u32 %r5, %r3, 7;
+    st.global.u32 [%rd3], %r5;
+
+DONE:
+    ret;
+}

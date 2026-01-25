@@ -1,0 +1,284 @@
+
+Usage  : ptxas [options] <ptx file>,...
+
+Options
+=======
+
+--Ofast-compile <0|min|mid|max>                     (-Ofc)                      
+        Specify fast-compile level for device code, which controls the tradeoff between
+        compilation speed and runtime performance by disabling certain optimizations
+        at varying levels. 
+        Levels: 
+                'max': Focus only on the fastest compilation speed, disabling many
+        optimizations.
+                'mid': Balance compile time and runtime, disabling expensive optimizations.
+                'min': More minimal impact on both compile time and runtime, minimizing
+        some expensive optimizations.
+                '0': Disables fast-compile. 
+        The option is disabled by default.
+        Default value:  '0'.
+
+--allow-expensive-optimizations <true|false>        (-allow-expensive-optimizations)
+        Enable (disable) to allow compiler to perform expensive optimizations   
+        using maximum available resources (memory and compile-time).
+        If unspecified default behavior is to enable this feature for optimization
+        level >= O2.
+
+--compile-as-tools-patch                            (-astoolspatch)             
+        Compile patch code for CUDA tools. For codes compiled with this mode, compiler
+        sets maxrregcount to the minimum registers required by ABI.
+
+--compile-only                                      (-c)                        
+        Generate relocatable object.
+
+--compiler-annotations                              (-annotate)                 
+        Annotate compiler-internal information in binary output.
+
+--def-load-cache                                    (-dlcm)                     
+        Default cache modifier on global/generic load.
+
+--def-store-cache                                   (-dscm)                     
+        Default cache modifier on global/generic store.
+
+--device-debug                                      (-g)                        
+        Generate debug information for device code.
+
+--device-function-maxrregcount <archmax/archmin/N>  (-func-maxrregcount)        
+        When compiling with -c (--compile-only) option, specify the maximum number
+        of registers that device functions can use. This option is ignored for whole-program
+        compilation and does not affect registers used by entry functions. For device
+        functions, this option overrides the value specified by -maxrregcount option.
+        If neither device-function-maxrregcount nor maxrregcount is specified, then
+        no maximum is assumed.
+        Note: Under certain situations, static device functions can safely inherit
+        a higher register count from the caller entry function. In such cases, PTXAS
+        may apply the higher count for compiling the static function.
+        Value less than the minimum registers required by ABI will be bumped up by
+        the compiler to ABI minimum limit.
+        
+
+--device-stack-protector <true|false>               (-device-stack-protector)   
+        Enable stack canaries in device code. Stack canaries make it more difficult
+        to exploit certain types of memory safety bugs involving stack-local variables.
+        The compiler uses heuristics to assess the risk of such a bug in each function.
+        Only those functions which are deemed high-risk make use of a stack canary.
+        Default value:  false.
+
+--disable-optimizer-constants                       (-disable-optimizer-consts) 
+        Disable use of optimizer constant bank.
+
+--disable-warnings                                  (-w)                        
+        Inhibit all warning messages.
+
+--dont-merge-basicblocks                            (-no-bb-merge)              
+        Normally, ptxas attempts to merge consecutive basic blocks as part of its
+        optization process. However, for debuggable code this is very confusing.
+        This option prevents basic block merging, at a slight perfomance cost.
+
+--entry <entry function>,...                        (-e)                        
+        Entry function name.
+
+--extensible-whole-program                          (-ewp)                      
+        Do extensible whole program mode.
+
+--fmad <true|false>                                 (-fmad)                     
+        Enables (disables) the contraction of floating-point multiplies and     
+        adds/subtracts into floating-point multiply-add operations (FMAD, FFMA, 
+        or DFMA).
+        Default value:  true.
+
+--force-load-cache                                  (-flcm)                     
+        Force specified cache modifier on global/generic load.
+
+--force-store-cache                                 (-fscm)                     
+        Force specified cache modifier on global/generic store.
+
+--g-tensor-memory-access-check                      (-g-tmem-access-check)      
+        Enable tensor memory access checks for tcgen05 operations. This is enabled
+        by default with -g.
+
+--generate-line-info                                (-lineinfo)                 
+        Generate line-number information for device code.
+
+--gno-tensor-memory-access-check                    (-gno-tmem-access-check)    
+        Disable tensor memory access checks for tcgen05 operations.This option will
+        always override -g-tensor-memory-access-checkif both are specified (irrespective
+        of the order).
+
+--gpu-name <gpu name>                               (-arch)                     
+        Specify name of NVIDIA GPU to generate code for. This option also takes virtual
+        compute architectures, in which case code generation is suppressed. This
+        can be used for parsing only. PTX for .target sm_XY can be compiled to all
+        GPU targets sm_MN, sm_MNa, SM_MNf where MN >= XY. PTX for .target sm_XYf
+        can be compiled to GPU targets sm_XZ, sm_XZf, sm_XZa where Z >= Y and sm_XY
+        and sm_XZ belong in same family. PTX with .target sm_XYa can only be compiled
+        to GPU target sm_XYa.
+        Allowed values for this option:  'compute_100','compute_100a','compute_100f',
+        'compute_103','compute_103a','compute_103f','compute_110','compute_110a',
+        'compute_110f','compute_120','compute_120a','compute_120f','compute_121',
+        'compute_121a','compute_121f','compute_75','compute_80','compute_86','compute_87',
+        'compute_88','compute_89','compute_90','compute_90a','lto_100','lto_100a',
+        'lto_100f','lto_103','lto_103a','lto_103f','lto_110','lto_110a','lto_110f',
+        'lto_120','lto_120a','lto_120f','lto_121','lto_121a','lto_121f','lto_75',
+        'lto_80','lto_86','lto_87','lto_88','lto_89','lto_90','lto_90a','sm_100',
+        'sm_100a','sm_100f','sm_103','sm_103a','sm_103f','sm_110','sm_110a','sm_110f',
+        'sm_120','sm_120a','sm_120f','sm_121','sm_121a','sm_121f','sm_75','sm_80',
+        'sm_86','sm_87','sm_88','sm_89','sm_90','sm_90a'.
+        Default value:  'sm_75'.
+
+--help                                              (-h)                        
+        Print this help information on this tool.
+
+--input-as-string <ptx string>,...                  (-ias)                      
+        This option allows ptx modules to be passed directly as strings instead of
+        via files. It can be used for simple runtime support, or when it is somehow
+        not desired to pass the ptx string via the file system.
+
+--jobserver                                         (-jobserver)                
+        Enable GNU Make Jobserver support (for use with `make -j<N>`).
+
+--legacy-bar-warp-wide-behavior                     (-legacy-bar-warp-wide-behavior)
+        This option will cause PTXAS to retain legacy behavior of PTX bar instructionswhere
+        if any thread in the warp executes bar instruction it is considered as if
+        entire warp has executed it.This option is ignored for programs with .target
+        sm_70 or higher.This is a deprecated option and it will be removed in future
+        release and is not recommended.
+
+--list-arch                                         (-arch-ls)                  
+        Print supported gpu architectures.
+
+--list-version                                      (-version-ls)               
+        Print supported PTX ISA versions.
+
+--machine <bits>                                    (-m)                        
+        Specify 64-bit host architecture.
+                
+        Allowed values for this option:  64.
+        Default value:  64.
+
+--make-errors-visible-at-exit                       (-make-errors-visible-at-exit)
+        Generate required instructions at exit point to make memory faults and errors
+        visible at exit.
+
+--maxntid <Comma separated list of numbers>,...     (-maxntid)                  
+        Specify maxntid configuration. Note this option is ignored if -maxrregcount
+        option is used. For entry functions already using PTX directive .maxntid,
+        this option will be ignored.
+
+--maxrregcount <archmax/archmin/N>                  (-maxrregcount)             
+        Specify the maximum amount of registers that GPU functions can use. Until
+        a function- specific limit, a higher value will generally increase the performance
+        of individual GPU threads that execute this function. However, because thread
+        registers are allocated from a global register pool on each GPU, a higher
+        value of this option will also reduce the maximum thread block size, thereby
+        reducing the amount of thread parallelism. Hence, a good maxrregcount value
+        is the result of a trade-off.
+        If this option is not specified, then no maximum is assumed.
+        Value less than the minimum registers required by ABI will be bumped up by
+        the compiler to ABI minimum limit.
+        User program may not be able to make use of all registers as some registers
+        are reserved by compiler.
+
+--minnctapersm <N>                                  (-minnctapersm)             
+        Specify the minimum number of CTAs to be mapped to a single multiprocessor.
+        Thisoption is ignored if -maxrregcount option is used. For entry functions
+        already usingPTX directive .minnctapersm, this option will be ignored.
+
+--opt-level <N>                                     (-O)                        
+        Specify optimization level.
+        Default value:  3.
+
+--optimize-float-atomics                            (-opt-fp-atomics)           
+        This option enables optimizations on floating point atomics that may affect
+        FP precision.
+
+--options-file <file>,...                           (-optf)                     
+        Include command line options from specified file.
+
+--output-file <file>                                (-o)                        
+        Specify name of output file.
+        Default value:  'elf.o'.
+
+--override-directive-values                         (-override-directive-values)
+        Specify that values provided with the PTX directives are overriden by the
+        corresponding option values. Effective only for -minnctapersm, -maxntid and
+        -maxrregcount options.
+
+--position-independent-code <true|false>            (-pic)                      
+        Generate position independent code. This mode is enabled by default for whole
+        program compilation.
+        For other compilation modes, this is disabled by default.
+        Default value:  false.
+
+--preserve-relocs                                   (-preserve-relocs)          
+        This option will make PTXAS to generate relocatable references for variables
+        and preserve relocations generated for them in linked executable.
+
+--register-usage-level <0..10>                      (-regUsageLevel)            
+        Controls the aggressiveness of optimizations that affect register usage.
+        ([0..10], default = 5) Higher values aggressively optimize the source program,
+        trading off additional register usage for potential improvements in the generated
+        code. Lower values inhibit optimizations that aggressively increase register
+        usage. This option can work in conjunction with -maxrregcount and CUDA launch
+        bounds. This is a BETA feature for advanced users and there is no guarantee
+        that the implementation stays consistent between ptxas releases.
+        Default value:  5.
+
+--return-at-end                                     (-ret-end)                  
+        Normally, ptxas optimizes return instructions at the end of the program.
+        However, for debuggable code this causes problems setting breakpoint at the
+        end. This option prevents ptxas from optimizing this last return instruction.
+
+--sanitize <string>                                 (-sanitize)                 
+        Generate instrumented code with specified sanitizer tool.
+        Allowed values for this option:  'memcheck','threadsteer'.
+
+--sp-bounds-check                                   (-sp-bounds-check)          
+        Generate stack-pointer bounds-checking code sequence. This option is turned
+        on automatically when device-debug (-g) or opt-level(-O) 0 is specified.
+
+--split-compile <N>                                 (-split-compile)            
+        Specify the maximum amount of concurrent threads to be utilized when running
+        compiler optimizations. If <N> is 1, this option is ignored. If <N> is 0,
+        the number of threads will be the number of CPUs on the machine. This option
+        will have minimal (if any) impact on performance of the compiled binary.
+
+--suppress-async-bulk-multicast-advisory-warning    (-suppress-async-bulk-multicast-advisory-warning)
+        Suppress advisory warning for .multicast::cluster.
+
+--suppress-debug-info                               (-suppress-debug-info)      
+        Do not generate debug information sections in final output object file.
+        Note: This option is ignored if used without --device-debug or --generate-line-info
+        option.
+
+--suppress-double-demote-warning                    (-suppress-double-demote-warning)
+        Suppress the warning that is otherwise emitted when a double precision instruction
+        is encountered in PTX that is targeted for an SM version that does not have
+        double precision support.
+
+--suppress-sparse-mma-advisory-info                 (-suppress-sparse-mma-advisory-info)
+        Suppress advisory info for mma.sp.
+
+--suppress-stack-size-warning                       (-suppress-stack-size-warning)
+        Suppress the warning that otherwise is printed when stack size cannot be
+        determined.
+
+--verbose                                           (-v)                        
+        Enable verbose mode which prints code generation statistics.
+
+--version                                           (-V)                        
+        Print version information on this tool.
+
+--warn-on-double-precision-use                      (-warn-double-usage)        
+        Warning if double(s) are used in an instruction.
+
+--warn-on-local-memory-usage                        (-warn-lmem-usage)          
+        Warning if local memory is used.
+
+--warn-on-spills                                    (-warn-spills)              
+        Warning if registers are spilled to local memory.
+
+--warning-as-error                                  (-Werror)                   
+        Make all warnings into errors.
+
+
