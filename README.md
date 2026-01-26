@@ -18,5 +18,11 @@ Ventus ISA向量部分对RVV指令语义的修改（待完善）
   * Custom指令描述比较详细，RISC-V官方定义的指令如果没有重解释可能只在第AH列列出指令名
 
 
+设想feature：
+* “用户态”仿真：不支持多虚拟地址空间
+* device ABI兼容：不需要对现有软件栈做太多修改，直接兼容原有host-devie约定（指令语义 + kernel meta (CTA调度器接口+metadata buffer, 这些信息稍后大都保存在CSR中) + 内存视图）
+  * 必要的kernel meta 采用 PTX kernel param 形式传递，ventus kernel args 被内嵌于 CSR_KNL 指向的地址中按照 `_start` 中的方案取出即可
+  * 库函数采用同语义替换（`_start`, `get_global_id`等）
+
 
 项目进度: 当前处于原理验证阶段，在 `lab/` 目录下做一些 idea 有效性验证实验

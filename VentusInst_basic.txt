@@ -1,0 +1,224 @@
+	assemble	description
+Custom	vbeq vs2, vs1, offset	if(vs2 == vs1) PC += sext(offset) else PC += 4
+Custom	vbne vs2, vs1, offset	if(vs2 != vs1) PC += sext(offset)
+Custom	vblt vs2, vs1, offset	if(vs2 <s vs1) PC += sext(offset) //signed
+Custom	vbge vs2, vs1, offset	if(vs2 >=s vs1) PC += sext(offset) //signed
+Custom	vbltu vs2, vs1, offset	if(vs2 <u vs1) PC += sext(offset) //unsigned
+Custom	vbgeu vs2, vs1, offset	if(vs2 >=u vs1) PC += sext(offset) //unsigned
+Custom	join v0,v0,0	pop stack and jump
+Custom	setrpc rd,rs1,offset	set reconvergence pc and rd = rs1 + sext(offset)
+Custom	regext x0,x0,imm	扩展寄存器编号。rs1和rd默认为零
+Custom	regexti x0,x0,imm	扩展vop.vi指令的寄存器和立即数。rs1和rd默认为零
+Custom	endprg x0,x0,x0	kernel运行结束
+Custom	barrier x0,x0,imm	对应barrier(),imm提供memory_scope和cl_mem_fence_flags
+Custom	vadd12.vi vd, vs1, imm	vd = vs1 + imm
+Custom	vfexp vd,v2,v0.mask	vd = exp(v2)
+Custom	vlw12.v vd, offset(vs1)	vd<-mem[addr], addr=vs1+offset
+Custom	vlh12.v vd, offset(vs1)	vd<-mem[addr], addr=vs1+offset
+Custom	vlb12.v vd, offset(vs1)	vd<-mem[addr], addr=vs1+offset
+Custom	vlhu12.v vd, offset(vs1)	vd<-mem[addr], addr=vs1+offset
+Custom	vlbu12.v vd, offset(vs1)	vd<-mem[addr], addr=vs1+offset
+Custom	vsw12.v vs2,offset(vs1)	mem[addr]<-vs2, addr=vs1+offset
+Custom	vsh12.v vs2,offset(vs1)	mem[addr]<-vs2, addr=vs1+offset
+Custom	vsb12.v vs2,offset(vs1)	mem[addr]<-vs2, addr=vs1+offset
+RV32I	lui rd, immediate	rd = sext(imm<<12)
+RV32I	auipc rd, immediate	rd = PC + sext(imm<<12)
+RV32I	jal rd, offset	rd = PC+4; PC += sext(offset)
+RV32I	jalr rd, offset(rs1)	t=PC+4; PC=(rs1+sext(offset))&~1; rd=t
+RV32I	beq rs1, rs2, offset	if(rs1==rs2) PC += sext(offset)
+RV32I	bne rs1, rs2, offset	if(rs1!=rs2) PC += sext(offset)
+RV32I	blt rs1, rs2, offset	if(rs1 <s rs2) PC += sext(offset) //signed
+RV32I	bge rs1, rs2, offset	if(rs1 >=s rs2) PC += sext(offset) //signed
+RV32I	bltu rs1, rs2, offset	if(rs1 <u rs2) PC += sext(offset) //unsigned
+RV32I	bgeu rs1, rs2, offset	if(rs1 >=u rs2) PC += sext(offset) //unsigned
+RV32I	addi rd, rs1, immediate	rd = rs1 + sext(imm)
+RV32I	slti rd, rs1, immediate	rd = (rs1 <s sext(imm)) //signed
+RV32I	sltiu rd, rs1, immediate	rd = (rs1 <u sext(imm)) //unsigned
+RV32I	xori rd, rs1, immediate	rd = rs1 ^ sext(imm)
+RV32I	ori rd, rs1, immediate	rd = rs1 | sext(imm)
+RV32I	andi rd, rs1, immediate	rd = rs1 & sext(imm)
+RV32I	slli rd, rs1, shamt	rd = rs1 <<s shamt
+RV32I	srli rd, rs1, shamt	rd = rs1 >>u shamt //unsigned
+RV32I	srai rd, rs1, shamt	rd = rs1 >>s shamt //signed
+RV32I	add rd, rs1, rs2	rd = rs1 + rs2
+RV32I	sub rd, rs1, rs2	rd = rs1 - rs2
+RV32I	sll rd, rs1, rs2	rd = rs1 << rs2
+RV32I	slt rd, rs1, rs2	rd = rs1 <s rs2 //signed
+RV32I	sltu rd, rs1, rs2	rd = rs1 <u rs2 //unsigned
+RV32I	xor rd, rs1, rs2	rd = rs1 ^ rs2
+RV32I	srl rd, rs1, rs2	rd = rs1 >>u rs2 //unsigned
+RV32I	sra rd, rs1, rs2	rd = rs1 >>s rs2 //signed
+RV32I	or rd, rs1, rs2	rd = rs1 | rs2
+RV32I	and rd, rs1, rs2	rd = rs1 | rs2
+RV32I	lw	
+RV32I	lh	
+RV32I	lb	
+RV32I	lbu	
+RV32I	lhu	
+RV32I	sw	
+RV32I	sh	
+RV32I	sb	
+zicsr	csrrw	
+zicsr	csrrs	
+zicsr	csrrc	
+zicsr	csrrwi	
+zicsr	csrrsi	
+zicsr	csrrci	
+M		
+M	mul	
+M	mulh	
+M	mulhsu	
+M	mulhu	
+M	div	
+M	divu	
+M	rem	
+M	remu	
+V	vadd.vv vd, vs2, vs1, vm	vd[i] = vs2[i] + vs1[i]
+V	vfadd.vv vd, vs2, vs1, vm	vd[i] = vs2[i] + vs1[i]
+V	vadd.vi vd, vs2, imm, vm	vd[i] = vs2[i] + imm
+V	vadd.vx vd, vs2, rs1, vm	vd[i] = vs2[i] + rs1
+V	vfadd.vf vd, vs2, rs1, vm	vd[i] = vs2[i] + rs1
+V	vsub.vv vd, vs2, vs1, vm	vd[i] = vs2[i] - vs1[i]
+V	vfsub.vv vd, vs2, vs1, vm	vd[i] = vs2[i] - vs1[i]
+V	vsub.vx vd, vs2, rs1, vm	vd[i] = vs2[i] - rs1
+V	vfsub.vf vd, vs2, rs1, vm	vd[i] = vs2[i] - rs1
+V	vrsub.vi vd, vs2, imm, vm	vd[i] = imm - vs2[i]
+V	vrsub.vx vd, vs2, rs1, vm	vd[i] = rs1 - vs2[i]
+V	vminu.vv vd, vs2, vs1, vm	vd[i] = min(vs2[i], vs1[i]) //unsigned
+V	vfmin.vv vd, vs2, vs1, vm	vd[i] = min(vs2[i], vs1[i])
+V	vminu.vx vd, vs2, rs1, vm	vd[i] = min(vs2[i], rs1) //unsigned
+V	vfmin.vf vd, vs2, rs1, vm	vd[i] = min(vs2[i], rs1)
+V	vmin.vv vd, vs2, vs1, vm	vd[i] = min(vs2[i], vs1[i]) //signed
+V	vmin.vx vd, vs2, vs1, vm	vd[i] = min(vs2[i], rs1) //signed
+V	vmaxu.vv vd, vs2, vs1, vm	vd[i] = max(vs2[i], vs1[i]) //unsigned
+V	vfmax.vv vd, vs2, vs1, vm	vd[i] = max(vs2[i], vs1[i])
+V	vmaxu.vx vd, vs2, rs1, vm	vd[i] = max(vs2[i], rs1) //unsigned
+V	vfmax.vf vd, vs2, rs1, vm	vd[i] = max(vs2[i], rs1)
+V	vmax.vv vd, vs2, vs1, vm	vd[i] = max(vs2[i], vs1[i]) //signed
+V	vmax.vx vd, vs2, vs1, vm	vd[i] = max(vs2[i], rs1) //signed
+V	vfsgnj.vv vd, vs2, vs1, vm	vd[i] = {vs1[i][31], vs2[i][30:0]}
+V	vfsgnj.vf vd, vs2, rs1, vm	vd[i] = {rs1[31], vs2[i][30:0]}
+V	vand.vv vd, vs2, vs1, vm	vd[i] = vs2[i] & vs1[i]
+V	vfsgnjn.vv vd, vs2, vs1, vm	vd[i] = {~vs1[i][31], vs2[i][30:0]}
+V	vand.vi vd, vs2, imm, vm	vd[i] = vs2[i] & imm
+V	vand.vx vd, vs2, rs1, vm	vd[i] = vs2[i] & rs1
+V	vfsgnjn.vf vd, vs2, rs1, vm	vd[i] = {~rs1[31], vs2[30:0]}
+V	vor.vv vd, vs2, vs1, vm	vd[i] = vs2[i] | vs1[i]
+V	vfsgnjx.vv vd, vs2, vs1, vm	vd[i] = {vs1[i][31]^vs2[i][31], vs2[i][30:0]}
+V	vor.vi vd, vs2, vs1, vm	vd[i] = vs2[i] | imm
+V	vor.vx vd, vs2, rs1, vm	vd[i] = vs2[i] | rs1
+V	vfsgnjx.vf vd, vs2, rs1, vm	vd[i] = {rs1[31]^vs2[i][31], vs2[30:0]}
+V	vxor.vv vd, vs2, vs1, vm	vd[i] = vs2[i] ^ vs1[i]
+V	vxor.vi vd, vs2, vs1, vm	vd[i] = vs2[i] ^ imm
+V	vxor.vx vd, vs2, rs1, vm	vd[i] = vs2[i] ^ rs1
+V	vmv.x.s rd, vs2	rd = vs2[0]
+V	vmv.s.x vd, rs1	vd[0] = rs1
+V	vfcvt.xu.f.v vd, vs2, vm	Float -> UInt
+V	vfcvt.x.f.v vd, vs2, vm	Float -> SInt
+V	vfcvt.f.xu.v vd, vs2, vm	UInt -> Float
+V	vfcvt.f.x.v vd, vs2, vm	Sint -> Float
+V	vfcvt.rtz.xu.f.v vd, vs2, vm	Float -> Uint, Round To Zero
+V	vfcvt.rtz.x.f.v vd, vs2, vm	Float -> Sint, Round To Zero
+V	vfclass.v vd, vs2, vm	vd[i] = Classify(vs2[i])
+V	vmerge.vvm vd, vs2, vs1, vm	vd[i] = v0.mask[i] ? vs1[i] : vs2[i]
+V	vmv.v.v vd, vs1	vd[i] = vs1[i]
+V	vmerge.vim vd, vs2, imm, vm	vd[i] = v0.mask[i] ? imm : vs2[i]
+V	vmv.v.i vd, imm	vd[i] = imm
+V	vmerge.vxm vd, vs2, rs1, vm	vd[i] = v0.mask[i] ? rs1 : vs2[i]
+V	vmv.v.x vd, rs1	vd[i] = rs1
+V	vfmerge.vfm vd, vs2, rs1, vm	vd[i] = v0.mask[i] ? rs1 : vs2[i]
+V	vfmv.v.f vd, rs1	vd[i] = rs1
+V	vmseq.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] == vs1[i]
+V	vmfeq.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] == vs1[i]
+V	vmandnot.mm vd, vs2, vs1	vd.mask[i] = vs2.mask[i] && !vs1.mask[i]
+V	vmseq.vi vd, vs2, imm, vm	vd.mask[i] = vs2[i] == imm
+V	vmseq.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] == rs1
+V	vmfeq.vf vd, vs2, rs1, vm	vd.mask[i] = vs2[i] == rs1
+V	vmsne.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] != vs1[i]
+V	vmfle.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] <= vs1[i]
+V	vmand.mm vd, vs2, vs1	vd.mask[i] = vs2.mask[i] && vs1.mask[i]
+V	vmsne.vi vd, vs2, imm, vm	vd.mask[i] = vs2[i] != imm
+V	vmsne.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] != rs1
+V	vmfle.vf vd, vs2, rs1, vm	vd.mask[i] = vs2[i] <= rs1
+V	vmsltu.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] <u vs1[i] //unsigned
+V	vmor.mm vd, vs2, vs1, vm	vd.mask[i] = vs2.mask[i] || vs1.mask[i]
+V	vmsltu.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] <u rs1 //unsigned
+V	vmslt.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] <s vs1[i] //signed
+V	vmflt.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] < vs1[i]
+V	vmxor.mm vd, vs2, vs1, vm	vd.mask[i] = vs2.mask[i] ^^ vs1.mask[i]
+V	vmslt.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] <s rs1 //signed
+V	vmflt.vf vd, vs2, rs1, vm	vd.mask[i] = vs2[i] < rs1
+V	vmsleu.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] <=u vs1[i] //unsigned
+V	vmfne.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] != vs1[i]
+V	vmornot.mm vd, vs2, vs1	vd.mask[i] = vs2.mask[i] || !vs1.mask[i]
+V	vmsleu.vi vd, vs2, imm, vm	vd.mask[i] = vs2[i] <=u imm //unsigned
+V	vmsleu.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] <=u rs1 //unsigned
+V	vmfne.vf vd, vs2, rs1, vm	vd.mask[i] = vs2[i] != rs1
+V	vmsle.vv vd, vs2, vs1, vm	vd.mask[i] = vs2[i] <=s vs1[i] //signed
+V	vmnand.mm vd, vs2, vs1, vm	vd.mask[i] = !(vs2.mask[i] && vs1.mask[i])
+V	vmsle.vi vd, vs2, imm, vm	vd.mask[i] = vs2[i] <=s imm //signed
+V	vmsle.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] <=s rs1 //signed
+V	vmfgt.vf vd, vs2, rs1, vm	vd.mask[i] = vs2[i] > rs1
+V	vmnor.mm vd, vs2, vs1, vm	vd.mask[i] = !(vs2.mask[i] || vs1.mask[i])
+V	vmsgtu.vi vd, vs2, imm, vm	vd.mask[i] = vs2[i] >u imm //unsigned
+V	vmsgtu.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] >u rs1 //unsigned
+V	vmxnor.mm vd, vs2, vs1, vm	vd.mask[i] = !(vs2.mask[i] ^^ vs1.mask[i])
+V	vmsgt.vi vd, vs2, imm, vm	vd.mask[i] = vs2[i] >s imm //signed
+V	vmsgt.vx vd, vs2, rs1, vm	vd.mask[i] = vs2[i] >s rs1 //signed
+V	vmfge.vf vd, vs2, rs1, vm	vd.mask[i] = vs2[i] >= rs1
+V	vfmul.vv vd, vs2, vs1, vm	vd[i] = vs2[i] * vs1[i]
+V	vfmul.vf vd, vs2, rs1, vm	vd[i] = vs2[i] * rs1
+V	vsll.vv vd, vs2, vs1, vm	vd[i] = vs2[i] << vs1[i]
+V	vsll.vi vd, vs2, imm, vm	vd[i] = vs2[i] << imm
+V	vsll.vx vd, vs2, rs1, vm	vd[i] = vs2[i] << rs1
+V	vfrsub.vf vd, vs2, rs1, vm	vd[i] = rs1 - vs2[i]
+V	vsrl.vv vd, vs2, vs1, vm	vd[i] = vs2[i] >>u vs1[i]
+V	vfmadd.vv vd, vs2, vs1, vm	vd[i] = +(vs1[i] * vd[i]) + vs2[i]
+V	vsrl.vi vd, vs2, imm, vm	vd[i] = vs2[i] >>u imm
+V	vsrl.vx vd, vs2, rs1, vm	vd[i] = vs2[i] >>u rs1
+V	vfmadd.vf vd, vs2, rs1, vm	vd[i] = +(rs1 * vd[i]) + vs2[i]
+V	vsra.vv vd, vs2, vs1, vm	vd[i] = vs2[i] >>s vs1[i]
+V	vfnmadd.vv vd, vs2, vs1, vm	vd[i] = -(vs1[i] * vd[i]) - vs2[i]
+V	vsra.vi vd, vs2, imm, vm	vd[i] = vs2[i] >>s imm
+V	vsra.vx vd, vs2, rs1, vm	vd[i] = vs2[i] >>s rs1
+V	vfnmadd.vf vd, vs2, rs1, vm	vd[i] = -(rs1 * vd[i]) - vs2[i]
+V	vfmsub.vv vd, vs2, vs1, vm	vd[i] = +(vs1[i] * vd[i]) - vs2[i]
+V	vfmsub.vf vd, vs2, rs1, vm	vd[i] = +(rs1 * vd[i]) - vs2[i]
+V	vfnmsub.vv vd, vs2, vs1, vm	vd[i] = -(vs1[i] * vd[i]) + vs2[i]
+V	vfnmsub.vf vd, vs2, rs1, vm	vd[i] = -(rs1 * vd[i]) + vs2[i]
+V	vfmacc.vv vd, vs2, vs1, vm	vd[i] = +(vs1[i] * vs2[i]) + vd[i]
+V	vfmacc.vf vd, vs2, rs1, vm	vd[i] = +(rs1 * vs2[i]) + vd[i]
+V	vfnmacc.vv vd, vs2, vs1, vm	vd[i] = -(vs1[i] * vs2[i]) - vd[i]
+V	vfnmacc.vf vd, vs2, rs1, vm	vd[i] = -(rs1 * vs2[i]) - vd[i]
+V	vfmsac.vv vd, vs2, vs1, vm	vd[i] = +(vs1[i] * vs2[i]) - vd[i]
+V	vfmsac.vf vd, vs2, rs1, vm	vd[i] = +(rs1 * vs2[i]) - vd[i]
+V	vfnmsac.vv vd, vs2, vs1, vm	vd[i] = -(vs1[i] * vs2[i]) + vd[i]
+V	vfnmsac.vf vd, vs2, rs1, vm	vd[i] = -(rs1 * vs2[i]) + vd[i]
+V	vmul.vv	
+V	vmul.vx	
+V	vmulh.vv	
+V	vmulh.vx	
+V	vmulhu.vv	
+V	vmulhu.vx	
+V	vmulhsu.vv	
+V	vmulhsu.vx	
+V	vdivu.vv	
+V	vdivu.vx	
+V	vdiv.vv	
+V	vdiv.vx	
+V	vremu.vv	
+V	vremu.vx	
+V	vrem.vv	
+V	vrem.vx	
+V	vmacc.vv	
+V	vmacc.vx	
+V	vnmsac.vv	
+V	vnmsac.vx	
+V	vmadd.vv	
+V	vmadd.vx	
+V	vnmsub.vv	
+V	vnmsub.vx	
+V	vfsqrt.v	
+V	vfdiv.vv	
+V	vfdiv.vf	
+V	vfrdiv.vf	
