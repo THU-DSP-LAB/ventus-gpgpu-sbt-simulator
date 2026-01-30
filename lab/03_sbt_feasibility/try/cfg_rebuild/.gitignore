@@ -1,0 +1,4 @@
+out/
+*.json
+*.dot
+__pycache__

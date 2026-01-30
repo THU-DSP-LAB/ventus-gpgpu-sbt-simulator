@@ -9,6 +9,7 @@
 
 Ventus ISA向量部分对RVV指令语义的修改（待完善）
 * 基本不使用RVV的访存指令
+* 完全不支持所有RISC-V C扩展指令
 * 不使用RVV的mask机制，v0寄存器是普通向量寄存器。使用自定义的vbranch系列（例如vbeq, vbne等）指令、setrpc指令、join指令实现基于SIMT stack的warp分支管理
 
 项目文件结构（目前项目刚刚开始，文件数量很少）
@@ -26,3 +27,7 @@ Ventus ISA向量部分对RVV指令语义的修改（待完善）
 
 
 项目进度: 当前处于原理验证阶段，在 `lab/` 目录下做一些 idea 有效性验证实验
+
+已将整个ventus项目（工具链、仿真器、测例等）放在 (ventus-env)[./ventus-env]
+* ventus 有关的软件工具需要使用 ./ventus-env/install/bin 目录下的
+* 反汇编：`./ventus-env/install/bin/llvm-objdump -d --mattr=+v,+zfinx kernel.riscv > kernel.dump`
