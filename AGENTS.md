@@ -34,3 +34,7 @@ codex cli中的AI助手受到沙箱限制，如果需要运行程序检测/使�
 本项目不要直接引用 ventus-env/ 中的源码，如果本项目需要，将其复制到本项目。
 不要修改 ventus-env/ 中的文件，如果本项目需要，将其复制到本项目后修改。
 仅在做将本项目集成进 Ventus 工具链时才可能需要修改 ventus-env，这时需要请求用户同意，且一般只需要修改 `ventus-env/driver/driver/ptx-device`
+
+使用 Ventus ELF 作为输入，目前阶段采用（不要使用 .vmem 文件）：
+* `ventus-env/rodinia/opencl/*/*.riscv`
+* `ventus-env/pocl/build/examples/*/*.riscv`

@@ -1,0 +1,1056 @@
+#include "sbt/ptx_emit.hpp"
+
+#include <cstdint>
+#include <cstdio>
+#include <iomanip>
+#include <optional>
+#include <sstream>
+#include <string_view>
+
+namespace sbt::ptx {
+namespace {
+
+static std::string hex8(uint32_t x) {
+  std::ostringstream os;
+  os << std::hex << std::setfill('0') << std::setw(8) << x;
+  return os.str();
+}
+
+static std::string hex_u32(uint32_t x) { return "0x" + hex8(x); }
+
+static std::string label_bb(uint32_t block_start) { return "BB_" + hex8(block_start); }
+
+static std::string r(int i) { return "%r" + std::to_string(i); }
+static std::string rd(int i) { return "%rd" + std::to_string(i); }
+static std::string p(int i) { return "%p" + std::to_string(i); }
+static std::string f(int i) { return "%f" + std::to_string(i); }
+static std::string v(int i) { return "%v" + std::to_string(i); }
+static std::string u8(int i) { return "%ub" + std::to_string(i); }
+
+static bool is_scalar_branch(std::string_view name) {
+  return name == "beq" || name == "bne" || name == "blt" || name == "bge" || name == "bltu" || name == "bgeu";
+}
+
+static bool is_vector_branch(std::string_view name) {
+  return name == "vbeq" || name == "vbne" || name == "vblt" || name == "vbge" || name == "vbltu" || name == "vbgeu";
+}
+
+static bool is_vector_load(std::string_view name) {
+  return name == "vlw12_v" || name == "vlbu12_v" || name == "vlw_v";
+}
+
+static bool is_vector_store(std::string_view name) { return name == "vsw12_v" || name == "vsb12_v" || name == "vsw_v"; }
+
+static bool is_scalar_load(std::string_view name) {
+  return name == "lb" || name == "lh" || name == "lw" || name == "lbu" || name == "lhu";
+}
+
+static bool is_scalar_store(std::string_view name) { return name == "sb" || name == "sh" || name == "sw"; }
+
+static bool is_uncond_jump(const sbt::DecodedInst &di) {
+  return di.name == "jal" && di.rd_class == sbt::RegClass::X && di.rd == 0 && di.imm_kind == sbt::ImmKind::J21;
+}
+
+static bool is_call(const sbt::DecodedInst &di) {
+  return di.name == "jal" && di.rd_class == sbt::RegClass::X && di.rd != 0 && di.imm_kind == sbt::ImmKind::J21;
+}
+
+static bool is_ret(const sbt::DecodedInst &di) {
+  return di.name == "jalr" && di.rd_class == sbt::RegClass::X && di.rs1_class == sbt::RegClass::X && di.rd == 0 && di.rs1 == 1 &&
+         di.imm_kind == sbt::ImmKind::I12 && di.imm == 0;
+}
+
+static void require(bool ok, const EmitError &err) {
+  if (!ok) throw err;
+}
+
+static bool is_builtin_call_name(std::string_view callee) {
+  return callee == "_Z13get_global_idj" || callee == "_Z12get_local_idj" || callee == "_Z12get_group_idj" ||
+         callee == "__builtin_riscv_workitem_id_x" || callee == "__builtin_riscv_workitem_id_y" || callee == "__builtin_riscv_workitem_id_z" ||
+         callee == "__builtin_riscv_workgroup_id_x" || callee == "__builtin_riscv_workgroup_id_y" || callee == "__builtin_riscv_workgroup_id_z" ||
+         callee == "__builtin_riscv_global_id_x" || callee == "__builtin_riscv_global_id_y" || callee == "__builtin_riscv_global_id_z" ||
+         callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf";
+}
+
+} // namespace
+
+EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::string detail)
+    : std::runtime_error(code_ + " func=" + func_ + " pc=" + hex_u32(pc_) + (detail.empty() ? "" : (" " + detail))),
+      code(std::move(code_)),
+      func(std::move(func_)),
+      pc(pc_) {}
+
+namespace {
+
+struct EmitCtx final {
+  const sbt::cfg::FunctionCfg &cfg;
+  const std::unordered_map<uint32_t, std::string> &sym_by_addr;
+  const std::string &kernel_name;
+  const Options &opt;
+
+  std::ostringstream out;
+  int tmp_label_id = 0;
+
+  EmitCtx(const sbt::cfg::FunctionCfg &cfg_, const std::unordered_map<uint32_t, std::string> &sym_by_addr_,
+          const std::string &kernel_name_, const Options &opt_)
+      : cfg(cfg_), sym_by_addr(sym_by_addr_), kernel_name(kernel_name_), opt(opt_) {}
+
+  // Register assignment conventions (must match PTX declarations).
+  // %r0: laneid
+  // %r1: activemask
+  // %r2: leader lane index
+  // %p0: is_leader
+  // %rd0: elf_base (global)
+  // %rd1: heap_base (global)
+  // %rd2: shmem_base (shared)
+  // %rd3: wctx_ptr (shared)
+  // %rd4: lds_ptr (shared)
+  // %rd5: pds_base_devptr (global)
+
+  uint32_t x_off(int idx) const { return static_cast<uint32_t>(idx) * 4u; }
+
+  std::string new_label(std::string_view kind) { return "_sbt_" + std::string(kind) + "_" + std::to_string(tmp_label_id++); }
+
+  std::string bb_of_pc(uint32_t pc) const {
+    auto it = cfg.inst_pc_to_block.find(pc);
+    if (it == cfg.inst_pc_to_block.end()) return "";
+    return label_bb(it->second);
+  }
+
+  void emit_line(const std::string &s) { out << "  " << s << "\n"; }
+  void emit_raw(const std::string &s) { out << s; }
+  void emit_label(const std::string &name) { out << name << ":\n"; }
+
+  void emit_block_preamble() {
+    // activemask + leader predicate (active-lane leader).
+    emit_line("activemask.b32 " + r(1) + ";");
+    emit_line("bfind.u32 " + r(2) + ", " + r(1) + ";");
+    emit_line("setp.eq.u32 " + p(0) + ", " + r(0) + ", " + r(2) + ";");
+  }
+
+  void emit_warp_sync() { emit_line("bar.warp.sync " + r(1) + ";"); }
+
+  void emit_ld_x_u32_leader(const std::string &dst_r, int xreg, uint32_t pc_for_err) {
+    if (xreg == 0) {
+      emit_line("@"+p(0)+" mov.u32 " + dst_r + ", 0;");
+      return;
+    }
+    require(xreg >= 0, EmitError("invalid.reg", kernel_name, pc_for_err, "xreg<0"));
+    emit_line("@" + p(0) + " ld.shared.u32 " + dst_r + ", [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "];");
+  }
+
+  void emit_ld_x_u32_all(const std::string &dst_r, int xreg, uint32_t pc_for_err) {
+    if (xreg == 0) {
+      emit_line("mov.u32 " + dst_r + ", 0;");
+      return;
+    }
+    require(xreg >= 0, EmitError("invalid.reg", kernel_name, pc_for_err, "xreg<0"));
+    emit_line("ld.shared.u32 " + dst_r + ", [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "];");
+  }
+
+  void emit_st_x_u32_leader(int xreg, const std::string &src_r, uint32_t pc_for_err) {
+    if (xreg == 0) return; // x0 is hard-wired zero.
+    require(xreg > 0, EmitError("invalid.reg", kernel_name, pc_for_err, "xreg<=0"));
+    emit_line("@" + p(0) + " st.shared.u32 [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "], " + src_r + ";");
+  }
+
+  void emit_addr_map_and_ld_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
+    const std::string L_shared = new_label("ld32_shared");
+    const std::string L_heap = new_label("ld32_heap");
+    const std::string L_done = new_label("ld32_done");
+
+    // shared?
+    emit_line("setp.ge.u32 " + p(1) + ", " + addr_r + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + p(2) + ", " + addr_r + ", " + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";");
+    emit_line("@" + p(3) + " bra " + L_shared + ";");
+
+    // heap?
+    emit_line("setp.ge.u32 " + p(4) + ", " + addr_r + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("@" + p(4) + " bra " + L_heap + ";");
+
+    // else: ELF global
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(0) + ", " + rd(16) + ";");
+    emit_line("ld.global.u32 " + dst_r + ", [" + rd(17) + "];");
+    emit_line("bra " + L_done + ";");
+
+    // heap
+    emit_label(L_heap);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(1) + ", " + rd(16) + ";");
+    emit_line("ld.global.u32 " + dst_r + ", [" + rd(17) + "];");
+    emit_line("bra " + L_done + ";");
+
+    // shared
+    emit_label(L_shared);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
+    emit_line("ld.shared.u32 " + dst_r + ", [" + rd(17) + "];");
+    emit_label(L_done);
+    (void)pc_for_err;
+  }
+
+  void emit_addr_map_and_ld_u32_leader(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
+    const std::string L_after = new_label("leader_ld32_after");
+    emit_line("@!" + p(0) + " bra " + L_after + ";");
+    emit_addr_map_and_ld_u32(dst_r, addr_r, pc_for_err);
+    emit_label(L_after);
+  }
+
+  void emit_addr_map_and_st_u32(const std::string &addr_r, const std::string &src_r, uint32_t pc_for_err) {
+    const std::string L_shared = new_label("st32_shared");
+    const std::string L_heap = new_label("st32_heap");
+    const std::string L_done = new_label("st32_done");
+
+    emit_line("setp.ge.u32 " + p(1) + ", " + addr_r + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + p(2) + ", " + addr_r + ", " + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";");
+    emit_line("@" + p(3) + " bra " + L_shared + ";");
+
+    emit_line("setp.ge.u32 " + p(4) + ", " + addr_r + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("@" + p(4) + " bra " + L_heap + ";");
+
+    // ELF global
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(0) + ", " + rd(16) + ";");
+    emit_line("st.global.u32 [" + rd(17) + "], " + src_r + ";");
+    emit_line("bra " + L_done + ";");
+
+    // heap
+    emit_label(L_heap);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(1) + ", " + rd(16) + ";");
+    emit_line("st.global.u32 [" + rd(17) + "], " + src_r + ";");
+    emit_line("bra " + L_done + ";");
+
+    // shared
+    emit_label(L_shared);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
+    emit_line("st.shared.u32 [" + rd(17) + "], " + src_r + ";");
+    emit_label(L_done);
+    (void)pc_for_err;
+  }
+
+  void emit_addr_map_and_st_u32_leader(const std::string &addr_r, const std::string &src_r, uint32_t pc_for_err) {
+    const std::string L_after = new_label("leader_st32_after");
+    emit_line("@!" + p(0) + " bra " + L_after + ";");
+    emit_addr_map_and_st_u32(addr_r, src_r, pc_for_err);
+    emit_label(L_after);
+  }
+
+  void emit_addr_map_and_ld_u8_zext_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
+    const std::string L_shared = new_label("ldu8_shared");
+    const std::string L_heap = new_label("ldu8_heap");
+    const std::string L_done = new_label("ldu8_done");
+
+    emit_line("setp.ge.u32 " + p(1) + ", " + addr_r + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + p(2) + ", " + addr_r + ", " + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";");
+    emit_line("@" + p(3) + " bra " + L_shared + ";");
+
+    emit_line("setp.ge.u32 " + p(4) + ", " + addr_r + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("@" + p(4) + " bra " + L_heap + ";");
+
+    // ELF global
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(0) + ", " + rd(16) + ";");
+    emit_line("ld.global.u8 " + u8(0) + ", [" + rd(17) + "];");
+    emit_line("cvt.u32.u8 " + dst_r + ", " + u8(0) + ";");
+    emit_line("bra " + L_done + ";");
+
+    // heap
+    emit_label(L_heap);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(1) + ", " + rd(16) + ";");
+    emit_line("ld.global.u8 " + u8(0) + ", [" + rd(17) + "];");
+    emit_line("cvt.u32.u8 " + dst_r + ", " + u8(0) + ";");
+    emit_line("bra " + L_done + ";");
+
+    // shared
+    emit_label(L_shared);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
+    emit_line("ld.shared.u8 " + u8(0) + ", [" + rd(17) + "];");
+    emit_line("cvt.u32.u8 " + dst_r + ", " + u8(0) + ";");
+    emit_label(L_done);
+    (void)pc_for_err;
+  }
+
+  void emit_addr_map_and_ld_u8_zext_u32_leader(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
+    const std::string L_after = new_label("leader_ldu8_after");
+    emit_line("@!" + p(0) + " bra " + L_after + ";");
+    emit_addr_map_and_ld_u8_zext_u32(dst_r, addr_r, pc_for_err);
+    emit_label(L_after);
+  }
+
+  void emit_addr_map_and_st_u8(const std::string &addr_r, const std::string &src_u8, uint32_t pc_for_err) {
+    const std::string L_shared = new_label("stu8_shared");
+    const std::string L_heap = new_label("stu8_heap");
+    const std::string L_done = new_label("stu8_done");
+
+    emit_line("setp.ge.u32 " + p(1) + ", " + addr_r + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + p(2) + ", " + addr_r + ", " + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";");
+    emit_line("@" + p(3) + " bra " + L_shared + ";");
+
+    emit_line("setp.ge.u32 " + p(4) + ", " + addr_r + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("@" + p(4) + " bra " + L_heap + ";");
+
+    // ELF global
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(0) + ", " + rd(16) + ";");
+    emit_line("st.global.u8 [" + rd(17) + "], " + src_u8 + ";");
+    emit_line("bra " + L_done + ";");
+
+    // heap
+    emit_label(L_heap);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(1) + ", " + rd(16) + ";");
+    emit_line("st.global.u8 [" + rd(17) + "], " + src_u8 + ";");
+    emit_line("bra " + L_done + ";");
+
+    // shared
+    emit_label(L_shared);
+    emit_line("add.u32 " + r(16) + ", " + addr_r + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
+    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
+    emit_line("st.shared.u8 [" + rd(17) + "], " + src_u8 + ";");
+    emit_label(L_done);
+    (void)pc_for_err;
+  }
+
+  void emit_addr_map_and_st_u8_leader(const std::string &addr_r, const std::string &src_u8, uint32_t pc_for_err) {
+    const std::string L_after = new_label("leader_stu8_after");
+    emit_line("@!" + p(0) + " bra " + L_after + ";");
+    emit_addr_map_and_st_u8(addr_r, src_u8, pc_for_err);
+    emit_label(L_after);
+  }
+
+  void emit_builtin_get_id(std::string_view kind, uint32_t pc_for_err) {
+    // Uses %v0 as "dim" input for get_*_idj; writes result to %v0.
+    // kind: "global"|"local"|"group"
+    emit_line("// builtin: " + std::string(kind) + "_id(dim=v0) -> v0");
+    emit_line("mov.u32 " + r(20) + ", " + v(0) + ";"); // dim
+
+    const std::string L_dim0 = new_label("dim0");
+    const std::string L_dim1 = new_label("dim1");
+    const std::string L_dim2 = new_label("dim2");
+    const std::string L_done = new_label("dim_done");
+
+    emit_line("setp.eq.u32 " + p(5) + ", " + r(20) + ", 0;");
+    emit_line("@" + p(5) + " bra " + L_dim0 + ";");
+    emit_line("setp.eq.u32 " + p(6) + ", " + r(20) + ", 1;");
+    emit_line("@" + p(6) + " bra " + L_dim1 + ";");
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(20) + ", 2;");
+    emit_line("@" + p(7) + " bra " + L_dim2 + ";");
+
+    emit_line("mov.u32 " + v(0) + ", 0;");
+    emit_line("bra " + L_done + ";");
+
+    auto emit_dim = [&](const std::string &L, const char *tid, const char *ntid, const char *ctaid) {
+      emit_label(L);
+      if (kind == "local") {
+        emit_line("mov.u32 " + v(0) + ", " + std::string(tid) + ";");
+      } else if (kind == "group") {
+        emit_line("mov.u32 " + v(0) + ", " + std::string(ctaid) + ";");
+      } else {
+        // global
+        emit_line("mov.u32 " + r(21) + ", " + std::string(tid) + ";");
+        emit_line("mov.u32 " + r(22) + ", " + std::string(ntid) + ";");
+        emit_line("mov.u32 " + r(23) + ", " + std::string(ctaid) + ";");
+        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
+        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
+        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+      }
+      emit_line("bra " + L_done + ";");
+    };
+
+    emit_dim(L_dim0, "%tid.x", "%ntid.x", "%ctaid.x");
+    emit_dim(L_dim1, "%tid.y", "%ntid.y", "%ctaid.y");
+    emit_dim(L_dim2, "%tid.z", "%ntid.z", "%ctaid.z");
+
+    emit_label(L_done);
+    (void)pc_for_err;
+  }
+
+  void emit_builtin_sqrtf(uint32_t pc_for_err) {
+    emit_line("// builtin: sqrtf(v0) -> v0 (f32 bits)");
+    emit_line("mov.b32 " + f(0) + ", " + v(0) + ";");
+    emit_line("sqrt.rn.f32 " + f(1) + ", " + f(0) + ";");
+    emit_line("mov.b32 " + v(0) + ", " + f(1) + ";");
+    (void)pc_for_err;
+  }
+
+  void emit_one_inst(const sbt::cfg::BundleInst &bi) {
+    const sbt::DecodedInst &di = bi.inst;
+    const uint32_t pc = di.pc;
+
+    if (opt.include_comments) {
+      emit_line("// " + hex_u32(bi.pc) + " " + di.name);
+    }
+
+    // No-ops under structured translation.
+    if (di.name == "setrpc" || di.name == "join" || di.name == "vsetvli") {
+      return;
+    }
+
+    if (di.name == "endprg" || is_ret(di)) {
+      emit_line("ret;");
+      return;
+    }
+
+    if (di.name == "barrier") {
+      emit_line("bar.sync 0;");
+      return;
+    }
+
+    // Calls: only support a small builtin set in prototype.
+    if (is_call(di)) {
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
+      auto it = sym_by_addr.find(target);
+      require(it != sym_by_addr.end(), EmitError("unsupported.call", kernel_name, pc, "target=" + hex_u32(target)));
+      const std::string &callee = it->second;
+      require(is_builtin_call_name(callee), EmitError("unsupported.call", kernel_name, pc, "callee=" + callee));
+
+      // Write link register (uniform) for debugging parity; not used by inlined builtins.
+      emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + hex_u32(pc + 4) + ";");
+      emit_st_x_u32_leader(di.rd, r(14), pc);
+      emit_warp_sync();
+
+      if (callee == "_Z13get_global_idj") {
+        emit_builtin_get_id("global", pc);
+      } else if (callee == "_Z12get_local_idj") {
+        emit_builtin_get_id("local", pc);
+      } else if (callee == "_Z12get_group_idj") {
+        emit_builtin_get_id("group", pc);
+      } else if (callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf") {
+        emit_builtin_sqrtf(pc);
+      } else if (callee == "__builtin_riscv_workitem_id_x") {
+        emit_line("mov.u32 " + v(0) + ", %tid.x;");
+      } else if (callee == "__builtin_riscv_workitem_id_y") {
+        emit_line("mov.u32 " + v(0) + ", %tid.y;");
+      } else if (callee == "__builtin_riscv_workitem_id_z") {
+        emit_line("mov.u32 " + v(0) + ", %tid.z;");
+      } else if (callee == "__builtin_riscv_workgroup_id_x") {
+        emit_line("mov.u32 " + v(0) + ", %ctaid.x;");
+      } else if (callee == "__builtin_riscv_workgroup_id_y") {
+        emit_line("mov.u32 " + v(0) + ", %ctaid.y;");
+      } else if (callee == "__builtin_riscv_workgroup_id_z") {
+        emit_line("mov.u32 " + v(0) + ", %ctaid.z;");
+      } else if (callee == "__builtin_riscv_global_id_x") {
+        emit_line("mov.u32 " + r(21) + ", %tid.x;");
+        emit_line("mov.u32 " + r(22) + ", %ntid.x;");
+        emit_line("mov.u32 " + r(23) + ", %ctaid.x;");
+        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
+        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
+        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+      } else if (callee == "__builtin_riscv_global_id_y") {
+        emit_line("mov.u32 " + r(21) + ", %tid.y;");
+        emit_line("mov.u32 " + r(22) + ", %ntid.y;");
+        emit_line("mov.u32 " + r(23) + ", %ctaid.y;");
+        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
+        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
+        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+      } else if (callee == "__builtin_riscv_global_id_z") {
+        emit_line("mov.u32 " + r(21) + ", %tid.z;");
+        emit_line("mov.u32 " + r(22) + ", %ntid.z;");
+        emit_line("mov.u32 " + r(23) + ", %ctaid.z;");
+        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
+        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
+        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+      } else {
+        throw EmitError("unsupported.call", kernel_name, pc, "callee=" + callee);
+      }
+      return;
+    }
+
+    // Scalar jumps (unconditional).
+    if (is_uncond_jump(di)) {
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
+      const std::string bb = bb_of_pc(target);
+      require(!bb.empty(), EmitError("invalid.cfg", kernel_name, pc, "jump target " + hex_u32(target)));
+      emit_line("bra " + bb + ";");
+      return;
+    }
+
+    // Scalar conditional branches.
+    if (is_scalar_branch(di.name) && di.imm_kind == sbt::ImmKind::B13) {
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
+      const uint32_t fallthrough = pc + 4;
+      const std::string bb_t = bb_of_pc(target);
+      const std::string bb_f = bb_of_pc(fallthrough);
+      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", kernel_name, pc, "branch target/fallthrough missing"));
+
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_ld_x_u32_all(r(15), di.rs2, pc);
+
+      if (di.name == "beq") emit_line("setp.eq.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      else if (di.name == "bne") emit_line("setp.ne.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      else if (di.name == "blt") emit_line("setp.lt.s32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      else if (di.name == "bge") emit_line("setp.ge.s32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      else if (di.name == "bltu") emit_line("setp.lt.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      else if (di.name == "bgeu") emit_line("setp.ge.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      else throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+
+      emit_line("@" + p(1) + " bra " + bb_t + ";");
+      emit_line("bra " + bb_f + ";");
+      return;
+    }
+
+    // Vector conditional branches.
+    if (is_vector_branch(di.name) && di.imm_kind == sbt::ImmKind::B13) {
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
+      const uint32_t fallthrough = pc + 4;
+      const std::string bb_t = bb_of_pc(target);
+      const std::string bb_f = bb_of_pc(fallthrough);
+      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", kernel_name, pc, "vbranch target/fallthrough missing"));
+
+      // NOTE: Ventus vbranch encodes operands in a swapped order vs scalar branches:
+      // llvm-objdump / cyclesim logs print `vb* v<rs2>, v<rs1>, off`.
+      // Treat `rs2` as the left operand and `rs1` as the right operand.
+      const std::string a = v(di.rs2);
+      const std::string b = v(di.rs1);
+
+      if (di.name == "vbeq") emit_line("setp.eq.u32 " + p(1) + ", " + a + ", " + b + ";");
+      else if (di.name == "vbne") emit_line("setp.ne.u32 " + p(1) + ", " + a + ", " + b + ";");
+      else if (di.name == "vblt") emit_line("setp.lt.s32 " + p(1) + ", " + a + ", " + b + ";");
+      else if (di.name == "vbge") emit_line("setp.ge.s32 " + p(1) + ", " + a + ", " + b + ";");
+      else if (di.name == "vbltu") emit_line("setp.lt.u32 " + p(1) + ", " + a + ", " + b + ";");
+      else if (di.name == "vbgeu") emit_line("setp.ge.u32 " + p(1) + ", " + a + ", " + b + ";");
+      else throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+
+      emit_line("@" + p(1) + " bra " + bb_t + ";");
+      emit_line("bra " + bb_f + ";");
+      return;
+    }
+
+    // CSR reads (prototype: csrrs with rs1=x0).
+    if (di.name == "csrrs") {
+      require(di.imm_kind == sbt::ImmKind::CSR12, EmitError("invalid.csr", kernel_name, pc, "imm_kind"));
+      require(di.rs1 == 0, EmitError("unsupported.csr", kernel_name, pc, "write not supported"));
+      const uint32_t csr = static_cast<uint32_t>(di.imm);
+
+      // Compute CSR value to %r14 (leader only), then store to x[rd].
+      // We keep values minimal for bring-up.
+      if (csr == 0x803u) { // CSR_KNL
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + r(30) + ";"); // %r30 holds knl_vaddr (loaded in prologue)
+      } else if (csr == 0x802u) { // CSR_NUMT
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", 32;");
+      } else if (csr == 0x805u) { // CSR_WID
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + r(10) + ";"); // warp_id_in_block
+      } else if (csr == 0x800u) { // CSR_TID
+        emit_line("@" + p(0) + " shl.b32 " + r(14) + ", " + r(10) + ", 5;");
+      } else if (csr == 0x801u) { // CSR_NUMW
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + r(12) + ";"); // warps_per_block
+      } else if (csr == 0x806u) { // CSR_LDS
+        // CSR_LDS should point to the base of work-group shared memory, which is placed after the per-warp scalar stack.
+        // Numeric shared vaddr layout (prototype):
+        //   [shared_base, shared_base + warps_per_block*1024) : per-warp scalar stack
+        //   [shared_base + warps_per_block*1024, ...)         : kernel LDS region (local args, scratch, etc)
+        emit_line("@" + p(0) + " shl.b32 " + r(14) + ", " + r(12) + ", 10;"); // warps_per_block * 1024
+        emit_line("@" + p(0) + " add.u32 " + r(14) + ", " + r(14) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+      } else if (csr == 0x808u) { // CSR_GDX
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", %ctaid.x;");
+      } else if (csr == 0x809u) { // CSR_GDY
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", %ctaid.y;");
+      } else if (csr == 0x80au) { // CSR_GDZ
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", %ctaid.z;");
+      } else {
+        throw EmitError("unsupported.csr", kernel_name, pc, "csr=" + hex_u32(csr));
+      }
+
+      emit_st_x_u32_leader(di.rd, r(14), pc);
+      emit_warp_sync();
+      return;
+    }
+
+    // Scalar loads/stores (leader-only side effects).
+    if (is_scalar_load(di.name) && di.imm_kind == sbt::ImmKind::I12) {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_line("@" + p(0) + " add.u32 " + r(15) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
+
+      // For now we only implement lw/lbu as used by bring-up; others can be added similarly.
+      if (di.name == "lw") {
+        emit_line("@" + p(0) + " mov.u32 " + r(16) + ", " + r(15) + ";");
+        emit_addr_map_and_ld_u32_leader(r(17), r(16), pc);
+        emit_st_x_u32_leader(di.rd, r(17), pc);
+        emit_warp_sync();
+        return;
+      }
+      if (di.name == "lbu") {
+        emit_line("@" + p(0) + " mov.u32 " + r(16) + ", " + r(15) + ";");
+        emit_addr_map_and_ld_u8_zext_u32_leader(r(17), r(16), pc);
+        emit_st_x_u32_leader(di.rd, r(17), pc);
+        emit_warp_sync();
+        return;
+      }
+      throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+    }
+
+    if (is_scalar_store(di.name) && di.imm_kind == sbt::ImmKind::S12) {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc); // base
+      emit_ld_x_u32_leader(r(15), di.rs2, pc); // value
+      emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
+
+      if (di.name == "sw") {
+        emit_line("@" + p(0) + " mov.u32 " + r(17) + ", " + r(16) + ";");
+        emit_addr_map_and_st_u32_leader(r(17), r(15), pc);
+        emit_warp_sync();
+        return;
+      }
+      if (di.name == "sb") {
+        emit_line("@" + p(0) + " cvt.u8.u32 " + u8(1) + ", " + r(15) + ";");
+        emit_line("@" + p(0) + " mov.u32 " + r(17) + ", " + r(16) + ";");
+        emit_addr_map_and_st_u8_leader(r(17), u8(1), pc);
+        emit_warp_sync();
+        return;
+      }
+      throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+    }
+
+    // Scalar ALU ops (leader-only) - minimal subset used by Rodinia.
+    if (di.name == "addi" && di.imm_kind == sbt::ImmKind::I12) {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_line("@" + p(0) + " add.s32 " + r(15) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
+      emit_st_x_u32_leader(di.rd, r(15), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "add") {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_ld_x_u32_leader(r(15), di.rs2, pc);
+      emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(14) + ", " + r(15) + ";");
+      emit_st_x_u32_leader(di.rd, r(16), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "sub") {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_ld_x_u32_leader(r(15), di.rs2, pc);
+      emit_line("@" + p(0) + " sub.u32 " + r(16) + ", " + r(14) + ", " + r(15) + ";");
+      emit_st_x_u32_leader(di.rd, r(16), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "mul") {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_ld_x_u32_leader(r(15), di.rs2, pc);
+      emit_line("@" + p(0) + " mul.lo.s32 " + r(16) + ", " + r(14) + ", " + r(15) + ";");
+      emit_st_x_u32_leader(di.rd, r(16), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "lui" && di.imm_kind == sbt::ImmKind::U20) {
+      emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + hex_u32(static_cast<uint32_t>(di.imm)) + ";");
+      emit_st_x_u32_leader(di.rd, r(14), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "auipc" && di.imm_kind == sbt::ImmKind::U20) {
+      const uint32_t val = static_cast<uint32_t>(di.pc + static_cast<uint32_t>(di.imm));
+      emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + hex_u32(val) + ";");
+      emit_st_x_u32_leader(di.rd, r(14), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "slli" && di.imm_kind == sbt::ImmKind::I12) {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_line("@" + p(0) + " shl.b32 " + r(15) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
+      emit_st_x_u32_leader(di.rd, r(15), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "xori" && di.imm_kind == sbt::ImmKind::I12) {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_line("@" + p(0) + " xor.b32 " + r(15) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
+      emit_st_x_u32_leader(di.rd, r(15), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "slt") {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_ld_x_u32_leader(r(15), di.rs2, pc);
+      emit_line("@" + p(0) + " setp.lt.s32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      emit_line("@" + p(0) + " selp.u32 " + r(16) + ", 1, 0, " + p(1) + ";");
+      emit_st_x_u32_leader(di.rd, r(16), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "slti" && di.imm_kind == sbt::ImmKind::I12) {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_line("@" + p(0) + " setp.lt.s32 " + p(1) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
+      emit_line("@" + p(0) + " selp.u32 " + r(15) + ", 1, 0, " + p(1) + ";");
+      emit_st_x_u32_leader(di.rd, r(15), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "sltiu" && di.imm_kind == sbt::ImmKind::I12) {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      const uint32_t imm_u = static_cast<uint32_t>(di.imm);
+      emit_line("@" + p(0) + " setp.lt.u32 " + p(1) + ", " + r(14) + ", " + hex_u32(imm_u) + ";");
+      emit_line("@" + p(0) + " selp.u32 " + r(15) + ", 1, 0, " + p(1) + ";");
+      emit_st_x_u32_leader(di.rd, r(15), pc);
+      emit_warp_sync();
+      return;
+    }
+
+    // Vector loads/stores.
+    // NOTE: `vlw.v` / `vsw.v` are Ventus GPU-private-memory indexed ops backed by CSR_PDS (Spike: insns/vlw_v.h, vsw_v.h).
+    // They do NOT use the normal numeric vaddr space (0x7000/0x8000/0x9000 ranges).
+    if (di.name == "vlw_v" && di.imm_kind == sbt::ImmKind::I12) {
+      // baseAddr = vs1 + simm11
+      emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
+      // off0 = (baseAddr&~3) * (NUMW*NUMT) + (baseAddr&3)
+      emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
+      emit_line("and.b32 " + r(16) + ", " + r(14) + ", 3;");
+      emit_line("shl.b32 " + r(17) + ", " + r(12) + ", 5;"); // warps_per_block * 32
+      emit_line("mul.lo.u32 " + r(18) + ", " + r(15) + ", " + r(17) + ";");
+      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(16) + ";");
+      // off1 = (TID + laneid) << 2, where TID is warp_id*32 (base thread id within block)
+      emit_line("shl.b32 " + r(19) + ", " + r(10) + ", 5;");
+      emit_line("add.u32 " + r(19) + ", " + r(19) + ", " + r(0) + ";");
+      emit_line("shl.b32 " + r(19) + ", " + r(19) + ", 2;");
+      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(19) + ";");
+      // addr = pds_base_devptr + off
+      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(18) + ";");
+      emit_line("add.u64 " + rd(17) + ", " + rd(5) + ", " + rd(16) + ";");
+      emit_line("ld.global.u32 " + r(20) + ", [" + rd(17) + "];");
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(20) + ";");
+      return;
+    }
+    if (di.name == "vsw_v" && di.imm_kind == sbt::ImmKind::S12) {
+      emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
+      emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
+      emit_line("and.b32 " + r(16) + ", " + r(14) + ", 3;");
+      emit_line("shl.b32 " + r(17) + ", " + r(12) + ", 5;");
+      emit_line("mul.lo.u32 " + r(18) + ", " + r(15) + ", " + r(17) + ";");
+      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(16) + ";");
+      emit_line("shl.b32 " + r(19) + ", " + r(10) + ", 5;");
+      emit_line("add.u32 " + r(19) + ", " + r(19) + ", " + r(0) + ";");
+      emit_line("shl.b32 " + r(19) + ", " + r(19) + ", 2;");
+      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(19) + ";");
+      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(18) + ";");
+      emit_line("add.u64 " + rd(17) + ", " + rd(5) + ", " + rd(16) + ";");
+      emit_line("st.global.u32 [" + rd(17) + "], " + v(di.rs2) + ";");
+      return;
+    }
+
+    if (is_vector_load(di.name) && di.imm_kind == sbt::ImmKind::I12) {
+      emit_line("add.u32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";"); // addr32
+      if (di.name == "vlbu12_v") {
+        emit_addr_map_and_ld_u8_zext_u32(r(15), r(14), pc);
+        emit_line("mov.u32 " + v(di.rd) + ", " + r(15) + ";");
+      } else {
+        emit_addr_map_and_ld_u32(r(15), r(14), pc);
+        emit_line("mov.u32 " + v(di.rd) + ", " + r(15) + ";");
+      }
+      return;
+    }
+
+    if (is_vector_store(di.name) && di.imm_kind == sbt::ImmKind::S12) {
+      emit_line("add.u32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";"); // addr32
+      if (di.name == "vsb12_v") {
+        emit_line("cvt.u8.u32 " + u8(1) + ", " + v(di.rs2) + ";");
+        emit_addr_map_and_st_u8(r(14), u8(1), pc);
+      } else {
+        emit_addr_map_and_st_u32(r(14), v(di.rs2), pc);
+      }
+      return;
+    }
+
+    // Vector register ops.
+    if (di.name == "vmv_v_x") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vid_v") {
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(0) + ";");
+      return;
+    }
+
+    if (di.name == "vadd_vv") {
+      emit_line("add.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vadd_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("add.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vadd_vi") {
+      emit_line("add.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vsub_vv") {
+      emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vsub12_vi" && di.imm_kind == sbt::ImmKind::I12) {
+      emit_line("sub.s32 " + v(di.rd) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vand_vv") {
+      emit_line("and.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vor_vv") {
+      emit_line("or.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vxor_vi") {
+      emit_line("xor.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vsll_vi") {
+      emit_line("shl.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vsrl_vi") {
+      emit_line("shr.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vsra_vi") {
+      emit_line("shr.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vmul_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mul.lo.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vdivu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("div.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vremu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("rem.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmadd_vv") {
+      // RISC-V V: vmadd vd,vs1,vs2 => vd = (vd * vs1) + vs2
+      emit_line("mad.lo.s32 " + v(di.rd) + ", " + v(di.rd) + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
+      return;
+    }
+    if (di.name == "vmadd_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      // RISC-V V: vmadd vd,rs1,vs2 => vd = (vd * rs1) + vs2
+      emit_line("mad.lo.s32 " + v(di.rd) + ", " + v(di.rd) + ", " + r(14) + ", " + v(di.rs2) + ";");
+      return;
+    }
+    if (di.name == "vmslt_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.lt.s32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_line("selp.u32 " + v(di.rd) + ", 0xffffffff, 0, " + p(1) + ";");
+      return;
+    }
+    if (di.name == "vmsltu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.lt.u32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_line("selp.u32 " + v(di.rd) + ", 0xffffffff, 0, " + p(1) + ";");
+      return;
+    }
+
+    // Float vector ops: treat v regs as f32 bits.
+    auto vf_binop = [&](const char *op) {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs1) + ";");
+      emit_line(std::string(op) + " " + f(2) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(2) + ";");
+    };
+
+    if (di.name == "vfadd_vv") { vf_binop("add.rn.f32"); return; }
+    if (di.name == "vfsub_vv") { vf_binop("sub.rn.f32"); return; }
+    if (di.name == "vfmul_vv") { vf_binop("mul.rn.f32"); return; }
+    if (di.name == "vfdiv_vv") { vf_binop("div.rn.f32"); return; }
+    if (di.name == "vfmadd_vv") {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rd) + ";");  // acc
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + f(2) + ", " + v(di.rs1) + ";");
+      emit_line("fma.rn.f32 " + f(3) + ", " + f(1) + ", " + f(2) + ", " + f(0) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(3) + ";");
+      return;
+    }
+    if (di.name == "vfsqrt_v") {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("sqrt.rn.f32 " + f(1) + ", " + f(0) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(1) + ";");
+      return;
+    }
+    if (di.name == "vfsgnjn_vv") {
+      // vd = abs(vs2) with sign = ~sign(vs1)
+      emit_line("and.b32 " + r(14) + ", " + v(di.rs2) + ", 0x7fffffff;");
+      emit_line("not.b32 " + r(15) + ", " + v(di.rs1) + ";");
+      emit_line("and.b32 " + r(15) + ", " + r(15) + ", 0x80000000;");
+      emit_line("or.b32 " + v(di.rd) + ", " + r(14) + ", " + r(15) + ";");
+      return;
+    }
+    if (di.name == "vmflt_vv") {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs1) + ";");
+      emit_line("setp.lt.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line("selp.u32 " + v(di.rd) + ", 0xffffffff, 0, " + p(1) + ";");
+      return;
+    }
+
+    throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+  }
+
+  void emit_prologue() {
+    // Params:
+    //  - elf_base: backing buffer for [elf_base_vaddr, heap_base_vaddr)
+    //  - heap_base: backing buffer for [heap_base_vaddr, ...)
+    //  - knl_vaddr: Ventus numeric address of metadata buffer (u32)
+    emit_raw(".visible .entry " + kernel_name + "(\n");
+    emit_raw("    .param .u64 elf_base,\n");
+    emit_raw("    .param .u64 heap_base,\n");
+    emit_raw("    .param .u32 knl_vaddr\n");
+    emit_raw(")\n{\n");
+
+    emit_line(".reg .b32 %r<32>;");
+    emit_line(".reg .b64 %rd<32>;");
+    emit_line(".reg .pred %p<16>;");
+    emit_line(".reg .f32 %f<16>;");
+    emit_line(".reg .u8 %ub<4>;");
+    emit_line(".reg .b32 %v<256>;");
+
+    // Load params and compute global/shared base pointers.
+    emit_line("ld.param.u64 " + rd(10) + ", [elf_base];");
+    emit_line("cvta.to.global.u64 " + rd(0) + ", " + rd(10) + ";");
+    emit_line("ld.param.u64 " + rd(11) + ", [heap_base];");
+    emit_line("cvta.to.global.u64 " + rd(1) + ", " + rd(11) + ";");
+    emit_line("ld.param.u32 " + r(30) + ", [knl_vaddr];");
+
+    // lane id (0..31)
+    emit_line("mov.u32 " + r(0) + ", %laneid;");
+
+    // thread linear id = tid.x + ntid.x*(tid.y + ntid.y*tid.z)
+    emit_line("mov.u32 " + r(3) + ", %tid.x;");
+    emit_line("mov.u32 " + r(4) + ", %tid.y;");
+    emit_line("mov.u32 " + r(5) + ", %tid.z;");
+    emit_line("mov.u32 " + r(6) + ", %ntid.x;");
+    emit_line("mov.u32 " + r(7) + ", %ntid.y;");
+    emit_line("mov.u32 " + r(8) + ", %ntid.z;");
+    emit_line("mul.lo.u32 " + r(9) + ", " + r(7) + ", " + r(5) + ";");
+    emit_line("add.u32 " + r(9) + ", " + r(9) + ", " + r(4) + ";");
+    emit_line("mul.lo.u32 " + r(9) + ", " + r(9) + ", " + r(6) + ";");
+    emit_line("add.u32 " + r(9) + ", " + r(9) + ", " + r(3) + ";");
+
+    // warp_id_in_block = linear >> 5
+    emit_line("shr.u32 " + r(10) + ", " + r(9) + ", 5;");
+
+    // warps_per_block = (threads + 31) >> 5
+    emit_line("mul.lo.u32 " + r(11) + ", " + r(6) + ", " + r(7) + ";");
+    emit_line("mul.lo.u32 " + r(11) + ", " + r(11) + ", " + r(8) + ";");
+    emit_line("add.u32 " + r(12) + ", " + r(11) + ", 31;");
+    emit_line("shr.u32 " + r(12) + ", " + r(12) + ", 5;");
+
+    // dynamic shared base
+    // NOTE: for `.extern .shared` symbols (dynamic shared), the symbol address is already in the shared state-space.
+    // Using `cvta.to.shared` here can produce an address that tools/runtime treat as out-of-bounds.
+    emit_line("mov.u64 " + rd(2) + ", __sbt_shmem;");
+
+    // wctx_ptr = shmem_base + warp_id * 1024
+    emit_line("shl.b32 " + r(13) + ", " + r(10) + ", 10;");
+    emit_line("cvt.u64.u32 " + rd(13) + ", " + r(13) + ";");
+    emit_line("add.u64 " + rd(3) + ", " + rd(2) + ", " + rd(13) + ";");
+
+    // lds_ptr = shmem_base + warps_per_block * 1024
+    emit_line("shl.b32 " + r(14) + ", " + r(12) + ", 10;");
+    emit_line("cvt.u64.u32 " + rd(14) + ", " + r(14) + ";");
+    emit_line("add.u64 " + rd(4) + ", " + rd(2) + ", " + rd(14) + ";");
+
+    // Leader + init ABI-critical scalar regs (x2 stack, x10 argbase).
+    emit_block_preamble();
+
+    // x2 = shared_base + warp_id * stack_stride (default: 1024 bytes => <<10)
+    emit_line("@" + p(0) + " shl.b32 " + r(15) + ", " + r(10) + ", 10;");
+    emit_line("@" + p(0) + " add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_st_x_u32_leader(/*x2=*/2, r(15), /*pc_for_err=*/cfg.start);
+
+    // x10 (a0) is the first argument register. PoCL Ventus kernels expect:
+    //   a0 = *(u32*)(CSR_KNL + 4)  (arg buffer base)
+    // because the original `_start` loads it from the hardware metadata buffer before jumping to the kernel entry.
+    emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(30) + ", 4;"); // arg_base field address
+    emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(16) + ", 0;"); // keep in u32 reg
+    emit_addr_map_and_ld_u32_leader(r(17), r(16), /*pc_for_err=*/cfg.start);
+    emit_st_x_u32_leader(/*x10=*/10, r(17), /*pc_for_err=*/cfg.start);
+
+    // Cache PDS base (CSR_PDS backing) as a device pointer in %rd5.
+    // We read a u32 at (knl_vaddr + 56) as "pds_base_vaddr" (Ventus numeric address).
+    // If absent (0), fall back to heap_base_vaddr to avoid underflow/crashes; correctness requires the driver to fill it.
+    emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(30) + ", 56;");
+    emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(16) + ", 0;");
+    emit_addr_map_and_ld_u32_leader(r(17), r(16), /*pc_for_err=*/cfg.start);
+    emit_line("@" + p(0) + " st.shared.u32 [" + rd(3) + "+128], " + r(17) + ";");
+    emit_warp_sync();
+    emit_line("ld.shared.u32 " + r(31) + ", [" + rd(3) + "+128];");
+    emit_line("setp.lt.u32 " + p(8) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("@" + p(8) + " mov.u32 " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("add.u32 " + r(31) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(31) + ";");
+    emit_line("add.u64 " + rd(5) + ", " + rd(1) + ", " + rd(16) + ";");
+
+    emit_warp_sync();
+
+    // Fallthrough to entry BB.
+  }
+
+  void emit_body() {
+    // Module header.
+    emit_raw(".version 7.0\n");
+    emit_raw(".target sm_" + std::to_string(opt.sm) + "\n");
+    emit_raw(".address_size 64\n\n");
+
+    // Declare dynamic shared segment.
+    emit_raw(".extern .shared .align 16 .b8 __sbt_shmem[];\n\n");
+
+    emit_prologue();
+
+    // Emit blocks in address order.
+    for (const auto &bb : cfg.blocks) {
+      out << label_bb(bb.start) << ":\n";
+      emit_block_preamble();
+      for (size_t idx : bb.inst_indices) {
+        emit_one_inst(cfg.insts[idx]);
+      }
+    }
+
+    emit_raw("}\n");
+  }
+};
+
+} // namespace
+
+EmitResult emit_kernel(const sbt::cfg::FunctionCfg &cfg, const std::unordered_map<uint32_t, std::string> &sym_by_addr,
+                       const std::string &kernel_name, const Options &opt) {
+  EmitCtx ctx(cfg, sym_by_addr, kernel_name, opt);
+
+  // Basic sanity: ensure each block has a label mapping.
+  for (const auto &bb : cfg.blocks) {
+    require(!label_bb(bb.start).empty(), EmitError("invalid.cfg", kernel_name, cfg.start, "empty label"));
+  }
+
+  ctx.emit_body();
+
+  EmitResult res;
+  res.ptx = ctx.out.str();
+  return res;
+}
+
+} // namespace sbt::ptx

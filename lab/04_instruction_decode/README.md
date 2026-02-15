@@ -112,7 +112,7 @@ spike 用“执行 regext 指令 + 保留扩展状态一条指令”的方式实
 2. 生成本项目自己的 `decode_table`（`mask -> {match -> op}` 或 `op -> {mask, match}`）
 3. 用 cyclesim 生成表做一致性检查（至少覆盖：`vbranch/join/setrpc/regext/endprg/barrier/vls12/vadd12.vi`）
 
-### 3.2 regext/regexti：必须首先做对
+### 3.2 regext
 
 SBT 的 decode 需要“把前缀与下一条指令合并”为一个逻辑指令（否则寄存器编号/立即数会错）。
 
@@ -121,6 +121,8 @@ SBT 的 decode 需要“把前缀与下一条指令合并”为一个逻辑指�
 - `regext`：扩展 `rd/rs1/rs2/rs3`
 - `regexti`：扩展 `rd/rs2` 与 `vop.vi` 立即数高位
 - 作用范围：只影响下一条指令，然后清除
+
+当前可只实现 `regext`，遇到 `regexti` 直接报错即可
 
 ### 3.3 立即数抽取：优先借鉴 cyclesim 的实现
 
@@ -235,7 +237,7 @@ cyclesim 的 `decode.cpp` 已把多种立即数格式（I/S/B/U/J/Z/V/L11/S11）
 - [ ] 定义本项目的 `DecodedInst` 结构：`pc/len/op/rd/rs1/rs2/rs3/imm/is_vec/...`
 - [ ] 建立 Ventus 指令编码表（优先从 spike `encoding.h` 自动提取；必要时手写补丁）
 - [ ] 实现 32-bit 指令 decode（至少覆盖 `VentusInst_basic.txt` 当前需要关注的指令）
-- [ ] 实现 `regext/regexti` 前缀合并（严格“一条前缀只作用于下一条指令”）
+- [ ] 实现 `regext` 前缀合并（严格“一条前缀只作用于下一条指令”）
 - [ ] 实现立即数抽取（I/S/B/U/J/Z/V...；可参考 cyclesim `decode.cpp`）
 - [ ] 做一个最小 disassembler/pretty-printer，输出接近 spike/objdump 的文本用于对照
 - [ ] 用现有样例做 golden test：
