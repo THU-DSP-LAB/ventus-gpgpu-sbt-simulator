@@ -69,7 +69,11 @@ static bool is_builtin_call_name(std::string_view callee) {
          callee == "__builtin_riscv_workitem_id_x" || callee == "__builtin_riscv_workitem_id_y" || callee == "__builtin_riscv_workitem_id_z" ||
          callee == "__builtin_riscv_workgroup_id_x" || callee == "__builtin_riscv_workgroup_id_y" || callee == "__builtin_riscv_workgroup_id_z" ||
          callee == "__builtin_riscv_global_id_x" || callee == "__builtin_riscv_global_id_y" || callee == "__builtin_riscv_global_id_z" ||
-         callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf";
+         callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf" ||
+         // PoCL trig example (float4).
+         callee == "_Z3cosDv4_f" || callee == "_Z3sinDv4_f" || callee == "_Z3tanDv4_f" || callee == "_Z4sqrtDv4_f" || callee == "_Z4fabsDv4_f" ||
+         // OpenCL integer helpers.
+         callee == "_Z5mad24iii";
 }
 
 } // namespace
@@ -104,8 +108,8 @@ struct EmitCtx final {
   // %rd1: heap_base (global)
   // %rd2: shmem_base (shared)
   // %rd3: wctx_ptr (shared)
-  // %rd4: lds_ptr (shared)
-  // %rd5: pds_base_devptr (global)
+  // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
+  // %rd5: per-thread private base (local) for `vlw.v`/`vsw.v`
 
   uint32_t x_off(int idx) const { return static_cast<uint32_t>(idx) * 4u; }
 
@@ -394,6 +398,70 @@ struct EmitCtx final {
     (void)pc_for_err;
   }
 
+  void emit_builtin_unary_f32_inplace(std::string_view opname, const std::string &dst_v, uint32_t pc_for_err) {
+    emit_line("mov.b32 " + f(0) + ", " + dst_v + ";");
+    if (opname == "sqrt") {
+      emit_line("sqrt.rn.f32 " + f(1) + ", " + f(0) + ";");
+    } else if (opname == "cos") {
+      emit_line("cos.approx.f32 " + f(1) + ", " + f(0) + ";");
+    } else if (opname == "sin") {
+      emit_line("sin.approx.f32 " + f(1) + ", " + f(0) + ";");
+    } else {
+      throw EmitError("unsupported.call", kernel_name, pc_for_err, "unary_op=" + std::string(opname));
+    }
+    emit_line("mov.b32 " + dst_v + ", " + f(1) + ";");
+  }
+
+  void emit_builtin_vec4_cos(uint32_t pc_for_err) {
+    emit_line("// builtin: cos(float4) in v0..v3");
+    for (int i = 0; i < 4; ++i) emit_builtin_unary_f32_inplace("cos", v(i), pc_for_err);
+  }
+
+  void emit_builtin_vec4_sin(uint32_t pc_for_err) {
+    emit_line("// builtin: sin(float4) in v0..v3");
+    for (int i = 0; i < 4; ++i) emit_builtin_unary_f32_inplace("sin", v(i), pc_for_err);
+  }
+
+  void emit_builtin_vec4_sqrt(uint32_t pc_for_err) {
+    emit_line("// builtin: sqrt(float4) in v0..v3");
+    for (int i = 0; i < 4; ++i) emit_builtin_unary_f32_inplace("sqrt", v(i), pc_for_err);
+  }
+
+  void emit_builtin_vec4_fabs(uint32_t pc_for_err) {
+    emit_line("// builtin: fabs(float4) in v0..v3 (bitwise clear sign)");
+    for (int i = 0; i < 4; ++i) emit_line("and.b32 " + v(i) + ", " + v(i) + ", 0x7fffffff;");
+    (void)pc_for_err;
+  }
+
+  void emit_builtin_vec4_tan(uint32_t pc_for_err) {
+    emit_line("// builtin: tan(float4) in v0..v3 (approx via sin/cos)");
+    for (int i = 0; i < 4; ++i) {
+      emit_line("mov.b32 " + f(0) + ", " + v(i) + ";");
+      emit_line("sin.approx.f32 " + f(1) + ", " + f(0) + ";");
+      emit_line("cos.approx.f32 " + f(2) + ", " + f(0) + ";");
+      emit_line("div.rn.f32 " + f(3) + ", " + f(1) + ", " + f(2) + ";");
+      emit_line("mov.b32 " + v(i) + ", " + f(3) + ";");
+    }
+    (void)pc_for_err;
+  }
+
+  void emit_builtin_mad24iii(uint32_t pc_for_err) {
+    // OpenCL: int mad24(int a, int b, int c) => mul24(a,b) + c (signed 24-bit multiply).
+    // Calling convention (ventus clc): a=v0, b=v1, c=v2, ret=v0.
+    emit_line("// builtin: mad24(v0,v1,v2) -> v0 (signed 24-bit)");
+    emit_line("mov.b32 " + r(14) + ", " + v(0) + ";");
+    emit_line("mov.b32 " + r(15) + ", " + v(1) + ";");
+    emit_line("mov.b32 " + r(16) + ", " + v(2) + ";");
+    // sign-extend low 24 bits: (x << 8) >> 8
+    emit_line("shl.b32 " + r(14) + ", " + r(14) + ", 8;");
+    emit_line("shr.s32 " + r(14) + ", " + r(14) + ", 8;");
+    emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 8;");
+    emit_line("shr.s32 " + r(15) + ", " + r(15) + ", 8;");
+    emit_line("mad.lo.s32 " + r(14) + ", " + r(14) + ", " + r(15) + ", " + r(16) + ";");
+    emit_line("mov.b32 " + v(0) + ", " + r(14) + ";");
+    (void)pc_for_err;
+  }
+
   void emit_one_inst(const sbt::cfg::BundleInst &bi) {
     const sbt::DecodedInst &di = bi.inst;
     const uint32_t pc = di.pc;
@@ -438,6 +506,18 @@ struct EmitCtx final {
         emit_builtin_get_id("group", pc);
       } else if (callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf") {
         emit_builtin_sqrtf(pc);
+      } else if (callee == "_Z3cosDv4_f") {
+        emit_builtin_vec4_cos(pc);
+      } else if (callee == "_Z3sinDv4_f") {
+        emit_builtin_vec4_sin(pc);
+      } else if (callee == "_Z3tanDv4_f") {
+        emit_builtin_vec4_tan(pc);
+      } else if (callee == "_Z4sqrtDv4_f") {
+        emit_builtin_vec4_sqrt(pc);
+      } else if (callee == "_Z4fabsDv4_f") {
+        emit_builtin_vec4_fabs(pc);
+      } else if (callee == "_Z5mad24iii") {
+        emit_builtin_mad24iii(pc);
       } else if (callee == "__builtin_riscv_workitem_id_x") {
         emit_line("mov.u32 " + v(0) + ", %tid.x;");
       } else if (callee == "__builtin_riscv_workitem_id_y") {
@@ -556,12 +636,9 @@ struct EmitCtx final {
       } else if (csr == 0x801u) { // CSR_NUMW
         emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + r(12) + ";"); // warps_per_block
       } else if (csr == 0x806u) { // CSR_LDS
-        // CSR_LDS should point to the base of work-group shared memory, which is placed after the per-warp scalar stack.
-        // Numeric shared vaddr layout (prototype):
-        //   [shared_base, shared_base + warps_per_block*1024) : per-warp scalar stack
-        //   [shared_base + warps_per_block*1024, ...)         : kernel LDS region (local args, scratch, etc)
-        emit_line("@" + p(0) + " shl.b32 " + r(14) + ", " + r(12) + ", 10;"); // warps_per_block * 1024
-        emit_line("@" + p(0) + " add.u32 " + r(14) + ", " + r(14) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+        // CSR_LDS: base numeric address of work-group local memory (also xgpr spill base).
+        // In this backend, numeric shared addresses start at `shared_base_vaddr`.
+        emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
       } else if (csr == 0x808u) { // CSR_GDX
         emit_line("@" + p(0) + " mov.u32 " + r(14) + ", %ctaid.x;");
       } else if (csr == 0x809u) { // CSR_GDY
@@ -708,43 +785,24 @@ struct EmitCtx final {
     }
 
     // Vector loads/stores.
-    // NOTE: `vlw.v` / `vsw.v` are Ventus GPU-private-memory indexed ops backed by CSR_PDS (Spike: insns/vlw_v.h, vsw_v.h).
-    // They do NOT use the normal numeric vaddr space (0x7000/0x8000/0x9000 ranges).
+    // NOTE: `vlw.v` / `vsw.v` are Ventus GPU-private-memory indexed ops (Spike: insns/vlw_v.h, vsw_v.h).
+    // In this backend, they are emulated using PTX local memory (see prologue).
     if (di.name == "vlw_v" && di.imm_kind == sbt::ImmKind::I12) {
-      // baseAddr = vs1 + simm11
+      // baseAddr = vs1 + simm11 (byte offset in per-thread private memory)
       emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
-      // off0 = (baseAddr&~3) * (NUMW*NUMT) + (baseAddr&3)
-      emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
-      emit_line("and.b32 " + r(16) + ", " + r(14) + ", 3;");
-      emit_line("shl.b32 " + r(17) + ", " + r(12) + ", 5;"); // warps_per_block * 32
-      emit_line("mul.lo.u32 " + r(18) + ", " + r(15) + ", " + r(17) + ";");
-      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(16) + ";");
-      // off1 = (TID + laneid) << 2, where TID is warp_id*32 (base thread id within block)
-      emit_line("shl.b32 " + r(19) + ", " + r(10) + ", 5;");
-      emit_line("add.u32 " + r(19) + ", " + r(19) + ", " + r(0) + ";");
-      emit_line("shl.b32 " + r(19) + ", " + r(19) + ", 2;");
-      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(19) + ";");
-      // addr = pds_base_devptr + off
-      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(18) + ";");
+      emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;"); // align down to 4
+      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(15) + ";");
       emit_line("add.u64 " + rd(17) + ", " + rd(5) + ", " + rd(16) + ";");
-      emit_line("ld.global.u32 " + r(20) + ", [" + rd(17) + "];");
+      emit_line("ld.local.u32 " + r(20) + ", [" + rd(17) + "];");
       emit_line("mov.u32 " + v(di.rd) + ", " + r(20) + ";");
       return;
     }
     if (di.name == "vsw_v" && di.imm_kind == sbt::ImmKind::S12) {
       emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
       emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
-      emit_line("and.b32 " + r(16) + ", " + r(14) + ", 3;");
-      emit_line("shl.b32 " + r(17) + ", " + r(12) + ", 5;");
-      emit_line("mul.lo.u32 " + r(18) + ", " + r(15) + ", " + r(17) + ";");
-      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(16) + ";");
-      emit_line("shl.b32 " + r(19) + ", " + r(10) + ", 5;");
-      emit_line("add.u32 " + r(19) + ", " + r(19) + ", " + r(0) + ";");
-      emit_line("shl.b32 " + r(19) + ", " + r(19) + ", 2;");
-      emit_line("add.u32 " + r(18) + ", " + r(18) + ", " + r(19) + ";");
-      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(18) + ";");
+      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(15) + ";");
       emit_line("add.u64 " + rd(17) + ", " + rd(5) + ", " + rd(16) + ";");
-      emit_line("st.global.u32 [" + rd(17) + "], " + v(di.rs2) + ";");
+      emit_line("st.local.u32 [" + rd(17) + "], " + v(di.rs2) + ";");
       return;
     }
 
@@ -795,6 +853,10 @@ struct EmitCtx final {
       emit_line("add.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
       return;
     }
+    if (di.name == "vadd12_vi" && di.imm_kind == sbt::ImmKind::I12) {
+      emit_line("add.s32 " + v(di.rd) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
     if (di.name == "vsub_vv") {
       emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
       return;
@@ -805,6 +867,10 @@ struct EmitCtx final {
     }
     if (di.name == "vand_vv") {
       emit_line("and.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vand_vi") {
+      emit_line("and.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + hex_u32(static_cast<uint32_t>(di.imm)) + ";");
       return;
     }
     if (di.name == "vor_vv") {
@@ -832,6 +898,12 @@ struct EmitCtx final {
       emit_line("mul.lo.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
       return;
     }
+    if (di.name == "vmulh_vx") {
+      // Spike semantics (vmulh vd,vs2,rs1): high half of signed multiplication.
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mul.hi.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
     if (di.name == "vdivu_vx") {
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_line("div.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
@@ -856,13 +928,14 @@ struct EmitCtx final {
     if (di.name == "vmslt_vx") {
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_line("setp.lt.s32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
-      emit_line("selp.u32 " + v(di.rd) + ", 0xffffffff, 0, " + p(1) + ";");
+      // Spike semantics produce 0/1 (not 0xffffffff/0). Many kernels use `vxor.vi 1` to invert.
+      emit_line("selp.u32 " + v(di.rd) + ", 1, 0, " + p(1) + ";");
       return;
     }
     if (di.name == "vmsltu_vx") {
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_line("setp.lt.u32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
-      emit_line("selp.u32 " + v(di.rd) + ", 0xffffffff, 0, " + p(1) + ";");
+      emit_line("selp.u32 " + v(di.rd) + ", 1, 0, " + p(1) + ";");
       return;
     }
 
@@ -879,10 +952,11 @@ struct EmitCtx final {
     if (di.name == "vfmul_vv") { vf_binop("mul.rn.f32"); return; }
     if (di.name == "vfdiv_vv") { vf_binop("div.rn.f32"); return; }
     if (di.name == "vfmadd_vv") {
-      emit_line("mov.b32 " + f(0) + ", " + v(di.rd) + ";");  // acc
-      emit_line("mov.b32 " + f(1) + ", " + v(di.rs2) + ";");
-      emit_line("mov.b32 " + f(2) + ", " + v(di.rs1) + ";");
-      emit_line("fma.rn.f32 " + f(3) + ", " + f(1) + ", " + f(2) + ", " + f(0) + ";");
+      // Spike semantics: vfmadd.vv vd,vs1,vs2 => vd = (vd * vs1) + vs2
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rd) + ";");  // old vd
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs1) + ";"); // vs1
+      emit_line("mov.b32 " + f(2) + ", " + v(di.rs2) + ";"); // vs2
+      emit_line("fma.rn.f32 " + f(3) + ", " + f(0) + ", " + f(1) + ", " + f(2) + ";");
       emit_line("mov.b32 " + v(di.rd) + ", " + f(3) + ";");
       return;
     }
@@ -904,7 +978,7 @@ struct EmitCtx final {
       emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
       emit_line("mov.b32 " + f(1) + ", " + v(di.rs1) + ";");
       emit_line("setp.lt.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
-      emit_line("selp.u32 " + v(di.rd) + ", 0xffffffff, 0, " + p(1) + ";");
+      emit_line("selp.u32 " + v(di.rd) + ", 1, 0, " + p(1) + ";");
       return;
     }
 
@@ -928,6 +1002,16 @@ struct EmitCtx final {
     emit_line(".reg .f32 %f<16>;");
     emit_line(".reg .u8 %ub<4>;");
     emit_line(".reg .b32 %v<256>;");
+
+    // Per-thread private memory backing for `vlw.v` / `vsw.v`.
+    //
+    // PoCL's 64B CSR_KNL metadata buffer does not include CSR_PDS (private memory base),
+    // so we cannot correctly map these ops to the driver's global-memory PDS allocation
+    // without changing the driver ABI. For bring-up, emulate per-thread private memory
+    // using PTX local memory (one array per CUDA thread).
+    emit_line(".local .align 4 .b8 __sbt_pds[16384];");
+    // `mov` yields a local-space address for local symbols; use it directly with `ld/st.local`.
+    emit_line("mov.u64 " + rd(5) + ", __sbt_pds;");
 
     // Load params and compute global/shared base pointers.
     emit_line("ld.param.u64 " + rd(10) + ", [elf_base];");
@@ -978,10 +1062,60 @@ struct EmitCtx final {
     // Leader + init ABI-critical scalar regs (x2 stack, x10 argbase).
     emit_block_preamble();
 
+    // Match `_start` ABI: tp (x4) starts at 0 and is used as a spill-stack cursor.
+    emit_line("@" + p(0) + " mov.u32 " + r(15) + ", 0;");
+    emit_st_x_u32_leader(/*x4=*/4, r(15), /*pc_for_err=*/cfg.start);
+
     // x2 = shared_base + warp_id * stack_stride (default: 1024 bytes => <<10)
     emit_line("@" + p(0) + " shl.b32 " + r(15) + ", " + r(10) + ", 10;");
     emit_line("@" + p(0) + " add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
     emit_st_x_u32_leader(/*x2=*/2, r(15), /*pc_for_err=*/cfg.start);
+
+    auto detect_s0_bump_bytes = [&]() -> uint32_t {
+      // Many PoCL kernels with automatic `__local` arrays start with a prologue that bumps s0 (x8) by a constant:
+      //   lui  t0, <hi>
+      //   addi t0, t0, <lo>
+      //   add  s0, s0, t0
+      // and then use s0 as the base for LDS addressing (positive offsets).
+      //
+      // In the real Ventus runtime, CSR_LDS is chosen such that after this bump, s0 points to the LDS base.
+      // In this PTX backend we emulate that by initializing x8 to (LDS_base - bump) when this pattern is found.
+      const size_t n = std::min<size_t>(cfg.insts.size(), 12);
+      for (size_t i = 0; i + 2 < n; ++i) {
+        const auto &a = cfg.insts[i + 0].inst;
+        const auto &b = cfg.insts[i + 1].inst;
+        const auto &c = cfg.insts[i + 2].inst;
+        if (a.name != "lui" || a.rd_class != sbt::RegClass::X || a.imm_kind != sbt::ImmKind::U20) continue;
+        const int t = a.rd;
+        if (b.name != "addi" || b.rd_class != sbt::RegClass::X || b.rs1_class != sbt::RegClass::X) continue;
+        if (b.rd != t || b.rs1 != t || b.imm_kind != sbt::ImmKind::I12) continue;
+        if (c.name != "add" || c.rd_class != sbt::RegClass::X || c.rs1_class != sbt::RegClass::X || c.rs2_class != sbt::RegClass::X) continue;
+        if (c.rd != 8 || c.rs1 != 8 || c.rs2 != t) continue;
+        const int64_t bump = int64_t(a.imm) + int64_t(b.imm);
+        if (bump <= 0 || bump > (1 << 20)) continue;
+        return static_cast<uint32_t>(bump);
+      }
+      // Small frame case: addi s0, s0, imm
+      for (size_t i = 0; i < n; ++i) {
+        const auto &d = cfg.insts[i].inst;
+        if (d.name != "addi" || d.rd_class != sbt::RegClass::X || d.rs1_class != sbt::RegClass::X) continue;
+        if (d.rd != 8 || d.rs1 != 8 || d.imm_kind != sbt::ImmKind::I12) continue;
+        if (d.imm <= 0) continue;
+        return static_cast<uint32_t>(d.imm);
+      }
+      return 0;
+    };
+
+    // Match `_start` ABI: s0 (x8) points to the base of the kernel LDS region:
+    //   s0 = CSR_LDS + CSR_NUMW*1024
+    // In this backend `shared_base_vaddr` models the CSR_LDS numeric base, and `warps_per_block` models CSR_NUMW.
+    emit_line("@" + p(0) + " shl.b32 " + r(15) + ", " + r(12) + ", 10;");
+    emit_line("@" + p(0) + " add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+    const uint32_t s0_bump = detect_s0_bump_bytes();
+    if (s0_bump != 0) {
+      emit_line("@" + p(0) + " add.s32 " + r(15) + ", " + r(15) + ", -" + std::to_string(s0_bump) + ";");
+    }
+    emit_st_x_u32_leader(/*x8=*/8, r(15), /*pc_for_err=*/cfg.start);
 
     // x10 (a0) is the first argument register. PoCL Ventus kernels expect:
     //   a0 = *(u32*)(CSR_KNL + 4)  (arg buffer base)
@@ -990,21 +1124,6 @@ struct EmitCtx final {
     emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(16) + ", 0;"); // keep in u32 reg
     emit_addr_map_and_ld_u32_leader(r(17), r(16), /*pc_for_err=*/cfg.start);
     emit_st_x_u32_leader(/*x10=*/10, r(17), /*pc_for_err=*/cfg.start);
-
-    // Cache PDS base (CSR_PDS backing) as a device pointer in %rd5.
-    // We read a u32 at (knl_vaddr + 56) as "pds_base_vaddr" (Ventus numeric address).
-    // If absent (0), fall back to heap_base_vaddr to avoid underflow/crashes; correctness requires the driver to fill it.
-    emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(30) + ", 56;");
-    emit_line("@" + p(0) + " add.u32 " + r(16) + ", " + r(16) + ", 0;");
-    emit_addr_map_and_ld_u32_leader(r(17), r(16), /*pc_for_err=*/cfg.start);
-    emit_line("@" + p(0) + " st.shared.u32 [" + rd(3) + "+128], " + r(17) + ";");
-    emit_warp_sync();
-    emit_line("ld.shared.u32 " + r(31) + ", [" + rd(3) + "+128];");
-    emit_line("setp.lt.u32 " + p(8) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("@" + p(8) + " mov.u32 " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("add.u32 " + r(31) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(31) + ";");
-    emit_line("add.u64 " + rd(5) + ", " + rd(1) + ", " + rd(16) + ";");
 
     emit_warp_sync();
 

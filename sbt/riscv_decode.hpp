@@ -27,12 +27,14 @@ enum class ImmKind : uint8_t {
 
 struct RegextPrefix final {
   bool valid = false;
+  bool validi = false; // regexti: extends rs2/rd and immediate
   uint32_t pc = 0;
   uint16_t imm12 = 0;
   uint8_t ext_rd = 0;
   uint8_t ext_rs1 = 0;
   uint8_t ext_rs2 = 0;
   uint8_t ext_rs3 = 0;
+  uint8_t ext_imm = 0; // 6-bit field (meaningful when validi=true)
 };
 
 struct DecodedInst final {
@@ -76,4 +78,3 @@ const char *to_string(RegClass c);
 const char *to_string(ImmKind k);
 
 } // namespace sbt
-

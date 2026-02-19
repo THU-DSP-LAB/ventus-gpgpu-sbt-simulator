@@ -74,7 +74,7 @@
 - CFG 构建：`sbt/cfg.cpp`（切基本块、建边）
 - CFG verify：`sbt/cfg_verify.cpp`
   - 解析 `setrpc` 的 join PC（支持 `auipc + setrpc` 形态）
-  - 对 `vbranch` 做结构化校验（postdom/side-exit/multi-entry 等）
+  - 对 `vbranch` 做结构化校验（postdom/side-exit 等；multi-entry 目前仅记录不作为 fail-fast 条件）
   - `barrier` 收敛性检查（保守：不能落在不可证明收敛的分支区域）
   - 非标准 `jalr`（非 ret）记录为 unsupported（fail-fast）
 - PTX emitter：`sbt/ptx_emit.cpp`
@@ -117,7 +117,7 @@
    - 按 terminator/target 切 leader，构建基本块与显式边
 2) structural verify：
    - `setrpc`：静态解析 join PC（当前实现为回看近处 `auipc` 写同一寄存器）
-   - `vbranch`：要求 join PC 对应 `join` 且成为基本块入口；检查 postdom/side-exit/multi-entry
+   - `vbranch`：要求 join PC 对应 `join` 且成为基本块入口；检查 postdom/side-exit；multi-entry 目前仅记录不作为 fail-fast 条件
    - `barrier`：保守检查，要求 barrier block 不落在任何“不可证明收敛”的 vbranch region 内
    - `jalr`：仅允许标准 ret 形态（否则记录为 unsupported 并拒绝）
 
@@ -159,7 +159,11 @@ PTX 采用“active-lane leader”执行标量副作用，并将标量寄存器�
 
 #### 4.3.5 私有内存索引访存：`vlw.v/vsw.v`
 
-当前 emitter 对 `vlw.v/vsw.v` 按 Spike（CSR_PDS/NUMW/NUMT/TID）语义实现“GPU-private-memory indexed ops”，这不同于普通 `vlw12.v/vsw12.v` 的数值地址空间访存。
+`vlw.v/vsw.v` 是 Ventus 的“GPU-private-memory indexed ops”（Spike 语义依赖 `CSR_PDS/CSR_NUMW/CSR_NUMT/CSR_TID`），不同于普通 `vlw12.v/vsw12.v` 的数值地址空间访存。
+
+**更新（2026-02-19）：**当前 PoCL/driver 端到端路径只传入 64B `CSR_KNL` metadata buffer（见 `KNL_MAX_METADATA_SIZE=64`），其中不包含 `CSR_PDS`/`pdsBaseAddr`，因此 SBT PTX 侧无法从 `knl_vaddr` 推导出正确的 PDS base。
+
+现阶段为避免“把 private spill 写进 heap/覆盖输入 buffer”（已在 Rodinia `nn` 中复现），emitter 将 `vlw.v/vsw.v` 临时改为使用 **PTX local memory**（per-thread）模拟 private memory backing（行为更接近“真正的 per-thread private”，但与 Spike 的 global-backing PDS 分配方式并不完全等价，且容量有固定上限）。
 
 ---
 
@@ -190,26 +194,41 @@ PTX 采用“active-lane leader”执行标量副作用，并将标量寄存器�
 
 本次实测统一使用：
 - `VENTUS_BACKEND=ptx`
-- `VENTUS_PTX_SM=75`
-- `GPU_SBT_PTX=$PWD/build/sbt_ptx`
-- `GPU_SBT_ENCODING_H=$PWD/ventus-env/spike/riscv/encoding.h`
-- `GPU_SBT_PTX_NO_COMMENTS=1`
-- `GPU_SBT_PTX_CACHE_DIR=/tmp/ventus_sbt_ptx_<bench>_<epoch>`（每次运行一个新目录，避免缓存导致“改了 emitter 但 PTX 未刷新”）
+- `VENTUS_PTX_SM=75`（可选；不设置时 driver 会按设备 CC 推导并 clamp 到 `sm_75`）
+- 其余 `GPU_SBT_*` 环境变量均为可选（driver 内部会自动定位本仓库路径）：
+  - `GPU_SBT_PTX`：默认使用 `${gpusim_root}/build/sbt_ptx`（若使用 `build-gpu/`，可显式指定为 `${gpusim_root}/build-gpu/sbt_ptx`）
+  - `GPU_SBT_ENCODING_H`：默认使用 `${gpusim_root}/ventus-env/spike/riscv/encoding.h`
+  - `GPU_SBT_PTX_CACHE_DIR`：默认 `/tmp/ventus_sbt_ptx`（driver 每次 JIT 都会重新调用 `sbt_ptx` 覆盖生成的 `.ptx`，因此无需为“刷新”单独换目录）
+  - `GPU_SBT_PTX_NO_COMMENTS=1`：可选（用于减少生成 PTX 体积/日志噪音）
 
 运行结果（均来自 `ventus-env/rodinia/opencl/*/run` 或 `ventus-env/pocl/examples/*`；日志保存在 `/tmp/gpusim_*_run_*.log`）：
 
-| Benchmark | 结果 | 现象/错误摘要 | rc | 日志 |
-|---|---|---|---:|---|
-| PoCL `vecadd` | 通过 | 输出 `OK` | 0 | `/tmp/gpusim_vecadd_run_20260219_022309.log` |
-| Rodinia `bfs` | 通过 | 输出 `--cambine:passed:-)` | 0 | `/tmp/gpusim_bfs_run_20260219_021636.log` |
-| Rodinia `gaussian` | 失败 | CPU/OpenCL mismatch（出现 `inf/-inf/-nan`；index 14 mismatch） | 255 | `/tmp/gpusim_gaussian_run_20260219_021644.log` |
-| Rodinia `nn` | 失败 | `Distance mismatch at index 0` | 1 | `/tmp/gpusim_nn_run_20260219_021700.log` |
-| Rodinia `kmeans` | 失败 | centroid mismatch（cluster 0, feature 0） | 1 | `/tmp/gpusim_kmeans_run_20260219_021701.log` |
-| Rodinia `backprop` | 失败 | `CUDA_ERROR_ILLEGAL_ADDRESS`，随后 PoCL assert abort | 134 | `/tmp/gpusim_backprop_run_20260219_022142.log` |
-| Rodinia `b+tree` | 失败 | `Validation failed!` | 1 | `/tmp/gpusim_btree_run_20260219_022143.log` |
+| Benchmark | 规模/参数（见对应 `run` 脚本） | 结果 | 现象/错误摘要 | rc | 日志 |
+|---|---|---|---|---:|---|
+| PoCL `vecadd` | `vecadd 128 64` | 通过 | 输出 `OK` | 0 | `/tmp/gpusim_vecadd_run_20260219_0317.log` |
+| PoCL `trig` | 固定 `N=8`（源码 `trig.c`），无参数 | 通过 | 输出 `OK` | 0 | `/tmp/gpusim_pocl_trig_run_20260219_034138.log` |
+| PoCL `example0` | 无参数（kernel=`integer_mad`） | 通过 | 输出 `PASS` | 0 | `/tmp/gpusim_pocl_example0_run_20260219_034211.log` |
+| PoCL `example1` | 无参数（kernel=`dot_product`） | 通过 | 输出 `OK` | 0 | `/tmp/gpusim_pocl_example1_run_20260219_034212.log` |
+| PoCL `example2a` | 固定 `global=[2*256,4096/32]=[512,128]`，`local=[64,1]`（源码 `example2a.c`） | 通过 | 输出 `OK` | 0 | `/tmp/gpusim_pocl_example2a_run_20260219_041241.log` |
+| Rodinia `bfs` | `${DATA_DIR}/bfs/graph1k.txt` | 通过 | 输出 `--cambine:passed:-)` | 0 | `/tmp/gpusim_bfs_run_20260219_0317.log` |
+| Rodinia `gaussian` | `-f ../../data/gaussian/matrix16.txt -v`（16×16） | 通过 | 输出 `CPU & OpenCL results match, OK!` | 0 | `/tmp/gpusim_gaussian_run_20260219_0301.log` |
+| Rodinia `nn` | `list1k.txt -r 20 -lat 13 -lng 27 --ref nvidia-result-1k-lat13-lng27` | 通过 | 输出 `Testcase results match ... OK` | 0 | `/tmp/gpusim_nn_run_20260219_0317.log` |
+| Rodinia `kmeans` | `-i ../../data/kmeans/512_34f.txt -g nvidia_result_512_34f_k5` | 通过 | 输出 `DUT result matches ... OK` | 0 | `/tmp/gpusim_kmeans_run_20260219_0320.log` |
+| Rodinia `backprop` | `-n 1024 --ref nvidia-result-n1024` | 通过 | 输出 `All weights match ... OK` | 0 | `/tmp/gpusim_backprop_run_20260219_0314.log` |
+| Rodinia `b+tree` | `mil.txt + command_512.txt --ref output_512.nvidia.txt` | 通过 | 输出 `Validation succeeded!` | 0 | `/tmp/gpusim_btree_run_20260219_0325.log` |
 
 备注：
 - 多数用例会出现 `vt_buf_free non-LIFO (ignored)` 警告；本次实测中其不影响用例是否通过，但应视为 driver allocator 行为与 PoCL 释放顺序不匹配的信号。
+- `Rodinia nn/backprop` 的修复点（均在本仓库 `sbt/` 内，不涉及修改 `ventus-env/`）：
+  - 修正 `vfmadd.vv` 的 PTX lowering：按 Spike 语义实现 `vd = (vd * vs1) + vs2`。
+  - 修正 `vlw.v/vsw.v`：在缺少 `CSR_PDS`/PDS base 的情况下，改为用 PTX local memory 模拟 per-thread private backing，避免错误写入 heap 污染输入数据。
+  - 补齐 `_start` ABI 初始化：补充 `s0(x8)=CSR_LDS+CSR_NUMW*1024`，并修正 `CSR_LDS` 返回值为 numeric shared base（否则 backprop 会 `CUDA_ERROR_ILLEGAL_ADDRESS`）。
+- `Rodinia kmeans/b+tree` 的修复点：
+  - 修正比较类指令（如 `vmslt{,u}`/`vmflt`）的结果表示为 **0/1**（而不是 `0xffffffff/0`），避免 `vxor.vi 1` 等布尔逻辑与后续等值比较失真。
+- `PoCL trig/example2a` 的新增覆盖点（均在本仓库 `sbt/` / `tools/` 内）：
+  - 新增指令覆盖：`vmulh.vx`、`vand.vi`、`vadd12.vi`，以及 `regexti` 前缀（扩展寄存器 + 扩展 5-bit immediate）。
+  - 新增 builtin call lowering：`_Z3{cos,sin,tan}Dv4_f`、`_Z4{fabs,sqrt}Dv4_f`（float4），以及 `_Z5mad24iii`（int）。
+  - 针对“kernel 入口处先 bump `s0(x8)` 再用 `s0` 做 LDS base（正偏移访问）”的模式，在 PTX prologue 中检测并初始化 `x8` 为 `CSR_LDS+CSR_NUMW*1024-bump`，避免 LDS 访问落在分配范围之外（`example2a` 的 `__local tile[]` 依赖此行为）。
 
 ---
 
@@ -267,6 +286,10 @@ PTX 采用“active-lane leader”执行标量副作用，并将标量寄存器�
 ```bash
 cmake -S . -B build
 cmake --build build -j
+
+# 若 build/ 目录的 CMakeCache 来源路径不一致（例如曾在别的源码目录生成过），可使用新目录：
+cmake -S . -B build-gpu
+cmake --build build-gpu -j
 ```
 
 解码/对照：
@@ -296,13 +319,14 @@ ARCH=75 bash tools/rodinia_ptx_smoke.sh
 ```bash
 source ventus-env/env.sh
 export VENTUS_BACKEND=ptx
-export VENTUS_PTX_SM=75
-export GPU_SBT_PTX="$PWD/build/sbt_ptx"
-export GPU_SBT_ENCODING_H="$PWD/ventus-env/spike/riscv/encoding.h"
-export GPU_SBT_PTX_NO_COMMENTS=1
 
-# 可选：强制每次运行使用新 cache_dir，避免复用旧 PTX
-export GPU_SBT_PTX_CACHE_DIR="/tmp/ventus_sbt_ptx_manual_$(date +%s)"
+# 可选：不设置时默认 clamp 到 sm_75
+export VENTUS_PTX_SM=75
+
+# 可选：若不设置，driver 会默认用 $PWD/build/sbt_ptx 与 $PWD/ventus-env/spike/riscv/encoding.h
+# export GPU_SBT_PTX="$PWD/build-gpu/sbt_ptx"
+# export GPU_SBT_PTX_NO_COMMENTS=1
+# export GPU_SBT_PTX_CACHE_DIR="/tmp/ventus_sbt_ptx_manual_$(date +%s)"
 ```
 
 vecadd（最小端到端）：

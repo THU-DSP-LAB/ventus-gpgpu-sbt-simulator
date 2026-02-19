@@ -81,9 +81,9 @@ static std::vector<sbt::Pattern> build_patterns_from_encoding(const fs::path &en
       "regext",     "regexti",   "setrpc",     "join",      "endprg",    "barrier",
       "vbeq",       "vbne",      "vblt",       "vbge",      "vbltu",     "vbgeu",
       "vlw12_v",    "vsw12_v",   "vlbu12_v",   "vsb12_v",   "vlw_v",     "vsw_v",
-      "vsub12_vi",  "vid_v",     "vmv_v_x",    "vsetvli",   "vadd_vv",   "vadd_vx",
-      "vadd_vi",    "vsub_vv",   "vand_vv",    "vor_vv",    "vxor_vi",   "vsll_vi",
-      "vsrl_vi",    "vsra_vi",   "vmul_vx",    "vdivu_vx",  "vremu_vx",  "vmadd_vv",
+      "vadd12_vi",  "vsub12_vi", "vid_v",      "vmv_v_x",   "vsetvli",   "vadd_vv",   "vadd_vx",
+      "vadd_vi",    "vsub_vv",   "vand_vv",    "vand_vi",   "vor_vv",    "vxor_vi",   "vsll_vi",
+      "vsrl_vi",    "vsra_vi",   "vmul_vx",    "vmulh_vx",  "vdivu_vx",  "vremu_vx",  "vmadd_vv",
       "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vfadd_vv",  "vfsub_vv",
       "vfmul_vv",   "vfdiv_vv",  "vfmadd_vv",  "vfsqrt_v",  "vfsgnjn_vv",
   };
@@ -208,6 +208,15 @@ static std::string format_operands(const sbt::DecodedInst &di) {
       is_vector_store(di.name)) {
     add(fmt_reg(di.rs2_class, di.rs2));
     add(std::to_string(di.imm) + "(" + fmt_reg(di.rs1_class, di.rs1) + ")");
+    return out;
+  }
+
+  // Some ops use a different operand order than "vd, vs2, vs1".
+  // Spike/LLVM: vfmadd.vv vd, vs1, vs2
+  if (di.name == "vfmadd_vv") {
+    add(fmt_reg(di.rd_class, di.rd));
+    add(fmt_reg(di.rs1_class, di.rs1));
+    add(fmt_reg(di.rs2_class, di.rs2));
     return out;
   }
 

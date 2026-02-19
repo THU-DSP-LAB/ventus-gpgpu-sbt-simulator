@@ -407,6 +407,14 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
     if (out.rs1_class != RegClass::None && out.rs1 >= 0) out.rs1 = ext_apply(out.rs1, px.ext_rs1);
     if (out.rs2_class != RegClass::None && out.rs2 >= 0) out.rs2 = ext_apply(out.rs2, px.ext_rs2);
     if (out.rs3_class != RegClass::None && out.rs3 >= 0) out.rs3 = ext_apply(out.rs3, px.ext_rs3);
+
+    // regexti extends 5-bit immediates (primarily vector *_vi forms).
+    if (px.validi && (out.imm_kind == ImmKind::UImm5 || out.imm_kind == ImmKind::SImm5)) {
+      const int32_t low5 = int32_t((w >> 15) & 0x1Fu);
+      const int32_t ext6 = sext(px.ext_imm & 0x3Fu, 6);
+      const int32_t imm11 = (ext6 << 5) + low5;
+      out.imm = imm11;
+    }
   }
 
   return out;
@@ -442,16 +450,29 @@ std::vector<DecodedInst> decode_text(const std::vector<uint8_t> &text, uint32_t 
         if (px.valid) throw std::runtime_error("nested regext prefix at pc=0x" + std::to_string(pc));
         const uint16_t imm12 = static_cast<uint16_t>((w >> 20) & 0xFFFu);
         px.valid = true;
+        px.validi = false;
         px.pc = pc;
         px.imm12 = imm12;
         px.ext_rd = imm12 & 7u;
         px.ext_rs1 = (imm12 >> 3) & 7u;
         px.ext_rs2 = (imm12 >> 6) & 7u;
         px.ext_rs3 = (imm12 >> 9) & 7u;
+        px.ext_imm = 0;
         continue;
       }
       if (p && std::string_view(p->name) == "regexti") {
-        throw std::runtime_error("unsupported: regexti at pc=0x" + std::to_string(pc));
+        if (px.valid) throw std::runtime_error("nested regext prefix at pc=0x" + std::to_string(pc));
+        const uint16_t imm12 = static_cast<uint16_t>((w >> 20) & 0xFFFu);
+        px.valid = true;
+        px.validi = true;
+        px.pc = pc;
+        px.imm12 = imm12;
+        px.ext_rd = imm12 & 7u;
+        px.ext_rs1 = 0;
+        px.ext_rs2 = (imm12 >> 3) & 7u;
+        px.ext_rs3 = 0;
+        px.ext_imm = (imm12 >> 6) & 0x3Fu;
+        continue;
       }
     }
 

@@ -233,11 +233,11 @@ cd ventus-env/rodinia/opencl/bfs
   - `ventus-env/rodinia/opencl/bfs/./run` 输出 `--cambine:passed:-)`，且 `cpu_results` 与 `gpu_results` 匹配。
 
 ### 6.7 翻译缓存失效提示（实践）
-- `ptx_device` 的 PTX cache key 里包含 `elf|kernel|sm` 并用 ELF 的 mtime 判断是否需要重新翻译；
-  - **修改 `sbt_ptx`/emitter 代码后**，仅靠运行同一个 ELF 可能仍复用旧 PTX。
-- bring-up 时建议：
-  - 用 `GPU_SBT_PTX_CACHE_DIR=/tmp/ventus_sbt_ptx_<tag>` 指向一个新目录来强制重新生成；或
-  - 手动清理默认缓存目录 `/tmp/ventus_sbt_ptx`。
+- `ptx_device` 的 PTX 输出路径由 `elf|kernel|sm|elf_mtime` 决定，并且 **每次 launch 都会重新调用 `sbt_ptx` 覆盖生成的 `.ptx`**。
+  - 因此 **修改 `sbt_ptx`/emitter 代码后**，直接重跑同一个 ELF 也会生成新的 PTX（写到同一路径）。
+- 如果想保留不同版本 PTX 便于对比：
+  - 用 `GPU_SBT_PTX_CACHE_DIR=/tmp/ventus_sbt_ptx_<tag>` 指向一个新目录；或
+  - 手动把 `/tmp/ventus_sbt_ptx/*.ptx` 复制出来做 diff。
 
 ---
 
@@ -249,7 +249,7 @@ cd ventus-env/rodinia/opencl/bfs
 - 强制 SM：
   - `export VENTUS_PTX_SM=75`
 - 如需把 `sbt_ptx` 路径固定到本仓库：
-  - `export GPU_SBT_PTX=$PWD/build/sbt_ptx`
+  - 默认会尝试 `<repo>/build/sbt_ptx`；若你只构建了 `build-gpu/`，可显式 `export GPU_SBT_PTX=$PWD/build-gpu/sbt_ptx`
 - 快速检查“能否翻译 + ptxas 能否编译”（不代表数值正确）：
   - `bash tools/rodinia_ptx_smoke.sh`
 

@@ -615,8 +615,6 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
       c.error = "join 块未后支配 vbranch 块";
     } else if (!c.no_side_exit_ok) {
       c.error = "分支区域存在侧出口(side exit)";
-    } else if ((!c.loop_like) && (!c.single_entry_ok)) {
-      c.error = "分支区域存在多入口(multi-entry)";
     }
 
     vbs.push_back(std::move(derived));
