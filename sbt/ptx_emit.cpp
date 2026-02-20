@@ -65,11 +65,13 @@ static void require(bool ok, const EmitError &err) {
 }
 
 static bool is_builtin_call_name(std::string_view callee) {
-  return callee == "_Z13get_global_idj" || callee == "_Z12get_local_idj" || callee == "_Z12get_group_idj" ||
+  return callee == "_Z13get_global_idj" || callee == "_Z12get_local_idj" || callee == "_Z12get_group_idj" || callee == "_Z15get_global_sizej" ||
          callee == "__builtin_riscv_workitem_id_x" || callee == "__builtin_riscv_workitem_id_y" || callee == "__builtin_riscv_workitem_id_z" ||
          callee == "__builtin_riscv_workgroup_id_x" || callee == "__builtin_riscv_workgroup_id_y" || callee == "__builtin_riscv_workgroup_id_z" ||
          callee == "__builtin_riscv_global_id_x" || callee == "__builtin_riscv_global_id_y" || callee == "__builtin_riscv_global_id_z" ||
          callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf" ||
+         // OpenCL float helpers.
+         callee == "_Z4fmaxff" ||
          // PoCL trig example (float4).
          callee == "_Z3cosDv4_f" || callee == "_Z3sinDv4_f" || callee == "_Z3tanDv4_f" || callee == "_Z4sqrtDv4_f" || callee == "_Z4fabsDv4_f" ||
          // OpenCL integer helpers.
@@ -390,6 +392,61 @@ struct EmitCtx final {
     (void)pc_for_err;
   }
 
+  void emit_builtin_get_global_size(uint32_t pc_for_err) {
+    // Uses %v0 as "dim" input for get_global_sizej; writes result to %v0.
+    // Returns the launched global size, i.e. gridDim * blockDim per dimension.
+    emit_line("// builtin: global_size(dim=v0) -> v0");
+    emit_line("mov.u32 " + r(20) + ", " + v(0) + ";"); // dim
+
+    const std::string L_dim0 = new_label("gsize_dim0");
+    const std::string L_dim1 = new_label("gsize_dim1");
+    const std::string L_dim2 = new_label("gsize_dim2");
+    const std::string L_done = new_label("gsize_done");
+
+    emit_line("setp.eq.u32 " + p(5) + ", " + r(20) + ", 0;");
+    emit_line("@" + p(5) + " bra " + L_dim0 + ";");
+    emit_line("setp.eq.u32 " + p(6) + ", " + r(20) + ", 1;");
+    emit_line("@" + p(6) + " bra " + L_dim1 + ";");
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(20) + ", 2;");
+    emit_line("@" + p(7) + " bra " + L_dim2 + ";");
+
+    // For out-of-range dims, return 1 (matches typical OpenCL behavior for unused dims).
+    emit_line("mov.u32 " + v(0) + ", 1;");
+    emit_line("bra " + L_done + ";");
+
+    auto emit_dim = [&](const std::string &L, const char *ntid, const char *nctaid) {
+      emit_label(L);
+      emit_line("mov.u32 " + r(21) + ", " + std::string(ntid) + ";");
+      emit_line("mov.u32 " + r(22) + ", " + std::string(nctaid) + ";");
+      emit_line("mul.lo.u32 " + r(23) + ", " + r(21) + ", " + r(22) + ";");
+      emit_line("mov.u32 " + v(0) + ", " + r(23) + ";");
+      emit_line("bra " + L_done + ";");
+    };
+
+    emit_dim(L_dim0, "%ntid.x", "%nctaid.x");
+    emit_dim(L_dim1, "%ntid.y", "%nctaid.y");
+    emit_dim(L_dim2, "%ntid.z", "%nctaid.z");
+
+    emit_label(L_done);
+    (void)pc_for_err;
+  }
+
+  void emit_builtin_fmaxff(uint32_t pc_for_err) {
+    // OpenCL/C: float fmax(float a, float b)
+    // Calling convention (ventus clc): a=v0, b=v1, ret=v0 (per-thread scalar).
+    // Semantics: return the numeric maximum; if exactly one is NaN, return the other; if both NaN, return NaN.
+    emit_line("// builtin: fmax(v0,v1) -> v0 (f32 bits, NaN-safe)");
+    emit_line("mov.b32 " + f(0) + ", " + v(0) + ";");
+    emit_line("mov.b32 " + f(1) + ", " + v(1) + ";");
+    emit_line("setp.nan.f32 " + p(2) + ", " + f(0) + ", " + f(0) + ";");
+    emit_line("setp.nan.f32 " + p(3) + ", " + f(1) + ", " + f(1) + ";");
+    emit_line("max.f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
+    emit_line("selp.b32 " + f(2) + ", " + f(1) + ", " + f(2) + ", " + p(2) + ";"); // if a is NaN => b
+    emit_line("selp.b32 " + f(2) + ", " + f(0) + ", " + f(2) + ", " + p(3) + ";"); // if b is NaN => a
+    emit_line("mov.b32 " + v(0) + ", " + f(2) + ";");
+    (void)pc_for_err;
+  }
+
   void emit_builtin_sqrtf(uint32_t pc_for_err) {
     emit_line("// builtin: sqrtf(v0) -> v0 (f32 bits)");
     emit_line("mov.b32 " + f(0) + ", " + v(0) + ";");
@@ -504,6 +561,10 @@ struct EmitCtx final {
         emit_builtin_get_id("local", pc);
       } else if (callee == "_Z12get_group_idj") {
         emit_builtin_get_id("group", pc);
+      } else if (callee == "_Z15get_global_sizej") {
+        emit_builtin_get_global_size(pc);
+      } else if (callee == "_Z4fmaxff") {
+        emit_builtin_fmaxff(pc);
       } else if (callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf") {
         emit_builtin_sqrtf(pc);
       } else if (callee == "_Z3cosDv4_f") {
@@ -761,6 +822,15 @@ struct EmitCtx final {
       emit_ld_x_u32_leader(r(14), di.rs1, pc);
       emit_ld_x_u32_leader(r(15), di.rs2, pc);
       emit_line("@" + p(0) + " setp.lt.s32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
+      emit_line("@" + p(0) + " selp.u32 " + r(16) + ", 1, 0, " + p(1) + ";");
+      emit_st_x_u32_leader(di.rd, r(16), pc);
+      emit_warp_sync();
+      return;
+    }
+    if (di.name == "sltu") {
+      emit_ld_x_u32_leader(r(14), di.rs1, pc);
+      emit_ld_x_u32_leader(r(15), di.rs2, pc);
+      emit_line("@" + p(0) + " setp.lt.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
       emit_line("@" + p(0) + " selp.u32 " + r(16) + ", 1, 0, " + p(1) + ";");
       emit_st_x_u32_leader(di.rd, r(16), pc);
       emit_warp_sync();
