@@ -93,6 +93,22 @@ cd ventus-env/rodinia/opencl/bfs
 ./run
 ```
 
+回归耗时分析/加速（当前 PoCL Ventus 侧有一些较慢的 shell-out）：
+```bash
+# 输出每个 testcase 的 compile/run/total wall-time（结果写到 build/ventus-regression-profile/summary.json）
+source ventus-env/env.sh
+export VENTUS_BACKEND=ptx
+python3 tools/ventus_regression_profile.py --clean
+
+# 可选：绕过 pocl_ventus.cc 中对 assemble.sh 和 nm|grep 的调用（PTX 后端不依赖这些产物）
+# 注：已经在PoCL中修复此问题，可以忽略
+cmake -S . -B build
+cmake --build build -j
+export VENTUS_POCL_FASTPATH=1
+export LD_PRELOAD=$PWD/build/libventus_pocl_fastpath.so
+python3 tools/ventus_regression_profile.py --clean
+```
+
 设想feature：
 * “用户态”仿真：不支持多虚拟地址空间
 * device ABI兼容：不需要对现有软件栈做太多修改，直接兼容原有host-devie约定（指令语义 + kernel meta (CTA调度器接口+metadata buffer, 这些信息稍后大都保存在CSR中) + 内存视图）
