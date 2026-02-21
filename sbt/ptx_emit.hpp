@@ -24,6 +24,14 @@ struct Options final {
   // Bytes reserved for Ventus local/shared segment in dynamic shared memory.
   uint32_t lds_bytes = 32u * 1024u;
 
+  // Per-thread private backing store size (bytes) for `vlw.v`/`vsw.v` when CSR_PDS is unavailable.
+  // This becomes a PTX `.local` array and directly impacts stack frame size.
+  uint32_t pds_bytes = 4096u;
+
+  // Execute scalar (x-reg) instructions only on the active-lane leader and store x-reg state once per warp.
+  // This matches the "per-warp scalar regfile in shared" model and avoids redundant shared traffic.
+  bool scalar_exec_leader_only = false;
+
   bool include_comments = true;
 };
 
