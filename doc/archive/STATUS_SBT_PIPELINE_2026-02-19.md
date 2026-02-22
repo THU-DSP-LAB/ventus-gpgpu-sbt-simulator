@@ -1,5 +1,7 @@
 # gpusim 当前现状与 SBT（Ventus ELF → PTX）流程梳理（2026-02-19）
 
+> 更新提示：若你在排查“最新实现现状/回归是否通过”，请优先阅读 `doc/archive/STATUS_SBT_PIPELINE_2026-02-22.md`（包含 2026-02-22 的实现变更与回归结果）。
+
 本文将当前仓库的**实现现状**、**OpenSpec 分阶段方案**、以及**静态二进制翻译管线（ELF→decode→CFG verify→PTX）**按“代码真实入口”落盘，便于后续 bring-up 与排错。
 
 > 说明：
@@ -169,7 +171,7 @@ PTX 采用“active-lane leader”执行标量副作用，并将标量寄存器�
 
 ## 5. Stage 4（可选）：PoCL/driver 端到端（SBT PTX JIT）
 
-交接文档：`doc/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`
+交接文档：`doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`
 
 实现位置（注意：位于 `ventus-env/`，仓库约束是“不要修改 ventus-env 中的文件”，除非做工具链集成且需征得同意）：
 - `ventus-env/driver/driver/ptx_device/ventus.cpp`
@@ -228,7 +230,7 @@ PTX 采用“active-lane leader”执行标量副作用，并将标量寄存器�
 - `PoCL trig/example2a` 的新增覆盖点（均在本仓库 `sbt/` / `tools/` 内）：
   - 新增指令覆盖：`vmulh.vx`、`vand.vi`、`vadd12.vi`，以及 `regexti` 前缀（扩展寄存器 + 扩展 5-bit immediate）。
   - 新增 builtin call lowering：`_Z3{cos,sin,tan}Dv4_f`、`_Z4{fabs,sqrt}Dv4_f`（float4），以及 `_Z5mad24iii`（int）。
-  - 针对“kernel 入口处先 bump `s0(x8)` 再用 `s0` 做 LDS base（正偏移访问）”的模式，在 PTX prologue 中检测并初始化 `x8` 为 `CSR_LDS+CSR_NUMW*1024-bump`，避免 LDS 访问落在分配范围之外（`example2a` 的 `__local tile[]` 依赖此行为）。
+  - （历史实现记录）曾针对“kernel 入口处 bump `s0(x8)`”的模式在 PTX prologue 中做过模式匹配并初始化 `x8 = CSR_LDS+CSR_NUMW*1024-bump`；该补偿已在 2026-02-22 起移除，当前改为把 bump 视为 frame 分配（见 `doc/archive/STATUS_SBT_PIPELINE_2026-02-22.md`）。
 
 ---
 

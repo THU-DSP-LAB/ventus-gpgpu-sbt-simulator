@@ -1122,50 +1122,13 @@ struct EmitCtx final {
     emit_line("@" + p(0) + " add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
     emit_st_x_u32_leader(/*x2=*/2, r(15), /*pc_for_err=*/cfg.start);
 
-    auto detect_s0_bump_bytes = [&]() -> uint32_t {
-      // Many PoCL kernels with automatic `__local` arrays start with a prologue that bumps s0 (x8) by a constant:
-      //   lui  t0, <hi>
-      //   addi t0, t0, <lo>
-      //   add  s0, s0, t0
-      // and then use s0 as the base for LDS addressing (positive offsets).
-      //
-      // In the real Ventus runtime, CSR_LDS is chosen such that after this bump, s0 points to the LDS base.
-      // In this PTX backend we emulate that by initializing x8 to (LDS_base - bump) when this pattern is found.
-      const size_t n = std::min<size_t>(cfg.insts.size(), 12);
-      for (size_t i = 0; i + 2 < n; ++i) {
-        const auto &a = cfg.insts[i + 0].inst;
-        const auto &b = cfg.insts[i + 1].inst;
-        const auto &c = cfg.insts[i + 2].inst;
-        if (a.name != "lui" || a.rd_class != sbt::RegClass::X || a.imm_kind != sbt::ImmKind::U20) continue;
-        const int t = a.rd;
-        if (b.name != "addi" || b.rd_class != sbt::RegClass::X || b.rs1_class != sbt::RegClass::X) continue;
-        if (b.rd != t || b.rs1 != t || b.imm_kind != sbt::ImmKind::I12) continue;
-        if (c.name != "add" || c.rd_class != sbt::RegClass::X || c.rs1_class != sbt::RegClass::X || c.rs2_class != sbt::RegClass::X) continue;
-        if (c.rd != 8 || c.rs1 != 8 || c.rs2 != t) continue;
-        const int64_t bump = int64_t(a.imm) + int64_t(b.imm);
-        if (bump <= 0 || bump > (1 << 20)) continue;
-        return static_cast<uint32_t>(bump);
-      }
-      // Small frame case: addi s0, s0, imm
-      for (size_t i = 0; i < n; ++i) {
-        const auto &d = cfg.insts[i].inst;
-        if (d.name != "addi" || d.rd_class != sbt::RegClass::X || d.rs1_class != sbt::RegClass::X) continue;
-        if (d.rd != 8 || d.rs1 != 8 || d.imm_kind != sbt::ImmKind::I12) continue;
-        if (d.imm <= 0) continue;
-        return static_cast<uint32_t>(d.imm);
-      }
-      return 0;
-    };
-
     // Match `_start` ABI: s0 (x8) points to the base of the kernel LDS region:
     //   s0 = CSR_LDS + CSR_NUMW*1024
     // In this backend `shared_base_vaddr` models the CSR_LDS numeric base, and `warps_per_block` models CSR_NUMW.
+    // Note: kernels may further adjust s0 in their own prologue (e.g. `addi s0, s0, <frame_bytes>`). We treat that
+    // as frame allocation and do not attempt to compensate it here.
     emit_line("@" + p(0) + " shl.b32 " + r(15) + ", " + r(12) + ", 10;");
     emit_line("@" + p(0) + " add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    const uint32_t s0_bump = detect_s0_bump_bytes();
-    if (s0_bump != 0) {
-      emit_line("@" + p(0) + " add.s32 " + r(15) + ", " + r(15) + ", -" + std::to_string(s0_bump) + ";");
-    }
     emit_st_x_u32_leader(/*x8=*/8, r(15), /*pc_for_err=*/cfg.start);
 
     // x10 (a0) is the first argument register. PoCL Ventus kernels expect:

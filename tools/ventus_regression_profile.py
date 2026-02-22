@@ -112,6 +112,35 @@ def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
+def _ensure_ventus_env(env: dict[str, str], ventus_root: Path) -> dict[str, str]:
+    """
+    Make this script runnable without manually `source ventus-env/env.sh`.
+
+    The Rodinia Makefiles and the runtime OpenCL platform discovery depend on:
+      - VENTUS_INSTALL_PREFIX (for headers/libs in build)
+      - PATH / LD_LIBRARY_PATH (for toolchain + runtime libs)
+      - POCL_DEVICES / OCL_ICD_VENDORS / POCL_ENABLE_UNINIT (for PoCL Ventus device)
+    """
+    env = dict(env)
+    install_prefix = env.get("VENTUS_INSTALL_PREFIX", "").strip()
+    if not install_prefix:
+        install_prefix = str((ventus_root / "install").resolve())
+        env["VENTUS_INSTALL_PREFIX"] = install_prefix
+
+    bin_dir = str(Path(install_prefix) / "bin")
+    lib_dir = str(Path(install_prefix) / "lib")
+    env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+    env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+
+    env.setdefault("POCL_DEVICES", "ventus")
+    env.setdefault("OCL_ICD_VENDORS", str(Path(install_prefix) / "lib" / "libpocl.so"))
+    env.setdefault("POCL_ENABLE_UNINIT", "1")
+
+    # Select the PTX backend unless the user explicitly overrides.
+    env.setdefault("VENTUS_BACKEND", "ptx")
+    return env
+
+
 def _run_logged(cmd: list[str], *, cwd: Path, timeout_s: float, log_path: Path, env: dict[str, str]) -> tuple[int, float]:
     started = time.perf_counter()
     with log_path.open("w", encoding="utf-8", errors="replace") as f:
@@ -177,6 +206,7 @@ def main(argv: list[str]) -> int:
     env = dict(os.environ)
     if sbt_profile_log:
         env["GPU_SBT_PTX_PROFILE_LOG"] = str(sbt_profile_log.resolve())
+    env = _ensure_ventus_env(env, ventus_root)
 
     compiled: set[Path] = set()
     rows: list[dict] = []
@@ -244,6 +274,11 @@ def main(argv: list[str]) -> int:
     print(f"\nWrote JSON summary: {args.json_out}")
     if sbt_profile_log:
         print(f"sbt_ptx profile log (if enabled by sbt_ptx): {sbt_profile_log}")
+
+    all_ok = all(r["run_rc"] == 0 and (r["compile_rc"] in (None, 0)) for r in rows)
+    if not all_ok:
+        print("\nerror: one or more testcases failed (see logs).", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -26,12 +26,15 @@
 
 ## 2. 核心语义约束（已固化）
 
-### 2.1 默认不翻译 `_start` 是什么意思？还能跑吗？
+### 2.1 `_start`、`jalr` 与静态翻译的关系（为什么当前不从 `_start` 执行）
 
-- Ventus ELF 的 `_start` 是“启动/运行时入口”，包含初始化、`jalr` 间接跳转等形态；原型期不打算翻译 `_start`。
-- 当前执行路径是：PoCL/driver 直接以 `kernel_name`（例如 `BFS_1`、`vecadd`）为入口翻译该函数的 `.text` 范围，**不是从 `_start` 走到 kernel**。
-- PTX 入口 prologue 会按 ABI 需要初始化必要状态（如 CSR_KNL 的 metadata 指针、arg buffer base 等）。
-- 因此：**不翻译 `_start` 仍可以运行**（前提是 kernel CFG/指令满足当前翻译器约束）。
+- Ventus ELF 的 `_start`（`ventus-env/llvm/libclc/riscv32/lib/crt0.S`）是启动/运行时入口，常包含 **`jalr` 这类间接跳转**（例如根据表项/函数指针跳转到真正的 kernel/builtin 逻辑）。
+- 本仓库当前的 SBT（ELF → CFG verify → PTX）对 `jalr` 的支持是**强约束**：只接受标准 `ret` 形态；其它 `jalr` 会在 CFG verify 中被判为 unsupported，从而阻碍“从 `_start` 一路静态翻译到 kernel”的路径。
+- 因此当前端到端执行路径选择绕开 `_start`：PoCL/driver 直接以 `kernel_name`（例如 `BFS_1`、`vecadd`）为入口翻译该函数的 `.text` 范围，**并不是从 `_start` 走到 kernel**。
+- 需要的“运行时初始化语义”（例如 `x2/x8/x10`、CSR_KNL/arg buffer 约定）由 PTX prologue 直接完成，所以**不翻译 `_start` 仍可以运行**（前提是 kernel 本身满足当前翻译器约束）。
+- 若未来要更接近“真实从 `_start` 执行”的语义，有两条思路：
+  - 扩展对间接控制流的处理（代价较高，涉及 CFG/verify/分派策略）。
+  - 利用 `_start`/少量 builtin 在 `crt0.S` 中长期稳定的事实：把它们当作“受控的手工翻译/内建实现”（一次性工作），避免把通用 `jalr` 支持过早塞进原型期 SBT。
 
 ### 2.2 地址空间（Ventus 32-bit 数值地址 → CUDA backing）
 
@@ -60,6 +63,7 @@ driver 侧实现：`vt_copy_to_dev/from_dev` 与 `vt_upload_kernel_file` 会按�
     - `__sbt_shmem` dynamic shared 基址
     - 每 warp `WarpCtx`（1024B/warp）与 scalar stack（1024B/warp）
     - `lds_ptr = shmem_base + warps_per_block*1024`（注意：这只偏移了 wctx，未包含 stack；因此 driver 侧给的 dynamic shared 必须覆盖 wctx+stack+lds，且 emitter 侧也需保证访问不越界）
+    - `x8(s0)` 的 ABI 初始化：按 `_start` 约定令 `s0 = CSR_LDS + CSR_NUMW*1024`（在本后端中对应 `shared_base_vaddr + warps_per_block*1024`）。kernel 若在自身 prologue 做 `addi s0, s0, imm` 之类调整，当前视为 **frame 分配**，不再由翻译器做“bump 抵消补偿”（详见 `doc/archive/STATUS_SBT_PIPELINE_2026-02-22.md`）。
   - **Ventus vbranch 操作数顺序（关键细节）**
     - Ventus `vbranch` 家族（`vbeq/vbne/vblt/vbge/vbltu/vbgeu`）的“编码字段（rs1/rs2）”与“语义/objdump 打印顺序”是交换的：
       - `llvm-objdump`/cyclesim 日志以 `vb* v<rs2>, v<rs1>, off` 展示；
