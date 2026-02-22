@@ -2,12 +2,19 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
 
 namespace sbt {
 namespace {
+
+static std::string hex_u32(uint32_t x) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "0x%08x", x);
+  return std::string(buf);
+}
 
 static uint32_t read_u32_le(const uint8_t *p) {
   return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
@@ -447,7 +454,7 @@ std::vector<DecodedInst> decode_text(const std::vector<uint8_t> &text, uint32_t 
     if (opt.bundle_regext) {
       const Pattern *p = match_pattern(w, patterns);
       if (p && std::string_view(p->name) == "regext") {
-        if (px.valid) throw std::runtime_error("nested regext prefix at pc=0x" + std::to_string(pc));
+        if (px.valid) throw std::runtime_error("nested regext prefix at pc=" + hex_u32(pc));
         const uint16_t imm12 = static_cast<uint16_t>((w >> 20) & 0xFFFu);
         px.valid = true;
         px.validi = false;
@@ -461,7 +468,7 @@ std::vector<DecodedInst> decode_text(const std::vector<uint8_t> &text, uint32_t 
         continue;
       }
       if (p && std::string_view(p->name) == "regexti") {
-        if (px.valid) throw std::runtime_error("nested regext prefix at pc=0x" + std::to_string(pc));
+        if (px.valid) throw std::runtime_error("nested regext prefix at pc=" + hex_u32(pc));
         const uint16_t imm12 = static_cast<uint16_t>((w >> 20) & 0xFFFu);
         px.valid = true;
         px.validi = true;
@@ -478,14 +485,14 @@ std::vector<DecodedInst> decode_text(const std::vector<uint8_t> &text, uint32_t 
 
     DecodedInst di = decode_one(pc, w, patterns, px);
     if (opt.require_known && di.name == "unknown") {
-      throw std::runtime_error("unknown instruction at pc=0x" + std::to_string(pc));
+      throw std::runtime_error("unknown instruction at pc=" + hex_u32(pc));
     }
     out.push_back(std::move(di));
     px = RegextPrefix{};
   }
 
   if (px.valid) {
-    throw std::runtime_error("dangling regext prefix at pc=0x" + std::to_string(px.pc));
+    throw std::runtime_error("dangling regext prefix at pc=" + hex_u32(px.pc));
   }
 
   return out;

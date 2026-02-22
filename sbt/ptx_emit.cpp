@@ -92,6 +92,7 @@ namespace {
 struct ModuleInfo final {
   bool need_pds = false;
   uint32_t pds_alloc_bytes = 0;
+  bool need_vctx = false;
   const std::unordered_map<uint32_t, std::string> *ptx_name_by_addr = nullptr;
 };
 
@@ -122,6 +123,7 @@ struct EmitCtx final {
   // %rd3: wctx_ptr (shared)
   // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
   // %rd5: per-thread private base (local) for `vlw.v`/`vsw.v`
+  // %rd6: per-thread v-reg context base (local) for cross-`.func` calls
 
   uint32_t x_off(int idx) const { return static_cast<uint32_t>(idx) * 4u; }
 
@@ -145,6 +147,22 @@ struct EmitCtx final {
   }
 
   void emit_warp_sync() { emit_line("bar.warp.sync " + r(1) + ";"); }
+
+  void emit_vctx_store_all(uint32_t pc_for_err) {
+    require(mod.need_vctx, EmitError("invalid.vctx", func_name, pc_for_err, "need_vctx=false"));
+    for (int i = 0; i < 256; ++i) {
+      const uint32_t off = static_cast<uint32_t>(i) * 4u;
+      emit_line("st.local.u32 [" + rd(6) + "+" + std::to_string(off) + "], " + v(i) + ";");
+    }
+  }
+
+  void emit_vctx_load_all(uint32_t pc_for_err) {
+    require(mod.need_vctx, EmitError("invalid.vctx", func_name, pc_for_err, "need_vctx=false"));
+    for (int i = 0; i < 256; ++i) {
+      const uint32_t off = static_cast<uint32_t>(i) * 4u;
+      emit_line("ld.local.u32 " + v(i) + ", [" + rd(6) + "+" + std::to_string(off) + "];");
+    }
+  }
 
   void emit_ld_x_u32_leader(const std::string &dst_r, int xreg, uint32_t pc_for_err) {
     if (xreg == 0) {
@@ -186,8 +204,12 @@ struct EmitCtx final {
   }
 
   void emit_st_x_u32_scalar(int xreg, const std::string &src_r, uint32_t pc_for_err) {
-    if (scalar_leader_only()) emit_st_x_u32_leader(xreg, src_r, pc_for_err);
-    else emit_st_x_u32_all(xreg, src_r, pc_for_err);
+    if (scalar_leader_only()) {
+      emit_st_x_u32_leader(xreg, src_r, pc_for_err);
+      if (xreg != 0) emit_warp_sync();
+    } else {
+      emit_st_x_u32_all(xreg, src_r, pc_for_err);
+    }
   }
 
   void emit_addr_map_and_ld_u32_scalar(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
@@ -196,8 +218,12 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_st_u32_scalar(const std::string &addr_r, const std::string &src_r, uint32_t pc_for_err) {
-    if (scalar_leader_only()) emit_addr_map_and_st_u32_leader(addr_r, src_r, pc_for_err);
-    else emit_addr_map_and_st_u32(addr_r, src_r, pc_for_err);
+    if (scalar_leader_only()) {
+      emit_addr_map_and_st_u32_leader(addr_r, src_r, pc_for_err);
+      emit_warp_sync();
+    } else {
+      emit_addr_map_and_st_u32(addr_r, src_r, pc_for_err);
+    }
   }
 
   void emit_addr_map_and_ld_u8_zext_u32_scalar(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
@@ -206,8 +232,12 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_st_u8_scalar(const std::string &addr_r, const std::string &src_u8, uint32_t pc_for_err) {
-    if (scalar_leader_only()) emit_addr_map_and_st_u8_leader(addr_r, src_u8, pc_for_err);
-    else emit_addr_map_and_st_u8(addr_r, src_u8, pc_for_err);
+    if (scalar_leader_only()) {
+      emit_addr_map_and_st_u8_leader(addr_r, src_u8, pc_for_err);
+      emit_warp_sync();
+    } else {
+      emit_addr_map_and_st_u8(addr_r, src_u8, pc_for_err);
+    }
   }
 
   void emit_addr_map_and_ld_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
@@ -534,6 +564,7 @@ struct EmitCtx final {
     const std::string p_wid = new_label("call_wid");
     const std::string p_numw = new_label("call_numw");
     const std::string p_pds = new_label("call_pds");
+    const std::string p_vctx = new_label("call_vctx");
 
     emit_line(".param .u64 " + p_elf + ";");
     emit_line(".param .u64 " + p_heap + ";");
@@ -543,6 +574,7 @@ struct EmitCtx final {
     emit_line(".param .u32 " + p_wid + ";");
     emit_line(".param .u32 " + p_numw + ";");
     emit_line(".param .u64 " + p_pds + ";");
+    if (mod.need_vctx) emit_line(".param .u64 " + p_vctx + ";");
 
     emit_line("st.param.u64 [" + p_elf + "], " + rd(0) + ";");
     emit_line("st.param.u64 [" + p_heap + "], " + rd(1) + ";");
@@ -552,9 +584,11 @@ struct EmitCtx final {
     emit_line("st.param.u32 [" + p_wid + "], " + r(10) + ";");
     emit_line("st.param.u32 [" + p_numw + "], " + r(12) + ";");
     emit_line("st.param.u64 [" + p_pds + "], " + rd(5) + ";");
+    if (mod.need_vctx) emit_line("st.param.u64 [" + p_vctx + "], " + rd(6) + ";");
 
-    emit_line("call.uni " + callee_ptx + ", (" + p_elf + ", " + p_heap + ", " + p_wctx + ", " + p_lds + ", " + p_knl + ", " + p_wid +
-              ", " + p_numw + ", " + p_pds + ");");
+    std::string args = p_elf + ", " + p_heap + ", " + p_wctx + ", " + p_lds + ", " + p_knl + ", " + p_wid + ", " + p_numw + ", " + p_pds;
+    if (mod.need_vctx) args += ", " + p_vctx;
+    emit_line("call.uni " + callee_ptx + ", (" + args + ");");
   }
 
   void emit_one_inst(const sbt::cfg::BundleInst &bi) {
@@ -571,6 +605,10 @@ struct EmitCtx final {
     }
 
     if (di.name == "endprg" || is_ret(di)) {
+      if (!is_entry && mod.need_vctx) {
+        emit_line("// spill v-regfile back to vctx for return");
+        emit_vctx_store_all(pc);
+      }
       emit_line("ret;");
       return;
     }
@@ -659,7 +697,15 @@ struct EmitCtx final {
       require(mod.ptx_name_by_addr != nullptr, EmitError("unsupported.call", func_name, pc, "callee=" + callee));
       auto jt = mod.ptx_name_by_addr->find(target);
       require(jt != mod.ptx_name_by_addr->end(), EmitError("unsupported.call", func_name, pc, "callee=" + callee));
+      if (mod.need_vctx) {
+        emit_line("// spill v-regfile to vctx for call");
+        emit_vctx_store_all(pc);
+      }
       emit_direct_call(jt->second);
+      if (mod.need_vctx) {
+        emit_line("// restore v-regfile from vctx after call");
+        emit_vctx_load_all(pc);
+      }
       return;
     }
 
@@ -955,6 +1001,11 @@ struct EmitCtx final {
       emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
       return;
     }
+    if (di.name == "vsub_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
     if (di.name == "vsub12_vi" && di.imm_kind == sbt::ImmKind::I12) {
       emit_line("sub.s32 " + v(di.rd) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
       return;
@@ -990,6 +1041,10 @@ struct EmitCtx final {
     if (di.name == "vmul_vx") {
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_line("mul.lo.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmul_vv") {
+      emit_line("mul.lo.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
       return;
     }
     if (di.name == "vmulh_vx") {
@@ -1030,6 +1085,16 @@ struct EmitCtx final {
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_line("setp.lt.u32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
       emit_line("selp.u32 " + v(di.rd) + ", 1, 0, " + p(1) + ";");
+      return;
+    }
+    if (di.name == "vmsle_vi") {
+      emit_line("setp.le.s32 " + p(1) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      emit_line("selp.u32 " + v(di.rd) + ", 1, 0, " + p(1) + ";");
+      return;
+    }
+    if (di.name == "vfcvt_f_x_v") {
+      emit_line("cvt.rn.f32.s32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(0) + ";");
       return;
     }
 
@@ -1096,6 +1161,14 @@ struct EmitCtx final {
     emit_line(".reg .f32 %f<16>;");
     emit_line(".reg .u8 %ub<4>;");
     emit_line(".reg .b32 %v<256>;");
+
+    if (mod.need_vctx) {
+      emit_line(".local .align 4 .b8 __sbt_vctx[1024];");
+      // `mov` yields a local-space address for local symbols; use it directly with `ld/st.local`.
+      emit_line("mov.u64 " + rd(6) + ", __sbt_vctx;");
+    } else {
+      emit_line("mov.u64 " + rd(6) + ", 0;");
+    }
 
     // Per-thread private memory backing for `vlw.v` / `vsw.v` (only if needed).
     //
@@ -1396,7 +1469,9 @@ struct EmitCtx final {
     emit_raw("    .param .u32 __sbt_arg_knl_vaddr,\n");
     emit_raw("    .param .u32 __sbt_arg_warp_id,\n");
     emit_raw("    .param .u32 __sbt_arg_warps_per_block,\n");
-    emit_raw("    .param .u64 __sbt_arg_pds_base\n");
+    emit_raw("    .param .u64 __sbt_arg_pds_base");
+    if (mod.need_vctx) emit_raw(",\n    .param .u64 __sbt_arg_vctx_base");
+    emit_raw("\n");
     emit_raw(")\n{\n");
 
     emit_line(".reg .b32 %r<32>;");
@@ -1414,8 +1489,13 @@ struct EmitCtx final {
     emit_line("ld.param.u32 " + r(10) + ", [__sbt_arg_warp_id];");
     emit_line("ld.param.u32 " + r(12) + ", [__sbt_arg_warps_per_block];");
     emit_line("ld.param.u64 " + rd(5) + ", [__sbt_arg_pds_base];");
+    if (mod.need_vctx) emit_line("ld.param.u64 " + rd(6) + ", [__sbt_arg_vctx_base];");
 
     emit_line("mov.u32 " + r(0) + ", %laneid;");
+    if (mod.need_vctx) {
+      emit_line("// load v-regfile from vctx at function entry");
+      emit_vctx_load_all(cfg.start);
+    }
   }
 
   void emit_body() {
@@ -1457,6 +1537,7 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
 
   ModuleInfo mod;
   mod.ptx_name_by_addr = &ptx_name_by_addr;
+  mod.need_vctx = !funcs.empty();
 
   mod.need_pds = cfg_needs_pds(entry_cfg);
   for (const auto &f : funcs) {

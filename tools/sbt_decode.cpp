@@ -82,9 +82,9 @@ static std::vector<sbt::Pattern> build_patterns_from_encoding(const fs::path &en
       "vbeq",       "vbne",      "vblt",       "vbge",      "vbltu",     "vbgeu",
       "vlw12_v",    "vsw12_v",   "vlbu12_v",   "vsb12_v",   "vlw_v",     "vsw_v",
       "vadd12_vi",  "vsub12_vi", "vid_v",      "vmv_v_x",   "vsetvli",   "vadd_vv",   "vadd_vx",
-      "vadd_vi",    "vsub_vv",   "vand_vv",    "vand_vi",   "vor_vv",    "vxor_vi",   "vsll_vi",
-      "vsrl_vi",    "vsra_vi",   "vmul_vx",    "vmulh_vx",  "vdivu_vx",  "vremu_vx",  "vmadd_vv",
-      "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vfadd_vv",  "vfsub_vv",
+      "vadd_vi",    "vsub_vv",   "vsub_vx",    "vand_vv",   "vand_vi",   "vor_vv",    "vxor_vi",   "vsll_vi",
+      "vsrl_vi",    "vsra_vi",   "vmul_vv",    "vmul_vx",   "vmulh_vx",  "vdivu_vx",  "vremu_vx",  "vmadd_vv",
+      "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vmsle_vi",  "vfcvt_f_x_v", "vfadd_vv",  "vfsub_vv",
       "vfmul_vv",   "vfdiv_vv",  "vfmadd_vv",  "vfsqrt_v",  "vfsgnjn_vv",
   };
 

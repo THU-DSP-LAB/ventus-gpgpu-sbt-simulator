@@ -33,6 +33,16 @@ static bool env_truthy(const char *k) {
   return (s == "1" || s == "true" || s == "yes" || s == "on");
 }
 
+static bool env_bool(const char *k, bool default_value) {
+  const char *v = std::getenv(k);
+  if (!v) return default_value;
+  std::string s(v);
+  for (auto &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "yes" || s == "on") return true;
+  if (s == "0" || s == "false" || s == "no" || s == "off") return false;
+  return default_value;
+}
+
 static std::optional<std::string> env_str(const char *k) {
   const char *v = std::getenv(k);
   if (!v) return std::nullopt;
@@ -114,9 +124,9 @@ static PatternPack build_patterns_from_encoding(const fs::path &encoding_h_path)
       "vbeq",       "vbne",      "vblt",       "vbge",      "vbltu",     "vbgeu",
       "vlw12_v",    "vsw12_v",   "vlbu12_v",   "vsb12_v",   "vlw_v",     "vsw_v",
       "vadd12_vi",  "vsub12_vi", "vid_v",      "vmv_v_x",   "vsetvli",   "vadd_vv",   "vadd_vx",
-      "vadd_vi",    "vsub_vv",   "vand_vv",    "vand_vi",   "vor_vv",    "vxor_vi",   "vsll_vi",
-      "vsrl_vi",    "vsra_vi",   "vmul_vx",    "vmulh_vx",  "vdivu_vx",  "vremu_vx",  "vmadd_vv",
-      "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vfadd_vv",  "vfsub_vv",
+      "vadd_vi",    "vsub_vv",   "vsub_vx",    "vand_vv",   "vand_vi",   "vor_vv",    "vxor_vi",   "vsll_vi",
+      "vsrl_vi",    "vsra_vi",   "vmul_vv",    "vmul_vx",   "vmulh_vx",  "vdivu_vx",  "vremu_vx",  "vmadd_vv",
+      "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vmsle_vi",  "vfcvt_f_x_v", "vfadd_vv",  "vfsub_vv",
       "vfmul_vv",   "vfdiv_vv",  "vfmadd_vv",  "vfsqrt_v",  "vfsgnjn_vv",
   };
 
@@ -389,7 +399,7 @@ int main(int argc, char **argv) {
     key.require_known = require_known;
     key.bundle_regext = bundle_regext;
     key.include_comments = include_comments;
-    key.scalar_leader_only = env_truthy("GPU_SBT_SCALAR_LEADER_ONLY");
+    key.scalar_leader_only = env_bool("GPU_SBT_SCALAR_LEADER_ONLY", /*default_value=*/true);
     key.encoding_h_abs = fs::absolute(encoding_h).string();
     key.encoding_time = file_time_token(encoding_h);
     if (auto exe = self_exe_path()) {
@@ -490,7 +500,7 @@ int main(int argc, char **argv) {
     sbt::ptx::Options popt;
     popt.sm = sm;
     popt.include_comments = include_comments;
-    popt.scalar_exec_leader_only = env_truthy("GPU_SBT_SCALAR_LEADER_ONLY");
+    popt.scalar_exec_leader_only = env_bool("GPU_SBT_SCALAR_LEADER_ONLY", /*default_value=*/true);
     if (const char *v = std::getenv("GPU_SBT_PDS_BYTES")) {
       try {
         unsigned long n = std::stoul(std::string(v));
