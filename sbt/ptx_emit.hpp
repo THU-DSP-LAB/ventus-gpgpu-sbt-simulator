@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace sbt::ptx {
 
@@ -46,6 +48,26 @@ struct EmitError final : public std::runtime_error {
 struct EmitResult final {
   std::string ptx;
 };
+
+struct FuncToEmit final {
+  // Ventus symbol name (for error messages / comments).
+  std::string name;
+  // PTX function symbol name to emit/call.
+  std::string ptx_name;
+  // Function CFG to emit.
+  sbt::cfg::FunctionCfg cfg;
+};
+
+// Emit a PTX module containing one `.entry` kernel plus any number of `.func` callees.
+//
+// - `ptx_name_by_addr` maps Ventus call targets (function entry PC) to PTX `.func` symbols.
+// - Calls to `is_inlined_builtin_call_name()` are still inlined; only other direct calls use this map.
+EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unordered_map<uint32_t, std::string> &sym_by_addr,
+                       const std::string &entry_name, const std::vector<FuncToEmit> &funcs,
+                       const std::unordered_map<uint32_t, std::string> &ptx_name_by_addr, const Options &opt);
+
+// Builtins that are always inlined/handled specially by the PTX emitter (prototype).
+bool is_inlined_builtin_call_name(std::string_view callee);
 
 EmitResult emit_kernel(const sbt::cfg::FunctionCfg &cfg, const std::unordered_map<uint32_t, std::string> &sym_by_addr,
                        const std::string &kernel_name, const Options &opt);

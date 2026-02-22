@@ -51,7 +51,8 @@
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
 
 - `sbt/ptx_emit.{hpp,cpp}`
-  - `emit_kernel(cfg, sym_by_addr, kernel_name, opt)`：把函数 CFG 直接 lowering 成 PTX。
+  - `emit_module(entry_cfg, sym_by_addr, entry_name, funcs, ptx_name_by_addr, opt)`：输出一个 PTX module，包含 1 个 `.entry <kernel>` + 若干 `.func <callee>`（用于 direct call）。
+  - `emit_kernel(...)`：兼容接口（单函数 `.entry`，不含通用 call graph）。
   - 关键语义约定（原型实现）：
     - `setrpc/join/vsetvli`：结构化翻译下视为 no-op（主要用于 Stage2 verify）。
     - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
@@ -59,7 +60,10 @@
     - 标量副作用执行策略：支持 leader-only 或 all-lanes（由 `Options::scalar_exec_leader_only` 与 `GPU_SBT_SCALAR_LEADER_ONLY` 控制）。
     - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（shared / ELF backing / heap backing），对应 `Options::{shared_base_vaddr,elf_base_vaddr,heap_base_vaddr}`。
     - `vlw.v/vsw.v`：当前按“private indexed ops”临时用 PTX `.local` 数组模拟（原因与限制见 `doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md` 的 PDS 说明）。
-  - builtin 调用：仅支持白名单（OpenCL id/query + 部分 math helper），并在 emitter 内内联实现；其它 call 直接报 `unsupported.call`。
+  - 调用（call）：
+    - 一小部分 builtin 仍在 emitter 内按名字内联（OpenCL id/query + 少量 helper）。
+    - 其它 direct call（`jal ra, imm`）会翻译为 PTX `call.uni`，并要求被调函数也被翻译为 `.func`（由 `tools/sbt_ptx.cpp` 的 call graph 闭包收集保证）。
+    - 非 `ret` 形态 `jalr` 仍属于 unsupported（原型期 fail-fast）。
 
 ### 1.2 `tools/`：CLI 与脚本（bring-up/回归）
 
@@ -71,7 +75,7 @@
   - 注意：其 pattern 白名单与 `sbt_ptx` 存在重复，且实现里为解决 pattern 名字生命周期做了“泄漏静态 vector”的折中做法（CLI 生命周期内可接受，但不利于库化）。
 
 - `tools/sbt_ptx.cpp` → `build/sbt_ptx`
-  - 主流水线：`read .text + .symtab → 切片 func range → decode → CFG → verify → emit PTX → 写文件`。
+  - 主流水线：`read .text + .symtab → 入口函数切片 → decode/CFG/verify → 扫描 direct call → 收集可达函数闭包 → emit PTX module（.entry + .func）→ 写文件`。
   - PTX 输出：默认 `build/ptx/<bench>.<stem>.<func>.ptx`（路径规则偏 Rodinia 目录布局）。
   - 缓存：`<out>.meta` 记录输入 ELF/encoding.h/自身 exe 的时间戳与参数，命中则直接复用已有 PTX。
   - 环境变量（行为开关/调试）：见 `doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md` 与 `tools/sbt_ptx.cpp`。
@@ -96,13 +100,14 @@
 入口：`tools/sbt_ptx.cpp:main()`。
 
 1. `sbt::elf::read_section(elf, ".text")`
-2. `sbt::elf::read_func_symbols(elf)` → `sym_by_addr`（用于 call builtin 解析）
+2. `sbt::elf::read_func_symbols(elf)` → `sym_by_addr`（用于解析 call 目标符号 / 判断内联 builtin）
 3. 以 `--func` 选择函数范围（依赖 `.symtab` 的 `addr/size`，size=0 时用“下一个符号”兜底）
 4. `sbt::spike::parse_declared_insns(encoding.h)` + bring-up whitelist → `std::vector<sbt::Pattern>`
 5. `sbt::decode_text(slice, func_start, DecodeOptions, patterns)`
 6. `sbt::cfg::build_function_cfg(decoded, func_start, func_end)`
 7. `sbt::cfg::verify_function(cfg, func)`（fail-fast）
-8. `sbt::ptx::emit_kernel(cfg, sym_by_addr, func, Options)` → 写 PTX 文件
+8. 扫描 direct call，收集可达函数闭包（递归 decode/CFG/verify）
+9. `sbt::ptx::emit_module(entry_cfg, sym_by_addr, func, funcs, ptx_name_by_addr, Options)` → 写 PTX 文件
 
 ### 2.2 `sbt_decode cfgverify` 的用途
 
@@ -116,6 +121,6 @@
 - **ELF 约束**：要求 `.symtab` 存在，且函数符号覆盖 kernel 入口；不做 relocation；对 strip/无符号的 ELF 不友好。
 - **指令覆盖**：bring-up whitelist + RV32 子集；未覆盖指令直接 unknown/unsupported。
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
-- **builtin 白名单**：call 仅支持 emitter 内硬编码集合；超出则 `unsupported.call`。
+- **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
 - **ABI/元数据**：当前 PTX kernel 参数固定为 `(elf_base, heap_base, knl_vaddr)`，并在 prologue 初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
 - **PDS（private）**：`vlw.v/vsw.v` 暂用 PTX local memory 模拟，属于 bring-up 期权宜实现，不等同于真实 driver/Spike 的 PDS 分配语义。

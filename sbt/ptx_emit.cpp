@@ -65,7 +65,9 @@ static void require(bool ok, const EmitError &err) {
   if (!ok) throw err;
 }
 
-static bool is_builtin_call_name(std::string_view callee) {
+} // namespace
+
+bool is_inlined_builtin_call_name(std::string_view callee) {
   return callee == "_Z13get_global_idj" || callee == "_Z12get_local_idj" || callee == "_Z12get_group_idj" || callee == "_Z15get_global_sizej" ||
          callee == "__builtin_riscv_workitem_id_x" || callee == "__builtin_riscv_workitem_id_y" || callee == "__builtin_riscv_workitem_id_z" ||
          callee == "__builtin_riscv_workgroup_id_x" || callee == "__builtin_riscv_workgroup_id_y" || callee == "__builtin_riscv_workgroup_id_z" ||
@@ -79,8 +81,6 @@ static bool is_builtin_call_name(std::string_view callee) {
          callee == "_Z5mad24iii";
 }
 
-} // namespace
-
 EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::string detail)
     : std::runtime_error(code_ + " func=" + func_ + " pc=" + hex_u32(pc_) + (detail.empty() ? "" : (" " + detail))),
       code(std::move(code_)),
@@ -89,20 +89,27 @@ EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::st
 
 namespace {
 
+struct ModuleInfo final {
+  bool need_pds = false;
+  uint32_t pds_alloc_bytes = 0;
+  const std::unordered_map<uint32_t, std::string> *ptx_name_by_addr = nullptr;
+};
+
 struct EmitCtx final {
   const sbt::cfg::FunctionCfg &cfg;
   const std::unordered_map<uint32_t, std::string> &sym_by_addr;
-  const std::string &kernel_name;
+  const std::string &func_name;
+  const std::string &ptx_name;
   const Options &opt;
+  const ModuleInfo &mod;
+  const bool is_entry;
 
   std::ostringstream out;
   int tmp_label_id = 0;
-  bool need_pds = false;
-  uint32_t pds_alloc_bytes = 0;
 
   EmitCtx(const sbt::cfg::FunctionCfg &cfg_, const std::unordered_map<uint32_t, std::string> &sym_by_addr_,
-          const std::string &kernel_name_, const Options &opt_)
-      : cfg(cfg_), sym_by_addr(sym_by_addr_), kernel_name(kernel_name_), opt(opt_) {}
+          const std::string &func_name_, const std::string &ptx_name_, const Options &opt_, const ModuleInfo &mod_, bool is_entry_)
+      : cfg(cfg_), sym_by_addr(sym_by_addr_), func_name(func_name_), ptx_name(ptx_name_), opt(opt_), mod(mod_), is_entry(is_entry_) {}
 
   // Register assignment conventions (must match PTX declarations).
   // %r0: laneid
@@ -144,7 +151,7 @@ struct EmitCtx final {
       emit_line("@"+p(0)+" mov.u32 " + dst_r + ", 0;");
       return;
     }
-    require(xreg >= 0, EmitError("invalid.reg", kernel_name, pc_for_err, "xreg<0"));
+    require(xreg >= 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<0"));
     emit_line("@" + p(0) + " ld.shared.u32 " + dst_r + ", [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "];");
   }
 
@@ -153,19 +160,19 @@ struct EmitCtx final {
       emit_line("mov.u32 " + dst_r + ", 0;");
       return;
     }
-    require(xreg >= 0, EmitError("invalid.reg", kernel_name, pc_for_err, "xreg<0"));
+    require(xreg >= 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<0"));
     emit_line("ld.shared.u32 " + dst_r + ", [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "];");
   }
 
   void emit_st_x_u32_leader(int xreg, const std::string &src_r, uint32_t pc_for_err) {
     if (xreg == 0) return; // x0 is hard-wired zero.
-    require(xreg > 0, EmitError("invalid.reg", kernel_name, pc_for_err, "xreg<=0"));
+    require(xreg > 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<=0"));
     emit_line("@" + p(0) + " st.shared.u32 [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "], " + src_r + ";");
   }
 
   void emit_st_x_u32_all(int xreg, const std::string &src_r, uint32_t pc_for_err) {
     if (xreg == 0) return; // x0 is hard-wired zero.
-    require(xreg > 0, EmitError("invalid.reg", kernel_name, pc_for_err, "xreg<=0"));
+    require(xreg > 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<=0"));
     emit_line("st.shared.u32 [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "], " + src_r + ";");
   }
 
@@ -463,7 +470,7 @@ struct EmitCtx final {
     } else if (opname == "sin") {
       emit_line("sin.approx.f32 " + f(1) + ", " + f(0) + ";");
     } else {
-      throw EmitError("unsupported.call", kernel_name, pc_for_err, "unary_op=" + std::string(opname));
+      throw EmitError("unsupported.call", func_name, pc_for_err, "unary_op=" + std::string(opname));
     }
     emit_line("mov.b32 " + dst_v + ", " + f(1) + ";");
   }
@@ -518,6 +525,38 @@ struct EmitCtx final {
     (void)pc_for_err;
   }
 
+  void emit_direct_call(const std::string &callee_ptx) {
+    const std::string p_elf = new_label("call_elf");
+    const std::string p_heap = new_label("call_heap");
+    const std::string p_wctx = new_label("call_wctx");
+    const std::string p_lds = new_label("call_lds");
+    const std::string p_knl = new_label("call_knl");
+    const std::string p_wid = new_label("call_wid");
+    const std::string p_numw = new_label("call_numw");
+    const std::string p_pds = new_label("call_pds");
+
+    emit_line(".param .u64 " + p_elf + ";");
+    emit_line(".param .u64 " + p_heap + ";");
+    emit_line(".param .u64 " + p_wctx + ";");
+    emit_line(".param .u64 " + p_lds + ";");
+    emit_line(".param .u32 " + p_knl + ";");
+    emit_line(".param .u32 " + p_wid + ";");
+    emit_line(".param .u32 " + p_numw + ";");
+    emit_line(".param .u64 " + p_pds + ";");
+
+    emit_line("st.param.u64 [" + p_elf + "], " + rd(0) + ";");
+    emit_line("st.param.u64 [" + p_heap + "], " + rd(1) + ";");
+    emit_line("st.param.u64 [" + p_wctx + "], " + rd(3) + ";");
+    emit_line("st.param.u64 [" + p_lds + "], " + rd(4) + ";");
+    emit_line("st.param.u32 [" + p_knl + "], " + r(30) + ";");
+    emit_line("st.param.u32 [" + p_wid + "], " + r(10) + ";");
+    emit_line("st.param.u32 [" + p_numw + "], " + r(12) + ";");
+    emit_line("st.param.u64 [" + p_pds + "], " + rd(5) + ";");
+
+    emit_line("call.uni " + callee_ptx + ", (" + p_elf + ", " + p_heap + ", " + p_wctx + ", " + p_lds + ", " + p_knl + ", " + p_wid +
+              ", " + p_numw + ", " + p_pds + ");");
+  }
+
   void emit_one_inst(const sbt::cfg::BundleInst &bi) {
     const sbt::DecodedInst &di = bi.inst;
     const uint32_t pc = di.pc;
@@ -541,79 +580,86 @@ struct EmitCtx final {
       return;
     }
 
-    // Calls: only support a small builtin set in prototype.
+    // Calls: support a small inlined builtin set, plus direct calls to emitted `.func`s.
     if (is_call(di)) {
       const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
       auto it = sym_by_addr.find(target);
-      require(it != sym_by_addr.end(), EmitError("unsupported.call", kernel_name, pc, "target=" + hex_u32(target)));
+      require(it != sym_by_addr.end(), EmitError("unsupported.call", func_name, pc, "target=" + hex_u32(target)));
       const std::string &callee = it->second;
-      require(is_builtin_call_name(callee), EmitError("unsupported.call", kernel_name, pc, "callee=" + callee));
 
       // Write link register (uniform) for debugging parity; not used by inlined builtins.
       emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + hex_u32(pc + 4) + ";");
       emit_st_x_u32_leader(di.rd, r(14), pc);
       emit_warp_sync();
 
-      if (callee == "_Z13get_global_idj") {
-        emit_builtin_get_id("global", pc);
-      } else if (callee == "_Z12get_local_idj") {
-        emit_builtin_get_id("local", pc);
-      } else if (callee == "_Z12get_group_idj") {
-        emit_builtin_get_id("group", pc);
-      } else if (callee == "_Z15get_global_sizej") {
-        emit_builtin_get_global_size(pc);
-      } else if (callee == "_Z4fmaxff") {
-        emit_builtin_fmaxff(pc);
-      } else if (callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf") {
-        emit_builtin_sqrtf(pc);
-      } else if (callee == "_Z3cosDv4_f") {
-        emit_builtin_vec4_cos(pc);
-      } else if (callee == "_Z3sinDv4_f") {
-        emit_builtin_vec4_sin(pc);
-      } else if (callee == "_Z3tanDv4_f") {
-        emit_builtin_vec4_tan(pc);
-      } else if (callee == "_Z4sqrtDv4_f") {
-        emit_builtin_vec4_sqrt(pc);
-      } else if (callee == "_Z4fabsDv4_f") {
-        emit_builtin_vec4_fabs(pc);
-      } else if (callee == "_Z5mad24iii") {
-        emit_builtin_mad24iii(pc);
-      } else if (callee == "__builtin_riscv_workitem_id_x") {
-        emit_line("mov.u32 " + v(0) + ", %tid.x;");
-      } else if (callee == "__builtin_riscv_workitem_id_y") {
-        emit_line("mov.u32 " + v(0) + ", %tid.y;");
-      } else if (callee == "__builtin_riscv_workitem_id_z") {
-        emit_line("mov.u32 " + v(0) + ", %tid.z;");
-      } else if (callee == "__builtin_riscv_workgroup_id_x") {
-        emit_line("mov.u32 " + v(0) + ", %ctaid.x;");
-      } else if (callee == "__builtin_riscv_workgroup_id_y") {
-        emit_line("mov.u32 " + v(0) + ", %ctaid.y;");
-      } else if (callee == "__builtin_riscv_workgroup_id_z") {
-        emit_line("mov.u32 " + v(0) + ", %ctaid.z;");
-      } else if (callee == "__builtin_riscv_global_id_x") {
-        emit_line("mov.u32 " + r(21) + ", %tid.x;");
-        emit_line("mov.u32 " + r(22) + ", %ntid.x;");
-        emit_line("mov.u32 " + r(23) + ", %ctaid.x;");
-        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
-        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
-        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
-      } else if (callee == "__builtin_riscv_global_id_y") {
-        emit_line("mov.u32 " + r(21) + ", %tid.y;");
-        emit_line("mov.u32 " + r(22) + ", %ntid.y;");
-        emit_line("mov.u32 " + r(23) + ", %ctaid.y;");
-        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
-        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
-        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
-      } else if (callee == "__builtin_riscv_global_id_z") {
-        emit_line("mov.u32 " + r(21) + ", %tid.z;");
-        emit_line("mov.u32 " + r(22) + ", %ntid.z;");
-        emit_line("mov.u32 " + r(23) + ", %ctaid.z;");
-        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
-        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
-        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
-      } else {
-        throw EmitError("unsupported.call", kernel_name, pc, "callee=" + callee);
+      if (is_inlined_builtin_call_name(callee)) {
+        if (callee == "_Z13get_global_idj") {
+          emit_builtin_get_id("global", pc);
+        } else if (callee == "_Z12get_local_idj") {
+          emit_builtin_get_id("local", pc);
+        } else if (callee == "_Z12get_group_idj") {
+          emit_builtin_get_id("group", pc);
+        } else if (callee == "_Z15get_global_sizej") {
+          emit_builtin_get_global_size(pc);
+        } else if (callee == "_Z4fmaxff") {
+          emit_builtin_fmaxff(pc);
+        } else if (callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf") {
+          emit_builtin_sqrtf(pc);
+        } else if (callee == "_Z3cosDv4_f") {
+          emit_builtin_vec4_cos(pc);
+        } else if (callee == "_Z3sinDv4_f") {
+          emit_builtin_vec4_sin(pc);
+        } else if (callee == "_Z3tanDv4_f") {
+          emit_builtin_vec4_tan(pc);
+        } else if (callee == "_Z4sqrtDv4_f") {
+          emit_builtin_vec4_sqrt(pc);
+        } else if (callee == "_Z4fabsDv4_f") {
+          emit_builtin_vec4_fabs(pc);
+        } else if (callee == "_Z5mad24iii") {
+          emit_builtin_mad24iii(pc);
+        } else if (callee == "__builtin_riscv_workitem_id_x") {
+          emit_line("mov.u32 " + v(0) + ", %tid.x;");
+        } else if (callee == "__builtin_riscv_workitem_id_y") {
+          emit_line("mov.u32 " + v(0) + ", %tid.y;");
+        } else if (callee == "__builtin_riscv_workitem_id_z") {
+          emit_line("mov.u32 " + v(0) + ", %tid.z;");
+        } else if (callee == "__builtin_riscv_workgroup_id_x") {
+          emit_line("mov.u32 " + v(0) + ", %ctaid.x;");
+        } else if (callee == "__builtin_riscv_workgroup_id_y") {
+          emit_line("mov.u32 " + v(0) + ", %ctaid.y;");
+        } else if (callee == "__builtin_riscv_workgroup_id_z") {
+          emit_line("mov.u32 " + v(0) + ", %ctaid.z;");
+        } else if (callee == "__builtin_riscv_global_id_x") {
+          emit_line("mov.u32 " + r(21) + ", %tid.x;");
+          emit_line("mov.u32 " + r(22) + ", %ntid.x;");
+          emit_line("mov.u32 " + r(23) + ", %ctaid.x;");
+          emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
+          emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
+          emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+        } else if (callee == "__builtin_riscv_global_id_y") {
+          emit_line("mov.u32 " + r(21) + ", %tid.y;");
+          emit_line("mov.u32 " + r(22) + ", %ntid.y;");
+          emit_line("mov.u32 " + r(23) + ", %ctaid.y;");
+          emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
+          emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
+          emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+        } else if (callee == "__builtin_riscv_global_id_z") {
+          emit_line("mov.u32 " + r(21) + ", %tid.z;");
+          emit_line("mov.u32 " + r(22) + ", %ntid.z;");
+          emit_line("mov.u32 " + r(23) + ", %ctaid.z;");
+          emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
+          emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
+          emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+        } else {
+          throw EmitError("unsupported.call", func_name, pc, "callee=" + callee);
+        }
+        return;
       }
+
+      require(mod.ptx_name_by_addr != nullptr, EmitError("unsupported.call", func_name, pc, "callee=" + callee));
+      auto jt = mod.ptx_name_by_addr->find(target);
+      require(jt != mod.ptx_name_by_addr->end(), EmitError("unsupported.call", func_name, pc, "callee=" + callee));
+      emit_direct_call(jt->second);
       return;
     }
 
@@ -621,7 +667,7 @@ struct EmitCtx final {
     if (is_uncond_jump(di)) {
       const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
       const std::string bb = bb_of_pc(target);
-      require(!bb.empty(), EmitError("invalid.cfg", kernel_name, pc, "jump target " + hex_u32(target)));
+      require(!bb.empty(), EmitError("invalid.cfg", func_name, pc, "jump target " + hex_u32(target)));
       emit_line("bra " + bb + ";");
       return;
     }
@@ -632,7 +678,7 @@ struct EmitCtx final {
       const uint32_t fallthrough = pc + 4;
       const std::string bb_t = bb_of_pc(target);
       const std::string bb_f = bb_of_pc(fallthrough);
-      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", kernel_name, pc, "branch target/fallthrough missing"));
+      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", func_name, pc, "branch target/fallthrough missing"));
 
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_ld_x_u32_all(r(15), di.rs2, pc);
@@ -643,7 +689,7 @@ struct EmitCtx final {
       else if (di.name == "bge") emit_line("setp.ge.s32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
       else if (di.name == "bltu") emit_line("setp.lt.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
       else if (di.name == "bgeu") emit_line("setp.ge.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
-      else throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+      else throw EmitError("unsupported.inst", func_name, pc, di.name);
 
       emit_line("@" + p(1) + " bra " + bb_t + ";");
       emit_line("bra " + bb_f + ";");
@@ -656,7 +702,7 @@ struct EmitCtx final {
       const uint32_t fallthrough = pc + 4;
       const std::string bb_t = bb_of_pc(target);
       const std::string bb_f = bb_of_pc(fallthrough);
-      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", kernel_name, pc, "vbranch target/fallthrough missing"));
+      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", func_name, pc, "vbranch target/fallthrough missing"));
 
       // NOTE: Ventus vbranch encodes operands in a swapped order vs scalar branches:
       // llvm-objdump / cyclesim logs print `vb* v<rs2>, v<rs1>, off`.
@@ -670,7 +716,7 @@ struct EmitCtx final {
       else if (di.name == "vbge") emit_line("setp.ge.s32 " + p(1) + ", " + a + ", " + b + ";");
       else if (di.name == "vbltu") emit_line("setp.lt.u32 " + p(1) + ", " + a + ", " + b + ";");
       else if (di.name == "vbgeu") emit_line("setp.ge.u32 " + p(1) + ", " + a + ", " + b + ";");
-      else throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+      else throw EmitError("unsupported.inst", func_name, pc, di.name);
 
       emit_line("@" + p(1) + " bra " + bb_t + ";");
       emit_line("bra " + bb_f + ";");
@@ -679,8 +725,8 @@ struct EmitCtx final {
 
     // CSR reads (prototype: csrrs with rs1=x0).
     if (di.name == "csrrs") {
-      require(di.imm_kind == sbt::ImmKind::CSR12, EmitError("invalid.csr", kernel_name, pc, "imm_kind"));
-      require(di.rs1 == 0, EmitError("unsupported.csr", kernel_name, pc, "write not supported"));
+      require(di.imm_kind == sbt::ImmKind::CSR12, EmitError("invalid.csr", func_name, pc, "imm_kind"));
+      require(di.rs1 == 0, EmitError("unsupported.csr", func_name, pc, "write not supported"));
       const uint32_t csr = static_cast<uint32_t>(di.imm);
 
       // Compute CSR value to %r14 (uniform), then store to x[rd].
@@ -706,7 +752,7 @@ struct EmitCtx final {
       } else if (csr == 0x80au) { // CSR_GDZ
         emit_line(scalar_prefix() + "mov.u32 " + r(14) + ", %ctaid.z;");
       } else {
-        throw EmitError("unsupported.csr", kernel_name, pc, "csr=" + hex_u32(csr));
+        throw EmitError("unsupported.csr", func_name, pc, "csr=" + hex_u32(csr));
       }
 
       emit_st_x_u32_scalar(di.rd, r(14), pc);
@@ -729,7 +775,7 @@ struct EmitCtx final {
         emit_st_x_u32_scalar(di.rd, r(17), pc);
         return;
       }
-      throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+      throw EmitError("unsupported.inst", func_name, pc, di.name);
     }
 
     if (is_scalar_store(di.name) && di.imm_kind == sbt::ImmKind::S12) {
@@ -746,7 +792,7 @@ struct EmitCtx final {
         emit_addr_map_and_st_u8_scalar(r(16), u8(1), pc);
         return;
       }
-      throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+      throw EmitError("unsupported.inst", func_name, pc, di.name);
     }
 
     // Scalar ALU ops (uniform) - minimal subset used by Rodinia.
@@ -1030,7 +1076,7 @@ struct EmitCtx final {
       return;
     }
 
-    throw EmitError("unsupported.inst", kernel_name, pc, di.name);
+    throw EmitError("unsupported.inst", func_name, pc, di.name);
   }
 
   void emit_prologue() {
@@ -1038,7 +1084,7 @@ struct EmitCtx final {
     //  - elf_base: backing buffer for [elf_base_vaddr, heap_base_vaddr)
     //  - heap_base: backing buffer for [heap_base_vaddr, ...)
     //  - knl_vaddr: Ventus numeric address of metadata buffer (u32)
-    emit_raw(".visible .entry " + kernel_name + "(\n");
+    emit_raw(".visible .entry " + ptx_name + "(\n");
     emit_raw("    .param .u64 elf_base,\n");
     emit_raw("    .param .u64 heap_base,\n");
     emit_raw("    .param .u32 knl_vaddr\n");
@@ -1057,11 +1103,13 @@ struct EmitCtx final {
     // so we cannot correctly map these ops to the driver's global-memory PDS allocation
     // without changing the driver ABI. For bring-up, emulate per-thread private memory
     // using PTX local memory (one array per CUDA thread).
-    if (need_pds) {
-      const uint32_t bytes = (pds_alloc_bytes != 0 ? pds_alloc_bytes : opt.pds_bytes);
+    if (mod.need_pds) {
+      const uint32_t bytes = (mod.pds_alloc_bytes != 0 ? mod.pds_alloc_bytes : opt.pds_bytes);
       emit_line(".local .align 4 .b8 __sbt_pds[" + std::to_string(bytes) + "];");
       // `mov` yields a local-space address for local symbols; use it directly with `ld/st.local`.
       emit_line("mov.u64 " + rd(5) + ", __sbt_pds;");
+    } else {
+      emit_line("mov.u64 " + rd(5) + ", 0;");
     }
 
     // Load params and compute global/shared base pointers.
@@ -1144,8 +1192,7 @@ struct EmitCtx final {
     // Fallthrough to entry BB.
   }
 
-  std::optional<uint32_t> try_compute_pds_alloc_bytes() {
-    if (!need_pds) return std::nullopt;
+  static std::optional<uint32_t> try_compute_pds_alloc_bytes(const sbt::cfg::FunctionCfg &cfg, const Options &opt) {
 
     struct State final {
       std::array<std::optional<uint32_t>, 32> x{};
@@ -1339,32 +1386,41 @@ struct EmitCtx final {
     return max_required;
   }
 
+  void emit_func_prologue() {
+    // Pass-through params computed in the caller and required for address mapping / CSR reads.
+    emit_raw(".func " + ptx_name + "(\n");
+    emit_raw("    .param .u64 __sbt_arg_elf_base,\n");
+    emit_raw("    .param .u64 __sbt_arg_heap_base,\n");
+    emit_raw("    .param .u64 __sbt_arg_wctx_ptr,\n");
+    emit_raw("    .param .u64 __sbt_arg_lds_ptr,\n");
+    emit_raw("    .param .u32 __sbt_arg_knl_vaddr,\n");
+    emit_raw("    .param .u32 __sbt_arg_warp_id,\n");
+    emit_raw("    .param .u32 __sbt_arg_warps_per_block,\n");
+    emit_raw("    .param .u64 __sbt_arg_pds_base\n");
+    emit_raw(")\n{\n");
+
+    emit_line(".reg .b32 %r<32>;");
+    emit_line(".reg .b64 %rd<32>;");
+    emit_line(".reg .pred %p<16>;");
+    emit_line(".reg .f32 %f<16>;");
+    emit_line(".reg .u8 %ub<4>;");
+    emit_line(".reg .b32 %v<256>;");
+
+    emit_line("ld.param.u64 " + rd(0) + ", [__sbt_arg_elf_base];");
+    emit_line("ld.param.u64 " + rd(1) + ", [__sbt_arg_heap_base];");
+    emit_line("ld.param.u64 " + rd(3) + ", [__sbt_arg_wctx_ptr];");
+    emit_line("ld.param.u64 " + rd(4) + ", [__sbt_arg_lds_ptr];");
+    emit_line("ld.param.u32 " + r(30) + ", [__sbt_arg_knl_vaddr];");
+    emit_line("ld.param.u32 " + r(10) + ", [__sbt_arg_warp_id];");
+    emit_line("ld.param.u32 " + r(12) + ", [__sbt_arg_warps_per_block];");
+    emit_line("ld.param.u64 " + rd(5) + ", [__sbt_arg_pds_base];");
+
+    emit_line("mov.u32 " + r(0) + ", %laneid;");
+  }
+
   void emit_body() {
-    // Module header.
-    emit_raw(".version 7.0\n");
-    emit_raw(".target sm_" + std::to_string(opt.sm) + "\n");
-    emit_raw(".address_size 64\n\n");
-
-    // Declare dynamic shared segment.
-    emit_raw(".extern .shared .align 16 .b8 __sbt_shmem[];\n\n");
-
-    // Decide whether this kernel needs per-thread private backing (PDS).
-    // Avoid reserving a huge local stack frame for kernels that never use `vlw.v`/`vsw.v`.
-    need_pds = false;
-    for (const auto &ii : cfg.insts) {
-      const auto &d = ii.inst;
-      if (d.name == "vlw_v" || d.name == "vsw_v") {
-        need_pds = true;
-        break;
-      }
-    }
-
-    pds_alloc_bytes = 0;
-    if (need_pds) {
-      if (auto b = try_compute_pds_alloc_bytes()) pds_alloc_bytes = *b;
-    }
-
-    emit_prologue();
+    if (is_entry) emit_prologue();
+    else emit_func_prologue();
 
     // Emit blocks in address order.
     for (const auto &bb : cfg.blocks) {
@@ -1375,26 +1431,79 @@ struct EmitCtx final {
       }
     }
 
-    emit_raw("}\n");
+    emit_raw("}\n\n");
   }
 };
 
 } // namespace
 
-EmitResult emit_kernel(const sbt::cfg::FunctionCfg &cfg, const std::unordered_map<uint32_t, std::string> &sym_by_addr,
-                       const std::string &kernel_name, const Options &opt) {
-  EmitCtx ctx(cfg, sym_by_addr, kernel_name, opt);
+static bool cfg_needs_pds(const sbt::cfg::FunctionCfg &cfg) {
+  for (const auto &ii : cfg.insts) {
+    const auto &d = ii.inst;
+    if (d.name == "vlw_v" || d.name == "vsw_v") return true;
+  }
+  return false;
+}
 
-  // Basic sanity: ensure each block has a label mapping.
-  for (const auto &bb : cfg.blocks) {
-    require(!label_bb(bb.start).empty(), EmitError("invalid.cfg", kernel_name, cfg.start, "empty label"));
+EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unordered_map<uint32_t, std::string> &sym_by_addr,
+                       const std::string &entry_name, const std::vector<FuncToEmit> &funcs,
+                       const std::unordered_map<uint32_t, std::string> &ptx_name_by_addr, const Options &opt) {
+  // Module header.
+  std::ostringstream out;
+  out << ".version 7.0\n";
+  out << ".target sm_" << opt.sm << "\n";
+  out << ".address_size 64\n\n";
+  out << ".extern .shared .align 16 .b8 __sbt_shmem[];\n\n";
+
+  ModuleInfo mod;
+  mod.ptx_name_by_addr = &ptx_name_by_addr;
+
+  mod.need_pds = cfg_needs_pds(entry_cfg);
+  for (const auto &f : funcs) {
+    if (cfg_needs_pds(f.cfg)) {
+      mod.need_pds = true;
+      break;
+    }
   }
 
-  ctx.emit_body();
+  if (mod.need_pds) {
+    bool exact = true;
+    uint32_t max_b = 0;
+    auto consider = [&](const sbt::cfg::FunctionCfg &cfg) {
+      auto b = EmitCtx::try_compute_pds_alloc_bytes(cfg, opt);
+      if (!b) {
+        exact = false;
+        return;
+      }
+      if (*b > max_b) max_b = *b;
+    };
+    consider(entry_cfg);
+    for (const auto &f : funcs) consider(f.cfg);
+    mod.pds_alloc_bytes = (exact && max_b != 0) ? max_b : opt.pds_bytes;
+  }
+
+  // Emit `.func`s first.
+  for (const auto &f : funcs) {
+    EmitCtx ctx(f.cfg, sym_by_addr, f.name, f.ptx_name, opt, mod, /*is_entry=*/false);
+    ctx.emit_body();
+    out << ctx.out.str();
+  }
+
+  // Emit `.entry` last.
+  EmitCtx entry(entry_cfg, sym_by_addr, entry_name, entry_name, opt, mod, /*is_entry=*/true);
+  entry.emit_body();
+  out << entry.out.str();
 
   EmitResult res;
-  res.ptx = ctx.out.str();
+  res.ptx = out.str();
   return res;
+}
+
+EmitResult emit_kernel(const sbt::cfg::FunctionCfg &cfg, const std::unordered_map<uint32_t, std::string> &sym_by_addr,
+                       const std::string &kernel_name, const Options &opt) {
+  const std::unordered_map<uint32_t, std::string> empty;
+  const std::vector<FuncToEmit> none;
+  return emit_module(cfg, sym_by_addr, kernel_name, none, empty, opt);
 }
 
 } // namespace sbt::ptx

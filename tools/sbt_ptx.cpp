@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -168,6 +169,59 @@ static std::optional<FuncRange> find_func_range(const std::vector<sbt::elf::Func
     return FuncRange{start, end};
   }
   return std::nullopt;
+}
+
+static std::optional<FuncRange> find_func_range_by_addr(const std::vector<sbt::elf::FuncSymbol> &syms, uint32_t text_vaddr, uint32_t text_end,
+                                                        uint32_t addr) {
+  auto it = std::lower_bound(syms.begin(), syms.end(), addr, [](const sbt::elf::FuncSymbol &a, uint32_t v) { return a.addr < v; });
+  if (it == syms.end() || it->addr != addr) return std::nullopt;
+  const size_t i = static_cast<size_t>(it - syms.begin());
+  const auto &s = syms[i];
+  if (s.addr < text_vaddr || s.addr >= text_end) return std::nullopt;
+  const uint32_t start = s.addr;
+  uint32_t end = 0;
+  if (s.size != 0) {
+    end = start + s.size;
+  } else {
+    for (size_t j = i + 1; j < syms.size(); ++j) {
+      if (syms[j].addr > start) {
+        end = syms[j].addr;
+        break;
+      }
+    }
+    if (end == 0) end = text_end;
+  }
+  if (end <= start) end = text_end;
+  if (end > text_end) end = text_end;
+  return FuncRange{start, end};
+}
+
+static std::string hex8(uint32_t x) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%08x", x);
+  return std::string(buf);
+}
+
+static std::string sanitize_ptx_ident(std::string_view in) {
+  std::string out;
+  out.reserve(in.size() + 16);
+  for (char c : in) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    const bool ok = (std::isalnum(uc) != 0) || c == '_' || c == '$';
+    if (ok) {
+      out.push_back(c);
+    } else {
+      char buf[8];
+      std::snprintf(buf, sizeof(buf), "_%02x", static_cast<unsigned>(uc));
+      out += buf;
+    }
+  }
+  if (out.empty()) out = "anon";
+  return out;
+}
+
+static std::string ptx_func_name_for(const std::string &ventus_sym, uint32_t start_addr) {
+  return "__sbt_fn_" + sanitize_ptx_ident(ventus_sym) + "_" + hex8(start_addr);
 }
 
 static fs::path default_out_path(const fs::path &elf, const std::string &func) {
@@ -453,7 +507,160 @@ int main(int argc, char **argv) {
       }
     }
 
-    const auto res = sbt::ptx::emit_kernel(cfg, sym_by_addr, *func, popt);
+    auto build_cfg_for = [&](const FuncRange &fr, const std::string &name) -> sbt::cfg::FunctionCfg {
+      if (fr.start < text.vaddr || fr.end > text_end || fr.end <= fr.start) {
+        throw std::runtime_error("函数范围非法: " + name + " start=" + hex_u32(fr.start) + " end=" + hex_u32(fr.end));
+      }
+      const size_t off = fr.start - text.vaddr;
+      const size_t len = fr.end - fr.start;
+      std::vector<uint8_t> slice(text.data.begin() + static_cast<long>(off), text.data.begin() + static_cast<long>(off + len));
+      const auto decoded = sbt::decode_text(slice, fr.start, dopt, pack.patterns);
+      const auto cfg = sbt::cfg::build_function_cfg(decoded, fr.start, fr.end);
+      const auto verify = sbt::cfg::verify_function(cfg, name);
+
+      const bool vbranch_ok =
+          std::all_of(verify.vbranch.begin(), verify.vbranch.end(), [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
+      const bool barrier_ok = std::all_of(verify.barriers.begin(), verify.barriers.end(), [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
+      const bool jalr_ok = verify.unsupported_jalr.empty();
+      if (!vbranch_ok || !barrier_ok || !jalr_ok) {
+        std::ostringstream o;
+        o << "CFG 结构化验证未通过: " << name << " vbranch_ok=" << (vbranch_ok ? "true" : "false")
+          << " barrier_ok=" << (barrier_ok ? "true" : "false") << " jalr_ok=" << (jalr_ok ? "true" : "false");
+        throw std::runtime_error(o.str());
+      }
+      return cfg;
+    };
+
+    // Build a reachable set of direct-call callees and emit one PTX module:
+    //   1 `.entry <kernel>` + N `.func` (direct callees).
+    struct Node final {
+      std::string name;
+      FuncRange range{};
+      sbt::cfg::FunctionCfg cfg{};
+      std::vector<uint32_t> callees;
+    };
+
+    std::unordered_map<uint32_t, Node> nodes_by_start;
+    nodes_by_start.reserve(64);
+    std::vector<uint32_t> work;
+
+    Node entry;
+    entry.name = *func;
+    entry.range = *fr;
+    entry.cfg = cfg;
+    nodes_by_start.emplace(fr->start, std::move(entry));
+    work.push_back(fr->start);
+
+    auto scan_callees = [&](const Node &n) -> std::vector<uint32_t> {
+      std::vector<uint32_t> out;
+      for (const auto &bi : n.cfg.insts) {
+        const auto &di = bi.inst;
+        if (di.name != "jal" || di.rd_class != sbt::RegClass::X || di.rd == 0 || di.imm_kind != sbt::ImmKind::J21) continue;
+        const int64_t t64 = static_cast<int64_t>(bi.inst_pc) + static_cast<int64_t>(di.imm);
+        if (t64 < 0 || t64 > 0xffffffffll) {
+          throw std::runtime_error("call target out of range in " + n.name + " at pc=" + hex_u32(di.pc));
+        }
+        const uint32_t target = static_cast<uint32_t>(t64);
+        auto it = sym_by_addr.find(target);
+        if (it == sym_by_addr.end()) {
+          throw std::runtime_error("call target not in .symtab in " + n.name + " at pc=" + hex_u32(di.pc) + " target=" + hex_u32(target));
+        }
+        const std::string &callee = it->second;
+        if (sbt::ptx::is_inlined_builtin_call_name(callee)) continue;
+        out.push_back(target);
+      }
+      std::sort(out.begin(), out.end());
+      out.erase(std::unique(out.begin(), out.end()), out.end());
+      return out;
+    };
+
+    while (!work.empty()) {
+      const uint32_t cur = work.back();
+      work.pop_back();
+
+      auto it = nodes_by_start.find(cur);
+      if (it == nodes_by_start.end()) continue;
+      Node &n = it->second;
+      n.callees = scan_callees(n);
+
+      for (uint32_t callee_start : n.callees) {
+        if (nodes_by_start.find(callee_start) != nodes_by_start.end()) continue;
+
+        auto fr2 = find_func_range_by_addr(syms, text.vaddr, text_end, callee_start);
+        if (!fr2) {
+          auto itn = sym_by_addr.find(callee_start);
+          const std::string name2 = (itn != sym_by_addr.end() ? itn->second : std::string("(unknown)"));
+          throw std::runtime_error("callee missing symbol range: " + name2 + " start=" + hex_u32(callee_start));
+        }
+        auto itn = sym_by_addr.find(callee_start);
+        if (itn == sym_by_addr.end()) {
+          throw std::runtime_error("callee missing symbol name start=" + hex_u32(callee_start));
+        }
+        const std::string &name2 = itn->second;
+
+        Node nn;
+        nn.name = name2;
+        nn.range = *fr2;
+        nn.cfg = build_cfg_for(*fr2, name2);
+        nodes_by_start.emplace(callee_start, std::move(nn));
+        work.push_back(callee_start);
+      }
+    }
+
+    // Build adjacency and reject cycles (prototype: no recursion / mutual recursion).
+    enum class Mark : uint8_t { White = 0, Gray = 1, Black = 2 };
+    std::unordered_map<uint32_t, Mark> mark;
+    mark.reserve(nodes_by_start.size());
+    for (const auto &kv : nodes_by_start) mark.emplace(kv.first, Mark::White);
+
+    std::vector<uint32_t> stack;
+    stack.reserve(nodes_by_start.size());
+    std::function<bool(uint32_t)> dfs = [&](uint32_t u) -> bool {
+      mark[u] = Mark::Gray;
+      stack.push_back(u);
+      const auto &n = nodes_by_start.at(u);
+      for (uint32_t v : n.callees) {
+        if (nodes_by_start.find(v) == nodes_by_start.end()) continue;
+        if (mark[v] == Mark::Gray) return true;
+        if (mark[v] == Mark::White) {
+          if (dfs(v)) return true;
+        }
+      }
+      stack.pop_back();
+      mark[u] = Mark::Black;
+      return false;
+    };
+    if (dfs(fr->start)) {
+      throw std::runtime_error("recursive call graph detected (unsupported in prototype)");
+    }
+
+    // Prepare `.func` emission list and call-target mapping.
+    std::vector<uint32_t> starts;
+    starts.reserve(nodes_by_start.size());
+    for (const auto &kv : nodes_by_start) {
+      if (kv.first == fr->start) continue;
+      starts.push_back(kv.first);
+    }
+    std::sort(starts.begin(), starts.end());
+
+    std::vector<sbt::ptx::FuncToEmit> funcs_to_emit;
+    funcs_to_emit.reserve(starts.size());
+    std::unordered_map<uint32_t, std::string> ptx_name_by_addr;
+    ptx_name_by_addr.reserve(starts.size());
+
+    for (uint32_t saddr : starts) {
+      const auto &n = nodes_by_start.at(saddr);
+      const std::string ptx_name = ptx_func_name_for(n.name, saddr);
+      ptx_name_by_addr.emplace(saddr, ptx_name);
+
+      sbt::ptx::FuncToEmit f;
+      f.name = n.name;
+      f.ptx_name = ptx_name;
+      f.cfg = n.cfg;
+      funcs_to_emit.push_back(std::move(f));
+    }
+
+    const auto res = sbt::ptx::emit_module(cfg, sym_by_addr, *func, funcs_to_emit, ptx_name_by_addr, popt);
 
     const auto t1_work = std::chrono::steady_clock::now();
     t_work_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1_work - t0_work).count();

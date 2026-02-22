@@ -34,20 +34,52 @@
   3) 将“支持子集”显式版本化（例如在生成文件头写入 Spike commit/encoding.h mtime）。
 - 若担心“生成文件提交进仓库”的维护成本：至少把 whitelist 从代码搬到 `doc/`/`data/` 的一个列表文件，让工具加载同一份配置。
 
-### 1.2 builtin call 支持集合偏 Rodinia/PoCL 经验列表
+### 1.2 （已部分修正）builtin call 支持集合偏 Rodinia/PoCL 经验列表
 
 现状：
-- `sbt/ptx_emit.cpp` 里硬编码 `is_builtin_call_name()` + 一组内联实现（`get_global_id`/`sqrt`/`cos/sin/tan`/`mad24` 等）。
+- builtin 内联：`sbt/ptx_emit.cpp` 里仍有一组按名字处理的 builtin（见 `is_inlined_builtin_call_name()`），用于 OpenCL id/query 与少量 helper（保持原型期 bring-up 可运行）。
+- direct call 通用化：`tools/sbt_ptx.cpp` 已实现 **direct call（`jal ra, imm`）的 call graph 闭包收集**，输出单个 PTX module：`1×.entry(kernel) + N×.func(callee)`；`sbt/ptx_emit.cpp` 将这些 call 翻译为 PTX `call.uni`（被调函数为 `.func`）。
+- 仍不支持：非 `ret` 形态 `jalr`（函数指针/跳转表/间接调用）与递归/互递归（原型期仍选择 fail-fast）。
 
 问题：
 - 这是“跑通当前测例”的正确做法，但会把 emitter 变成“PoCL/OpenCL runtime 适配器”，难以扩展到更多 libc/clc/数学函数。
 - builtin 的 ABI（参数在哪个寄存器/返回值在哪）目前隐含在实现里，缺少文档化与可测试性。
+- （已缓解）此前更核心的痛点——**缺少通用的 Ventus function 翻译（direct call）**——已通过 “`.entry + .func` + `call.uni`” 路径打通；但 builtin 仍偏“经验列表”，尚未 registry 化。
 
-建议：
-- 把 builtin 支持抽象成一个“小的可扩展层”：
-  - 形式 A：`BuiltinRegistry`（name → lowering handler），并把 handler 作为独立文件/模块（避免 emitter 继续膨胀）。
-  - 形式 B：把 builtin 视为“外部库”，优先尝试链接/调用 NVIDIA `libdevice` 或 PTX 内建（能用则用），不能用再内联兜底。
-- 为每个 builtin 建立 micro-test（不必依赖 Rodinia），输出可比对结果，避免“某个 benchmark 变了才发现 builtin 实现错了”。
+建议（按优先级，从“治根因”到“增强可维护性”）：
+
+#### 1.2.1 （已落地）补齐“通用 direct call 翻译”（把经验列表降级为兜底）
+
+目标：支持 kernel 内的 direct call（`jal x1, <imm>`）调用 ELF 内其它函数，把它们翻译成 PTX `.func`，从而让“多数 helper/builtin”不再需要按名字硬编码。
+
+最小可行范围（MVP）：
+- 只支持 direct call：`jal ra, imm`（目标可静态确定）。
+- 仍保持当前 `jalr` 策略：仅支持 `ret` 形态；其它 `jalr` 继续 fail-fast（避免把“函数指针/跳转表”过早纳入原型复杂度）。
+
+落地备注（as-built）：
+- call graph 闭包收集：`tools/sbt_ptx.cpp` 会从入口函数 CFG 扫描 `jal ra, imm`，用 `.symtab` 反查被调函数范围并递归收集。
+- PTX 模块化输出：`sbt/ptx_emit.cpp` 输出 `1×.entry + N×.func`，并把 direct call 翻译为 `call.uni`。
+- 当前显式限制：拒绝递归/互递归 call graph（保守策略，避免引入递归带来的栈/资源问题）；间接调用仍未支持。
+
+收益：
+- 让“ELF 里本来就有实现的 math/helper/builtin”自然走通用翻译路径，减少 emitter 内联膨胀。
+- 使后续扩展更像“编译器/链接器”的工作流，而不是不断补丁式加 case。
+
+#### 1.2.2 再把 builtin 变成 Registry（从经验列表变成可维护接口）
+
+在有了 1.2.1 的“通用 direct call 翻译”后，builtin 层应当收敛为少数真正需要 intrinsic 化的东西：
+- work-item/work-group 查询（`get_global_id/get_local_id/get_group_id/...`）：直接映射 PTX `%tid/%ctaid/%ntid/%nctaid`。
+- 明确依赖 runtime/metadata/CSR 的查询（例如 `CSR_KNL` 相关字段读取）。
+- （可选）数学函数 fallback：当 ELF 内不存在对应实现或翻译失败时，再降级到 `libdevice`/PTX 指令/内联近似。
+
+建议形态：
+- `BuiltinRegistry`：`(mangled_name, signature/width)` → lowering handler（输出 PTX 序列）。
+- `--dump-missing-builtins`：把运行回归时遇到的 unresolved call 自动汇总，形成“可补齐清单”，避免靠手工 grep/猜测。
+
+#### 1.2.3 为 builtin/函数调用加 micro-test（让“扩展”可回归）
+
+- 为每个 builtin handler（以及一小撮“典型 helper 函数调用”）建立独立 micro-test（不依赖 Rodinia）。
+- 输出可比对结果（或至少检查不会触发非法地址/发散 barrier 等），避免“benchmark 变了才发现 builtin 实现错了”。
 
 ### 1.3 （已修正）`s0` bump：不要在翻译器 prologue 中做“补偿猜测”
 
@@ -106,6 +138,8 @@
 - 明确定位：`testcases/simple` 是“历史原型/语义参考”还是“持续可跑的单元测试”。
   - 若要持续可跑：把脚本改成只依赖 `./ventus-env/install/bin` 相对路径，并把基址作为参数/CSR 传入（与当前 Stage3/Stage4 约定一致）。
   - 若仅作参考：在目录 README 里标注“不可复现脚本/旧假设”，避免把它当成标准 pipeline。
+
+补充：可以明确 testcases/simple 是历史原型，未来不需要持续维护
 
 ---
 
