@@ -90,8 +90,6 @@ EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::st
 namespace {
 
 struct ModuleInfo final {
-  bool need_pds = false;
-  uint32_t pds_alloc_bytes = 0;
   bool need_vctx = false;
   const std::unordered_map<uint32_t, std::string> *ptx_name_by_addr = nullptr;
 };
@@ -122,8 +120,9 @@ struct EmitCtx final {
   // %rd2: shmem_base (shared)
   // %rd3: wctx_ptr (shared)
   // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
-  // %rd5: per-thread private base (local) for `vlw.v`/`vsw.v`
   // %rd6: per-thread v-reg context base (local) for cross-`.func` calls
+  // %r28: pds_base_vaddr (u32 Ventus numeric address)
+  // %r29: pds_size_per_thread (u32 bytes)
 
   uint32_t x_off(int idx) const { return static_cast<uint32_t>(idx) * 4u; }
 
@@ -561,9 +560,10 @@ struct EmitCtx final {
     const std::string p_wctx = new_label("call_wctx");
     const std::string p_lds = new_label("call_lds");
     const std::string p_knl = new_label("call_knl");
+    const std::string p_pds_base = new_label("call_pds_base_vaddr");
+    const std::string p_pds_size = new_label("call_pds_size_per_thread");
     const std::string p_wid = new_label("call_wid");
     const std::string p_numw = new_label("call_numw");
-    const std::string p_pds = new_label("call_pds");
     const std::string p_vctx = new_label("call_vctx");
 
     emit_line(".param .u64 " + p_elf + ";");
@@ -571,9 +571,10 @@ struct EmitCtx final {
     emit_line(".param .u64 " + p_wctx + ";");
     emit_line(".param .u64 " + p_lds + ";");
     emit_line(".param .u32 " + p_knl + ";");
+    emit_line(".param .u32 " + p_pds_base + ";");
+    emit_line(".param .u32 " + p_pds_size + ";");
     emit_line(".param .u32 " + p_wid + ";");
     emit_line(".param .u32 " + p_numw + ";");
-    emit_line(".param .u64 " + p_pds + ";");
     if (mod.need_vctx) emit_line(".param .u64 " + p_vctx + ";");
 
     emit_line("st.param.u64 [" + p_elf + "], " + rd(0) + ";");
@@ -581,12 +582,14 @@ struct EmitCtx final {
     emit_line("st.param.u64 [" + p_wctx + "], " + rd(3) + ";");
     emit_line("st.param.u64 [" + p_lds + "], " + rd(4) + ";");
     emit_line("st.param.u32 [" + p_knl + "], " + r(30) + ";");
+    emit_line("st.param.u32 [" + p_pds_base + "], " + r(28) + ";");
+    emit_line("st.param.u32 [" + p_pds_size + "], " + r(29) + ";");
     emit_line("st.param.u32 [" + p_wid + "], " + r(10) + ";");
     emit_line("st.param.u32 [" + p_numw + "], " + r(12) + ";");
-    emit_line("st.param.u64 [" + p_pds + "], " + rd(5) + ";");
     if (mod.need_vctx) emit_line("st.param.u64 [" + p_vctx + "], " + rd(6) + ";");
 
-    std::string args = p_elf + ", " + p_heap + ", " + p_wctx + ", " + p_lds + ", " + p_knl + ", " + p_wid + ", " + p_numw + ", " + p_pds;
+    std::string args =
+        p_elf + ", " + p_heap + ", " + p_wctx + ", " + p_lds + ", " + p_knl + ", " + p_pds_base + ", " + p_pds_size + ", " + p_wid + ", " + p_numw;
     if (mod.need_vctx) args += ", " + p_vctx;
     emit_line("call.uni " + callee_ptx + ", (" + args + ");");
   }
@@ -791,6 +794,32 @@ struct EmitCtx final {
         // CSR_LDS: base numeric address of work-group local memory (also xgpr spill base).
         // In this backend, numeric shared addresses start at `shared_base_vaddr`.
         emit_line(scalar_prefix() + "mov.u32 " + r(14) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+      } else if (csr == 0x807u) { // CSR_PDS
+        // CSR_PDS: per-warp private memory base (numeric address).
+        //
+        // blk_linear = ctaid.x + nctaid.x * (ctaid.y + nctaid.y * ctaid.z)
+        // warp_linear = blk_linear*warps_per_block + warp_id_in_block
+        // CSR_PDS = pds_base_vaddr + warp_linear * (32 * pds_size_per_thread)
+        emit_line(scalar_prefix() + "mov.u32 " + r(15) + ", %ctaid.x;");
+        emit_line(scalar_prefix() + "mov.u32 " + r(16) + ", %ctaid.y;");
+        emit_line(scalar_prefix() + "mov.u32 " + r(17) + ", %ctaid.z;");
+        emit_line(scalar_prefix() + "mov.u32 " + r(18) + ", %nctaid.x;");
+        emit_line(scalar_prefix() + "mov.u32 " + r(19) + ", %nctaid.y;");
+        emit_line(scalar_prefix() + "mul.lo.u32 " + r(20) + ", " + r(19) + ", " + r(17) + ";");
+        emit_line(scalar_prefix() + "add.u32 " + r(20) + ", " + r(20) + ", " + r(16) + ";");
+        emit_line(scalar_prefix() + "mul.lo.u32 " + r(20) + ", " + r(18) + ", " + r(20) + ";");
+        emit_line(scalar_prefix() + "add.u32 " + r(20) + ", " + r(20) + ", " + r(15) + ";"); // blk_linear
+
+        emit_line(scalar_prefix() + "mul.lo.u32 " + r(21) + ", " + r(20) + ", " + r(12) + ";");
+        emit_line(scalar_prefix() + "add.u32 " + r(21) + ", " + r(21) + ", " + r(10) + ";"); // warp_linear
+
+        emit_line(scalar_prefix() + "shl.b32 " + r(22) + ", " + r(29) + ", 5;"); // bytes_per_warp
+        emit_line(scalar_prefix() + "cvt.u64.u32 " + rd(16) + ", " + r(21) + ";");
+        emit_line(scalar_prefix() + "cvt.u64.u32 " + rd(17) + ", " + r(22) + ";");
+        emit_line(scalar_prefix() + "mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+        emit_line(scalar_prefix() + "cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
+        emit_line(scalar_prefix() + "add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+        emit_line(scalar_prefix() + "cvt.u32.u64 " + r(14) + ", " + rd(16) + ";");
       } else if (csr == 0x808u) { // CSR_GDX
         emit_line(scalar_prefix() + "mov.u32 " + r(14) + ", %ctaid.x;");
       } else if (csr == 0x809u) { // CSR_GDY
@@ -926,23 +955,78 @@ struct EmitCtx final {
 
     // Vector loads/stores.
     // NOTE: `vlw.v` / `vsw.v` are Ventus GPU-private-memory indexed ops (Spike: insns/vlw_v.h, vsw_v.h).
-    // In this backend, they are emulated using PTX local memory (see prologue).
     if (di.name == "vlw_v" && di.imm_kind == sbt::ImmKind::I12) {
-      // baseAddr = vs1 + simm11 (byte offset in per-thread private memory)
+      // base_addr = vs1 + simm11
       emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
+      // offset = ((base_addr & ~3) * 32) + laneid*4
       emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;"); // align down to 4
-      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(15) + ";");
-      emit_line("add.u64 " + rd(17) + ", " + rd(5) + ", " + rd(16) + ";");
-      emit_line("ld.local.u32 " + r(20) + ", [" + rd(17) + "];");
+      emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
+      emit_line("shl.b32 " + r(16) + ", " + r(0) + ", 2;");
+      emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
+
+      // Compute CSR_PDS (warp base) using software-stack formula.
+      // blk_linear = ctaid.x + nctaid.x * (ctaid.y + nctaid.y * ctaid.z)
+      emit_line("mov.u32 " + r(16) + ", %ctaid.x;");
+      emit_line("mov.u32 " + r(17) + ", %ctaid.y;");
+      emit_line("mov.u32 " + r(18) + ", %ctaid.z;");
+      emit_line("mov.u32 " + r(19) + ", %nctaid.x;");
+      emit_line("mov.u32 " + r(20) + ", %nctaid.y;");
+      emit_line("mul.lo.u32 " + r(21) + ", " + r(20) + ", " + r(18) + ";");
+      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(17) + ";");
+      emit_line("mul.lo.u32 " + r(21) + ", " + r(19) + ", " + r(21) + ";");
+      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(16) + ";"); // blk_linear
+
+      // warp_linear = blk_linear*warps_per_block + warp_id_in_block
+      emit_line("mul.lo.u32 " + r(22) + ", " + r(21) + ", " + r(12) + ";");
+      emit_line("add.u32 " + r(22) + ", " + r(22) + ", " + r(10) + ";");
+
+      // bytes_per_warp = 32*pds_size_per_thread
+      emit_line("shl.b32 " + r(23) + ", " + r(29) + ", 5;");
+
+      // warp_base = pds_base_vaddr + warp_linear*bytes_per_warp
+      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(22) + ";");
+      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(23) + ";");
+      emit_line("mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
+      emit_line("add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+      emit_line("cvt.u32.u64 " + r(24) + ", " + rd(16) + ";"); // CSR_PDS (u32)
+
+      // addr = CSR_PDS + offset
+      emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
+
+      emit_addr_map_and_ld_u32(r(20), r(14), pc);
       emit_line("mov.u32 " + v(di.rd) + ", " + r(20) + ";");
       return;
     }
     if (di.name == "vsw_v" && di.imm_kind == sbt::ImmKind::S12) {
       emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
       emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
-      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(15) + ";");
-      emit_line("add.u64 " + rd(17) + ", " + rd(5) + ", " + rd(16) + ";");
-      emit_line("st.local.u32 [" + rd(17) + "], " + v(di.rs2) + ";");
+      emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
+      emit_line("shl.b32 " + r(16) + ", " + r(0) + ", 2;");
+      emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
+
+      emit_line("mov.u32 " + r(16) + ", %ctaid.x;");
+      emit_line("mov.u32 " + r(17) + ", %ctaid.y;");
+      emit_line("mov.u32 " + r(18) + ", %ctaid.z;");
+      emit_line("mov.u32 " + r(19) + ", %nctaid.x;");
+      emit_line("mov.u32 " + r(20) + ", %nctaid.y;");
+      emit_line("mul.lo.u32 " + r(21) + ", " + r(20) + ", " + r(18) + ";");
+      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(17) + ";");
+      emit_line("mul.lo.u32 " + r(21) + ", " + r(19) + ", " + r(21) + ";");
+      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(16) + ";"); // blk_linear
+
+      emit_line("mul.lo.u32 " + r(22) + ", " + r(21) + ", " + r(12) + ";");
+      emit_line("add.u32 " + r(22) + ", " + r(22) + ", " + r(10) + ";");
+      emit_line("shl.b32 " + r(23) + ", " + r(29) + ", 5;");
+      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(22) + ";");
+      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(23) + ";");
+      emit_line("mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
+      emit_line("add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+      emit_line("cvt.u32.u64 " + r(24) + ", " + rd(16) + ";"); // CSR_PDS
+
+      emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
+      emit_addr_map_and_st_u32(r(14), v(di.rs2), pc);
       return;
     }
 
@@ -1149,10 +1233,14 @@ struct EmitCtx final {
     //  - elf_base: backing buffer for [elf_base_vaddr, heap_base_vaddr)
     //  - heap_base: backing buffer for [heap_base_vaddr, ...)
     //  - knl_vaddr: Ventus numeric address of metadata buffer (u32)
+    //  - pds_base_vaddr: Ventus numeric address of the global PDS buffer base (u32)
+    //  - pds_size_per_thread: bytes of private memory per thread (u32)
     emit_raw(".visible .entry " + ptx_name + "(\n");
     emit_raw("    .param .u64 elf_base,\n");
     emit_raw("    .param .u64 heap_base,\n");
-    emit_raw("    .param .u32 knl_vaddr\n");
+    emit_raw("    .param .u32 knl_vaddr,\n");
+    emit_raw("    .param .u32 pds_base_vaddr,\n");
+    emit_raw("    .param .u32 pds_size_per_thread\n");
     emit_raw(")\n{\n");
 
     emit_line(".reg .b32 %r<32>;");
@@ -1170,27 +1258,14 @@ struct EmitCtx final {
       emit_line("mov.u64 " + rd(6) + ", 0;");
     }
 
-    // Per-thread private memory backing for `vlw.v` / `vsw.v` (only if needed).
-    //
-    // PoCL's 64B CSR_KNL metadata buffer does not include CSR_PDS (private memory base),
-    // so we cannot correctly map these ops to the driver's global-memory PDS allocation
-    // without changing the driver ABI. For bring-up, emulate per-thread private memory
-    // using PTX local memory (one array per CUDA thread).
-    if (mod.need_pds) {
-      const uint32_t bytes = (mod.pds_alloc_bytes != 0 ? mod.pds_alloc_bytes : opt.pds_bytes);
-      emit_line(".local .align 4 .b8 __sbt_pds[" + std::to_string(bytes) + "];");
-      // `mov` yields a local-space address for local symbols; use it directly with `ld/st.local`.
-      emit_line("mov.u64 " + rd(5) + ", __sbt_pds;");
-    } else {
-      emit_line("mov.u64 " + rd(5) + ", 0;");
-    }
-
     // Load params and compute global/shared base pointers.
     emit_line("ld.param.u64 " + rd(10) + ", [elf_base];");
     emit_line("cvta.to.global.u64 " + rd(0) + ", " + rd(10) + ";");
     emit_line("ld.param.u64 " + rd(11) + ", [heap_base];");
     emit_line("cvta.to.global.u64 " + rd(1) + ", " + rd(11) + ";");
     emit_line("ld.param.u32 " + r(30) + ", [knl_vaddr];");
+    emit_line("ld.param.u32 " + r(28) + ", [pds_base_vaddr];");
+    emit_line("ld.param.u32 " + r(29) + ", [pds_size_per_thread];");
 
     // lane id (0..31)
     emit_line("mov.u32 " + r(0) + ", %laneid;");
@@ -1234,6 +1309,13 @@ struct EmitCtx final {
     // Leader + init ABI-critical scalar regs (x2 stack, x10 argbase).
     emit_block_preamble();
 
+    // Fail fast if pds_base_vaddr is outside heap/global numeric address range.
+    // Allow pds_size_per_thread==0 to bypass the check (some kernels may not allocate private memory).
+    emit_line("setp.lt.u32 " + p(1) + ", " + r(28) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("setp.ne.u32 " + p(2) + ", " + r(29) + ", 0;");
+    emit_line("and.pred " + p(1) + ", " + p(1) + ", " + p(2) + ";");
+    emit_line("@" + p(1) + " trap;");
+
     // Match `_start` ABI: tp (x4) starts at 0 and is used as a spill-stack cursor.
     emit_line("@" + p(0) + " mov.u32 " + r(15) + ", 0;");
     emit_st_x_u32_leader(/*x4=*/4, r(15), /*pc_for_err=*/cfg.start);
@@ -1265,200 +1347,6 @@ struct EmitCtx final {
     // Fallthrough to entry BB.
   }
 
-  static std::optional<uint32_t> try_compute_pds_alloc_bytes(const sbt::cfg::FunctionCfg &cfg, const Options &opt) {
-
-    struct State final {
-      std::array<std::optional<uint32_t>, 32> x{};
-      std::array<std::optional<uint32_t>, 256> v{};
-    };
-
-    auto meet_into = [](State &dst, const State &src) -> bool {
-      bool changed = false;
-      for (size_t i = 0; i < dst.x.size(); ++i) {
-        if (!dst.x[i].has_value()) continue;
-        if (!src.x[i].has_value() || *dst.x[i] != *src.x[i]) {
-          dst.x[i].reset();
-          changed = true;
-        }
-      }
-      for (size_t i = 0; i < dst.v.size(); ++i) {
-        if (!dst.v[i].has_value()) continue;
-        if (!src.v[i].has_value() || *dst.v[i] != *src.v[i]) {
-          dst.v[i].reset();
-          changed = true;
-        }
-      }
-      return changed;
-    };
-
-    auto step = [](State &st, const sbt::DecodedInst &di) {
-      auto gx = [&](int r) -> std::optional<uint32_t> {
-        if (r < 0 || r >= (int)st.x.size()) return std::nullopt;
-        if (r == 0) return 0u;
-        return st.x[(size_t)r];
-      };
-      auto sx = [&](int r, std::optional<uint32_t> v) {
-        if (r <= 0 || r >= (int)st.x.size()) return;
-        st.x[(size_t)r] = v;
-      };
-      auto gv = [&](int r) -> std::optional<uint32_t> {
-        if (r < 0 || r >= (int)st.v.size()) return std::nullopt;
-        return st.v[(size_t)r];
-      };
-      auto sv = [&](int r, std::optional<uint32_t> v) {
-        if (r < 0 || r >= (int)st.v.size()) return;
-        st.v[(size_t)r] = v;
-      };
-
-      // Scalar constants (subset).
-      if (di.rd_class == sbt::RegClass::X) {
-        if (di.name == "addi" && di.imm_kind == sbt::ImmKind::I12 && di.rs1_class == sbt::RegClass::X) {
-          if (auto a = gx(di.rs1)) sx(di.rd, static_cast<uint32_t>(*a + static_cast<uint32_t>(di.imm)));
-          else sx(di.rd, std::nullopt);
-          return;
-        }
-        if (di.name == "lui" && di.imm_kind == sbt::ImmKind::U20) {
-          sx(di.rd, static_cast<uint32_t>(di.imm));
-          return;
-        }
-        if (di.name == "auipc" && di.imm_kind == sbt::ImmKind::U20) {
-          sx(di.rd, static_cast<uint32_t>(di.pc + static_cast<uint32_t>(di.imm)));
-          return;
-        }
-        if (di.name == "add" && di.rs1_class == sbt::RegClass::X && di.rs2_class == sbt::RegClass::X) {
-          auto a = gx(di.rs1);
-          auto b = gx(di.rs2);
-          if (a && b) sx(di.rd, static_cast<uint32_t>(*a + *b));
-          else sx(di.rd, std::nullopt);
-          return;
-        }
-        if (di.name == "sub" && di.rs1_class == sbt::RegClass::X && di.rs2_class == sbt::RegClass::X) {
-          auto a = gx(di.rs1);
-          auto b = gx(di.rs2);
-          if (a && b) sx(di.rd, static_cast<uint32_t>(*a - *b));
-          else sx(di.rd, std::nullopt);
-          return;
-        }
-        if (di.name == "xori" && di.imm_kind == sbt::ImmKind::I12 && di.rs1_class == sbt::RegClass::X) {
-          if (auto a = gx(di.rs1)) sx(di.rd, static_cast<uint32_t>(*a ^ static_cast<uint32_t>(di.imm)));
-          else sx(di.rd, std::nullopt);
-          return;
-        }
-        if (di.name == "slli" && di.imm_kind == sbt::ImmKind::I12 && di.rs1_class == sbt::RegClass::X) {
-          if (auto a = gx(di.rs1)) sx(di.rd, static_cast<uint32_t>(*a << static_cast<uint32_t>(di.imm)));
-          else sx(di.rd, std::nullopt);
-          return;
-        }
-        // Unhandled write to x-reg.
-        if (di.rd != 0) sx(di.rd, std::nullopt);
-      }
-
-      // Vector constants (subset).
-      if (di.rd_class == sbt::RegClass::V) {
-        if (di.name == "vmv_v_x" && di.rs1_class == sbt::RegClass::X) {
-          sv(di.rd, gx(di.rs1));
-          return;
-        }
-        if ((di.name == "vadd_vi" || di.name == "vadd12_vi") && di.imm_kind == sbt::ImmKind::I12 && di.rs2_class == sbt::RegClass::V) {
-          if (auto a = gv(di.rs2)) sv(di.rd, static_cast<uint32_t>(*a + static_cast<uint32_t>(di.imm)));
-          else sv(di.rd, std::nullopt);
-          return;
-        }
-        if (di.name == "vsub12_vi" && di.imm_kind == sbt::ImmKind::I12 && di.rs1_class == sbt::RegClass::V) {
-          if (auto a = gv(di.rs1)) sv(di.rd, static_cast<uint32_t>(*a - static_cast<uint32_t>(di.imm)));
-          else sv(di.rd, std::nullopt);
-          return;
-        }
-        if (di.name == "vadd_vx" && di.rs1_class == sbt::RegClass::X && di.rs2_class == sbt::RegClass::V) {
-          auto a = gv(di.rs2);
-          auto b = gx(di.rs1);
-          if (a && b) sv(di.rd, static_cast<uint32_t>(*a + *b));
-          else sv(di.rd, std::nullopt);
-          return;
-        }
-        // Unhandled write to v-reg.
-        sv(di.rd, std::nullopt);
-      }
-    };
-
-    const size_t nb = cfg.blocks.size();
-    if (nb == 0) return std::nullopt;
-
-    std::vector<State> in(nb);
-    std::vector<bool> inited(nb, false);
-
-    auto entry_it = cfg.block_index_by_start.find(cfg.start);
-    if (entry_it == cfg.block_index_by_start.end()) return std::nullopt;
-    const size_t entry_bi = entry_it->second;
-    inited[entry_bi] = true;
-    in[entry_bi].x[0] = 0u;
-    in[entry_bi].x[4] = 0u; // tp starts at 0 (see prologue init).
-
-    std::vector<size_t> work;
-    work.push_back(entry_bi);
-
-    while (!work.empty()) {
-      const size_t bi = work.back();
-      work.pop_back();
-      if (!inited[bi]) continue;
-
-      State st = in[bi];
-      const auto &bb = cfg.blocks[bi];
-      for (size_t ii : bb.inst_indices) {
-        step(st, cfg.insts[ii].inst);
-      }
-
-      for (const auto &e : bb.succs) {
-        auto it = cfg.block_index_by_start.find(e.dst);
-        if (it == cfg.block_index_by_start.end()) continue;
-        const size_t dj = it->second;
-        if (!inited[dj]) {
-          inited[dj] = true;
-          in[dj] = st;
-          work.push_back(dj);
-        } else {
-          State joined = in[dj];
-          const bool changed = meet_into(joined, st);
-          if (changed) {
-            in[dj] = joined;
-            work.push_back(dj);
-          }
-        }
-      }
-    }
-
-    uint32_t max_required = 0;
-    for (size_t bi = 0; bi < nb; ++bi) {
-      if (!inited[bi]) continue;
-      State st = in[bi];
-      const auto &bb = cfg.blocks[bi];
-      for (size_t ii : bb.inst_indices) {
-        const auto &di = cfg.insts[ii].inst;
-        const bool is_pds_op =
-            (di.name == "vlw_v" && di.imm_kind == sbt::ImmKind::I12) || (di.name == "vsw_v" && di.imm_kind == sbt::ImmKind::S12);
-        if (is_pds_op) {
-          if (di.rs1_class != sbt::RegClass::V) return std::nullopt;
-          const int base_v = di.rs1;
-          if (base_v < 0 || base_v >= (int)st.v.size()) return std::nullopt;
-          if (!st.v[(size_t)base_v].has_value()) return std::nullopt;
-          const int64_t base = static_cast<int64_t>(static_cast<int32_t>(*st.v[(size_t)base_v]));
-          const int64_t addr64 = base + static_cast<int64_t>(di.imm);
-          if (addr64 < 0) return std::nullopt;
-          const uint32_t addr = static_cast<uint32_t>(addr64) & ~3u;
-          const uint64_t required = static_cast<uint64_t>(addr) + 4ull;
-          if (required == 0 || required > opt.pds_bytes) return std::nullopt;
-          if (required > max_required) max_required = static_cast<uint32_t>(required);
-        }
-        step(st, di);
-      }
-    }
-
-    if (max_required == 0) return std::nullopt;
-    max_required = (max_required + 3u) & ~3u;
-    if (max_required < 4) max_required = 4;
-    return max_required;
-  }
-
   void emit_func_prologue() {
     // Pass-through params computed in the caller and required for address mapping / CSR reads.
     emit_raw(".func " + ptx_name + "(\n");
@@ -1467,9 +1355,10 @@ struct EmitCtx final {
     emit_raw("    .param .u64 __sbt_arg_wctx_ptr,\n");
     emit_raw("    .param .u64 __sbt_arg_lds_ptr,\n");
     emit_raw("    .param .u32 __sbt_arg_knl_vaddr,\n");
+    emit_raw("    .param .u32 __sbt_arg_pds_base_vaddr,\n");
+    emit_raw("    .param .u32 __sbt_arg_pds_size_per_thread,\n");
     emit_raw("    .param .u32 __sbt_arg_warp_id,\n");
-    emit_raw("    .param .u32 __sbt_arg_warps_per_block,\n");
-    emit_raw("    .param .u64 __sbt_arg_pds_base");
+    emit_raw("    .param .u32 __sbt_arg_warps_per_block");
     if (mod.need_vctx) emit_raw(",\n    .param .u64 __sbt_arg_vctx_base");
     emit_raw("\n");
     emit_raw(")\n{\n");
@@ -1486,9 +1375,10 @@ struct EmitCtx final {
     emit_line("ld.param.u64 " + rd(3) + ", [__sbt_arg_wctx_ptr];");
     emit_line("ld.param.u64 " + rd(4) + ", [__sbt_arg_lds_ptr];");
     emit_line("ld.param.u32 " + r(30) + ", [__sbt_arg_knl_vaddr];");
+    emit_line("ld.param.u32 " + r(28) + ", [__sbt_arg_pds_base_vaddr];");
+    emit_line("ld.param.u32 " + r(29) + ", [__sbt_arg_pds_size_per_thread];");
     emit_line("ld.param.u32 " + r(10) + ", [__sbt_arg_warp_id];");
     emit_line("ld.param.u32 " + r(12) + ", [__sbt_arg_warps_per_block];");
-    emit_line("ld.param.u64 " + rd(5) + ", [__sbt_arg_pds_base];");
     if (mod.need_vctx) emit_line("ld.param.u64 " + rd(6) + ", [__sbt_arg_vctx_base];");
 
     emit_line("mov.u32 " + r(0) + ", %laneid;");
@@ -1517,14 +1407,6 @@ struct EmitCtx final {
 
 } // namespace
 
-static bool cfg_needs_pds(const sbt::cfg::FunctionCfg &cfg) {
-  for (const auto &ii : cfg.insts) {
-    const auto &d = ii.inst;
-    if (d.name == "vlw_v" || d.name == "vsw_v") return true;
-  }
-  return false;
-}
-
 EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unordered_map<uint32_t, std::string> &sym_by_addr,
                        const std::string &entry_name, const std::vector<FuncToEmit> &funcs,
                        const std::unordered_map<uint32_t, std::string> &ptx_name_by_addr, const Options &opt) {
@@ -1538,30 +1420,6 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
   ModuleInfo mod;
   mod.ptx_name_by_addr = &ptx_name_by_addr;
   mod.need_vctx = !funcs.empty();
-
-  mod.need_pds = cfg_needs_pds(entry_cfg);
-  for (const auto &f : funcs) {
-    if (cfg_needs_pds(f.cfg)) {
-      mod.need_pds = true;
-      break;
-    }
-  }
-
-  if (mod.need_pds) {
-    bool exact = true;
-    uint32_t max_b = 0;
-    auto consider = [&](const sbt::cfg::FunctionCfg &cfg) {
-      auto b = EmitCtx::try_compute_pds_alloc_bytes(cfg, opt);
-      if (!b) {
-        exact = false;
-        return;
-      }
-      if (*b > max_b) max_b = *b;
-    };
-    consider(entry_cfg);
-    for (const auto &f : funcs) consider(f.cfg);
-    mod.pds_alloc_bytes = (exact && max_b != 0) ? max_b : opt.pds_bytes;
-  }
 
   // Emit `.func`s first.
   for (const auto &f : funcs) {

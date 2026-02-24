@@ -392,7 +392,17 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
       if (out.name == "vlw_v") out.imm = sext((w >> 20) & 0x7FFu, 11);
       else out.imm = sext(imm_i(w), 12);
       break;
-    case ImmKind::S12: out.imm = sext(imm_s(w), 12); break;
+    case ImmKind::S12:
+      // `vsw.v` encodes an 11-bit signed offset using S-type split immediate bits [30:25] and [11:7].
+      if (out.name == "vsw_v") {
+        const uint32_t hi6 = (w >> 25) & 0x3Fu;   // bits [30:25]
+        const uint32_t lo5 = (w >> 7) & 0x1Fu;    // bits [11:7]
+        const uint32_t imm11 = (hi6 << 5) | lo5;  // bits [10:0]
+        out.imm = sext(imm11, 11);
+      } else {
+        out.imm = sext(imm_s(w), 12);
+      }
+      break;
     case ImmKind::B13: out.imm = sext(imm_b(w), 13); break;
     case ImmKind::U20: out.imm = int32_t(imm_u(w)); break;
     case ImmKind::J21: out.imm = sext(imm_j(w), 21); break;

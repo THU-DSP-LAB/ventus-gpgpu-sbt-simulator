@@ -501,21 +501,6 @@ int main(int argc, char **argv) {
     popt.sm = sm;
     popt.include_comments = include_comments;
     popt.scalar_exec_leader_only = env_bool("GPU_SBT_SCALAR_LEADER_ONLY", /*default_value=*/true);
-    if (const char *v = std::getenv("GPU_SBT_PDS_BYTES")) {
-      try {
-        unsigned long n = std::stoul(std::string(v));
-        if (n < 4 || n > (1u << 20)) {
-          throw std::runtime_error("out of range");
-        }
-        // Align down to 4 bytes to match u32 local accesses.
-        n &= ~3ul;
-        if (n < 4) n = 4;
-        popt.pds_bytes = static_cast<uint32_t>(n);
-      } catch (...) {
-        std::cerr << "GPU_SBT_PDS_BYTES 解析失败: '" << v << "' (expect integer bytes)\n";
-        return 2;
-      }
-    }
 
     auto build_cfg_for = [&](const FuncRange &fr, const std::string &name) -> sbt::cfg::FunctionCfg {
       if (fr.start < text.vaddr || fr.end > text_end || fr.end <= fr.start) {
