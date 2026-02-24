@@ -36,7 +36,7 @@ for entry in "${candidates[@]}"; do
 done
 
 if [[ -z "$picked_elf" || -z "$picked_fn" ]]; then
-  echo "ERROR: no candidate kernel contains vlw_v/vsw_v (update tools/pds_ptx_smoke.sh candidates)" >&2
+  echo "ERROR: no candidate kernel contains vlw.v/vsw.v (update tools/pds_ptx_smoke.sh candidates)" >&2
   exit 2
 fi
 
