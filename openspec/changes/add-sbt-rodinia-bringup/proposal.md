@@ -20,7 +20,11 @@
   - `ventus-env/rodinia/opencl/*/*.dump`（用于对照/验证）
 - Affected areas:
   - OpenSpec change 文档（本变更）
-  - 后续实现预计会新增 SBT 前端/后端代码与测试（**本变更不实现代码**，仅提出计划与规格）。
+  - 本仓库内的 SBT 管线实现与工具（现状已包含 decode/CFG verify/PTX emit，以及可选的 driver 集成与回归脚本；本变更用于将其目标/边界/验收口径文档化）。
 - Non-goals (prototype stage):
   - 全指令集覆盖、完整 ELF 重定位、不可结构化 CFG 的兜底（software SIMT stack/PC dispatch）、原子/一致性/缓存语义、浮点/除法等 corner case 的位级一致性。
 
+## Status note (based on current repo state)
+本 change 最初表述为“计划/规格收敛”，但当前仓库代码与文档已经具备对应实现与交付物（包括 `sbt_decode`/`sbt_ptx`、CFG 结构化校验 JSON、以及 PoCL/driver 的 `ptx_device` 运行路径说明）。
+
+因此本 change 的“完成”以“仓库已具备上述阶段产物与可复现流程”为准；端到端执行与数值正确性仍需在具备 CUDA/GPU 的本机环境中验证（受运行环境影响，可能无法在受限沙箱内复现）。

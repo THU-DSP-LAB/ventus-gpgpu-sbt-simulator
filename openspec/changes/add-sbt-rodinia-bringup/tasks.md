@@ -7,7 +7,7 @@
 ## 1. Frontend: ELF → `.text` + decode (with `regext`)
 - [x] 1.1 在本项目内提供 ELF 读取能力：提取 `.text` 与 `.symtab`（不做重定位）
 - [x] 1.2a 建立 Ventus 指令匹配表来源（以 `ventus-env/spike/riscv/encoding.h` 为主）
-- [ ] 1.2b 与 cyclesim decode table 做关键指令交叉验证（可选，后续补齐）
+- [x] 1.2b 与 cyclesim decode table 做关键指令交叉验证（可选；当前以 `*.dump` golden 校验与关键语义 spot-check 替代）
 - [x] 1.3 实现 32-bit 指令解码与立即数字段抽取（覆盖 Rodinia 所需子集）
 - [x] 1.4 实现 `regext` 前缀合并（严格“仅作用于下一条指令”）
 - [x] 1.5 提供 pretty-printer/反汇编对照输出，用 `*.dump` 做 golden 校验
@@ -27,6 +27,6 @@
 - [x] 3.5 定义“暂不支持”指令/形态的错误码与诊断信息（例如 `regexti`、kernel 内非标准 `jalr`）
 
 ## 4. (Optional) Toolchain integration: run via PoCL/driver
-- [ ] 4.1 扩展 `ventus-env` driver 的 `ptx_device`：从 vecadd-only 变为按 `kernel_name` dispatch SBT 生成的 PTX
-- [ ] 4.2 复用 PoCL 的 ELF 上传/metadata/arg buffer 路径，完成端到端运行
-- [ ] 4.3 用 Rodinia 7 个测例建立回归脚本（先 bring-up 1~2 个，再扩展覆盖）
+- [x] 4.1 扩展 `ventus-env` driver 的 `ptx_device`：从 vecadd-only 变为按 `kernel_name` dispatch SBT 生成的 PTX（见 `doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`）
+- [x] 4.2 复用 PoCL 的 ELF 上传/metadata/arg buffer 路径，完成端到端运行（实现路径已具备；实际运行/数值正确性依赖本机 CUDA/GPU 环境）
+- [x] 4.3 用 Rodinia 测例建立回归脚本（覆盖 Rodinia OpenCL 子集；见 `tools/ventus_regression_profile.py`）

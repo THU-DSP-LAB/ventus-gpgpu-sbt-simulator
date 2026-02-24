@@ -10,6 +10,8 @@
 
 本变更的目标是把上述内容“收敛”为一套分阶段交付与验收标准，作为后续实现的 gate。
 
+> 注：按当前仓库状态，相关实现与工具链路径已存在（`sbt_decode`/`sbt_ptx`、CFG verify JSON、以及可选的 `ptx_device` JIT+launch/回归脚本）；本文的阶段 gate/产物定义也可作为对现状的“可验收口径”。端到端运行与数值正确性仍依赖具备 CUDA/GPU 的本机环境验证。
+
 ## Facts (Rodinia inputs in this repo)
 当前需要逐步正确处理的 ELF 输入（共 7 个）：
 - `ventus-env/rodinia/opencl/b+tree/object0.riscv`（kernel：`findRangeK`）
