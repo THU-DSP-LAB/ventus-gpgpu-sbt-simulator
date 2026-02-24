@@ -4,6 +4,7 @@
 #include "sbt/cfg_verify.hpp"
 #include "sbt/riscv_decode.hpp"
 #include "sbt/spike_encoding_parser.hpp"
+#include "sbt/want_file.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -76,42 +77,20 @@ static std::string json_escape(const std::string &s) {
 static std::vector<sbt::Pattern> build_patterns_from_encoding(const fs::path &encoding_h_path) {
   const auto decl = sbt::spike::parse_declared_insns(encoding_h_path);
 
-  // Keep patterns only for the bring-up whitelist (same as generator).
-  const std::unordered_set<std::string> want = {
-      "regext",     "regexti",   "setrpc",     "join",      "endprg",    "barrier",
-      "vbeq",       "vbne",      "vblt",       "vbge",      "vbltu",     "vbgeu",
-      "vlw12_v",    "vsw12_v",   "vlbu12_v",   "vsb12_v",   "vlw_v",     "vsw_v",
-      "vadd12_vi",  "vsub12_vi", "vid_v",      "vmv_v_x",   "vsetvli",   "vadd_vv",   "vadd_vx",
-      "vadd_vi",    "vsub_vv",   "vsub_vx",    "vand_vv",   "vand_vi",   "vor_vv",    "vxor_vi",   "vsll_vi",
-      "vsrl_vi",    "vsra_vi",   "vmul_vv",    "vmul_vx",   "vmulh_vx",  "vdivu_vx",  "vremu_vx",  "vmadd_vv",
-      "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vmsle_vi",  "vfcvt_f_x_v", "vfadd_vv",  "vfsub_vv",
-      "vfmul_vv",   "vfdiv_vv",  "vfmadd_vv",  "vfsqrt_v",  "vfsgnjn_vv",
-  };
+  const sbt::WantList want = sbt::load_spike_want_list(sbt::resolve_spike_want_file());
+
+  // Keep names alive by leaking them (tool lifetime). This is acceptable for CLI tools.
+  auto *names = new std::vector<std::string>();
+  names->reserve(want.ids.size());
 
   std::vector<sbt::Pattern> out;
-  out.reserve(want.size());
-  for (const auto &kv : decl) {
-    if (!want.contains(kv.first)) continue;
-    sbt::Pattern p;
-    p.name = kv.second.name.c_str(); // note: lifetime is tied to decl map; copy below
-    p.match = kv.second.match;
-    p.mask = kv.second.mask;
-    // We must own the string. Copy into a stable storage by pushing to a vector of strings? Keep simple: store nullptr
-    // and re-fill later. This function is used only for decoding and we can just use a static table later.
-    out.push_back({kv.second.name.c_str(), kv.second.match, kv.second.mask});
+  out.reserve(want.ids.size());
+  for (const auto &id : want.ids) {
+    const auto it = decl.find(id);
+    if (it == decl.end()) throw std::runtime_error("encoding.h 缺少 DECLARE_INSN: " + id);
+    names->push_back(it->second.name);
+    out.push_back({names->back().c_str(), it->second.match, it->second.mask});
   }
-
-  // Fix lifetime: rebuild with owning strings by copying to heap-backed std::string and storing c_str pointers.
-  // Simpler: store patterns with names duplicated in a static vector of std::string.
-  std::vector<std::string> names;
-  names.reserve(out.size());
-  for (auto &p : out) {
-    names.emplace_back(p.name);
-    p.name = names.back().c_str();
-  }
-  // Keep names alive by leaking it (tool lifetime). This is acceptable for CLI.
-  static std::vector<std::string> *kLeaked = nullptr;
-  if (!kLeaked) kLeaked = new std::vector<std::string>(std::move(names));
 
   return out;
 }

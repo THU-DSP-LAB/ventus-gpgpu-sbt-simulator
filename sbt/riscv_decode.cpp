@@ -51,10 +51,10 @@ static bool is_vbranch(std::string_view name) {
 }
 
 static bool is_load(std::string_view name) {
-  return name == "vlw12_v" || name == "vlbu12_v" || name == "vlw_v";
+  return name == "vlw12_v" || name == "vlb12_v" || name == "vlbu12_v" || name == "vlh12_v" || name == "vlhu12_v" || name == "vlw_v";
 }
 
-static bool is_store(std::string_view name) { return name == "vsw12_v" || name == "vsb12_v" || name == "vsw_v"; }
+static bool is_store(std::string_view name) { return name == "vsw12_v" || name == "vsb12_v" || name == "vsh12_v" || name == "vsw_v"; }
 
 static bool ends_with(std::string_view s, std::string_view suf) {
   return s.size() >= suf.size() && s.substr(s.size() - suf.size()) == suf;

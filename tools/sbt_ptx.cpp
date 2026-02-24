@@ -4,6 +4,7 @@
 #include "sbt/ptx_emit.hpp"
 #include "sbt/riscv_decode.hpp"
 #include "sbt/spike_encoding_parser.hpp"
+#include "sbt/want_file.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -119,22 +120,13 @@ struct PatternPack final {
 static PatternPack build_patterns_from_encoding(const fs::path &encoding_h_path) {
   const auto decl = sbt::spike::parse_declared_insns(encoding_h_path);
 
-  const std::vector<std::string> want = {
-      "regext",     "regexti",   "setrpc",     "join",      "endprg",    "barrier",
-      "vbeq",       "vbne",      "vblt",       "vbge",      "vbltu",     "vbgeu",
-      "vlw12_v",    "vsw12_v",   "vlbu12_v",   "vsb12_v",   "vlw_v",     "vsw_v",
-      "vadd12_vi",  "vsub12_vi", "vid_v",      "vmv_v_x",   "vsetvli",   "vadd_vv",   "vadd_vx",
-      "vadd_vi",    "vsub_vv",   "vsub_vx",    "vand_vv",   "vand_vi",   "vor_vv",    "vxor_vi",   "vsll_vi",
-      "vsrl_vi",    "vsra_vi",   "vmul_vv",    "vmul_vx",   "vmulh_vx",  "vdivu_vx",  "vremu_vx",  "vmadd_vv",
-      "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vmsle_vi",  "vfcvt_f_x_v", "vfadd_vv",  "vfsub_vv",
-      "vfmul_vv",   "vfdiv_vv",  "vfmadd_vv",  "vfsqrt_v",  "vfsgnjn_vv",
-  };
+  const sbt::WantList want = sbt::load_spike_want_list(sbt::resolve_spike_want_file());
 
   PatternPack out;
-  out.names.reserve(want.size());
-  out.patterns.reserve(want.size());
+  out.names.reserve(want.ids.size());
+  out.patterns.reserve(want.ids.size());
 
-  for (const auto &n : want) {
+  for (const auto &n : want.ids) {
     auto it = decl.find(n);
     if (it == decl.end()) {
       throw std::runtime_error("encoding.h 缺少 DECLARE_INSN: " + n);

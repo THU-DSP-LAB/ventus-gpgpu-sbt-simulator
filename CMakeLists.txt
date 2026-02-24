@@ -14,6 +14,7 @@ add_library(sbt_lib
   sbt/cfg.cpp
   sbt/cfg_verify.cpp
   sbt/ptx_emit.cpp
+  sbt/want_file.cpp
 )
 
 target_include_directories(sbt_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -28,6 +29,22 @@ target_link_libraries(gen_spike_encoding_subset PRIVATE sbt_lib)
 
 add_executable(sbt_ptx tools/sbt_ptx.cpp)
 target_link_libraries(sbt_ptx PRIVATE sbt_lib)
+
+# Optional: OpenCL micro-test runner (requires Ventus OpenCL headers under ventus-env/install).
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ventus-env/install/include/CL/cl.h")
+  find_library(OPENCL_LIB OpenCL
+    HINTS
+      "${CMAKE_CURRENT_SOURCE_DIR}/ventus-env/install/lib"
+      /usr/local/cuda/targets/x86_64-linux/lib
+      /usr/lib/x86_64-linux-gnu
+  )
+  if (OPENCL_LIB)
+    add_executable(ventus_ocl_run tools/ventus_ocl_run.cpp)
+    target_include_directories(ventus_ocl_run PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ventus-env/install/include")
+    target_compile_options(ventus_ocl_run PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(ventus_ocl_run PRIVATE "${OPENCL_LIB}")
+  endif ()
+endif ()
 
 # Optional: LD_PRELOAD helper to bypass slow shell-outs in PoCL Ventus backend (assemble.sh, nm|grep pipeline).
 add_library(ventus_pocl_fastpath SHARED tools/ventus_pocl_fastpath.cpp)

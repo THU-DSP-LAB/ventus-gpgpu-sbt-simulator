@@ -1,4 +1,5 @@
 #include "sbt/spike_encoding_parser.hpp"
+#include "sbt/want_file.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -37,24 +38,14 @@ int main(int argc, char **argv) {
 
   const std::unordered_map<std::string, sbt::spike::InsnPattern> insns = sbt::spike::parse_declared_insns(encoding_h);
 
-  // Rodinia bring-up whitelist (instruction IDs in encoding.h, using '_' naming).
-  const std::vector<std::string> want = {
-      "regext",     "regexti",   "setrpc",     "join",      "endprg",    "barrier",
-      "vbeq",       "vbne",      "vblt",       "vbge",      "vbltu",     "vbgeu",
-      "vlw12_v",    "vsw12_v",   "vlbu12_v",   "vsb12_v",   "vlw_v",     "vsw_v",
-      "vsub12_vi",  "vid_v",     "vmv_v_x",    "vsetvli",   "vadd_vv",   "vadd_vx",
-      "vadd_vi",    "vsub_vv",   "vand_vv",    "vor_vv",    "vxor_vi",   "vsll_vi",
-      "vsrl_vi",    "vsra_vi",   "vmul_vx",    "vdivu_vx",  "vremu_vx",  "vmadd_vv",
-      "vmadd_vx",   "vmflt_vv",  "vmslt_vx",   "vmsltu_vx", "vfadd_vv",  "vfsub_vv",
-      "vfmul_vv",   "vfdiv_vv",  "vfmadd_vv",  "vfsqrt_v",  "vfsgnjn_vv",
-  };
+  const sbt::WantList want = sbt::load_spike_want_list(sbt::resolve_spike_want_file());
 
   std::vector<sbt::spike::InsnPattern> subset;
-  subset.reserve(want.size());
-  for (const auto &n : want) {
-    auto it = insns.find(n);
+  subset.reserve(want.ids.size());
+  for (const auto &id : want.ids) {
+    auto it = insns.find(id);
     if (it == insns.end()) {
-      std::cerr << "未找到 DECLARE_INSN: " << n << "\n";
+      std::cerr << "未找到 DECLARE_INSN: " << id << "\n";
       return 1;
     }
     subset.push_back(it->second);

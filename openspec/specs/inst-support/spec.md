@@ -1,6 +1,9 @@
-# inst-support (delta spec)
+# inst-support
 
-## ADDED Requirements
+## Purpose
+Define the project's supported instruction set surface, how Spike `encoding.h` patterns are selected, and how instruction support is validated (Spike oracle vs PTX path).
+
+## Requirements
 
 ### Requirement: Single source of truth for Spike insn whitelist
 The project MUST define exactly one repository-managed whitelist file for Spike `DECLARE_INSN` IDs used as Ventus/RVV pattern inputs.
@@ -40,5 +43,29 @@ Given a benchmark kernel that uses 12-bit offset vector byte/halfword loads/stor
 When the kernel is translated to PTX and compiled by `ptxas`,  
 Then translation must succeed without introducing new diagnostic subcommands or emitting a “missing instruction list” report.
 
-## REMOVED Requirements
-None.
+### Requirement: Target instruction set is `VentusInst_basic.txt` (with explicit exceptions)
+The project MUST treat the instruction table in `VentusInst_basic.txt` as the target set to be supported.
+
+The project MUST document and enforce an explicit, small set of allowed fail-fast exceptions, including at least:
+- non-`ret` forms of `jalr` (indirect jump/call)
+
+The project MAY additionally list `regexti` as a temporary exception, provided `regext` prefix bundling remains supported in decode.
+
+#### Scenario: Expanding support does not require duplicating lists
+Given a developer expands instruction support toward `VentusInst_basic.txt`,  
+When they update the whitelist, decode classification, and PTX lowering,  
+Then they must not need to edit multiple drift-prone duplicated instruction lists across tools.
+
+### Requirement: Semantic validation uses Spike oracle via OpenCL buffers
+The project MUST provide a way to validate instruction semantics by comparing outputs produced via OpenCL buffers:
+- the host creates input buffer A and output buffer B,
+- the device program writes results into B,
+- the host reads back B and compares results between Spike (Ventus PoCL device) and the PTX path.
+
+For floating-point operations, the comparison MUST allow approximate equality (tolerance-based) rather than requiring bit-identical results.
+
+#### Scenario: Micro-test compares Spike vs PTX outputs
+Given a micro-test device program that reads inputs from buffer A and writes results into buffer B,  
+When the same program is executed via OpenCL on the Spike device and the PTX device,  
+Then the host-side comparison of buffer B must pass (exact match for integer data and tolerance-based match for floating-point data).
+
