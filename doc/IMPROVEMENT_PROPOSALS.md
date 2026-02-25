@@ -243,7 +243,7 @@
 ## 4. 文档与规格（让“通用化”有可审查的落地路径）
 
 现状：
-- `openspec/changes/*` 有阶段方案与 requirement，但 `openspec/specs/` 为空；已落地能力与未来计划之间缺少“当前真相（IS built）”的沉淀层。
+- `openspec/changes/*` 有阶段方案与 requirement；`openspec/specs/` 已开始沉淀部分能力（例如 `inst-support`），但“当前真相（IS built）”与长期规格的映射仍不系统。
 
 建议：
 - 把已落地能力沉淀为至少一个 capability spec（示例）：
@@ -257,7 +257,7 @@
 
 下面按“能独立验收、且尽量不引入破坏性”的顺序排列（每条都建议走 OpenSpec change 做 gate）：
 
-1) **统一指令白名单与 pattern 源**（生成文件/配置文件化；移除重复列表）
+1) **统一指令白名单与 pattern 源**（已基本完成：`data/spike_want.txt` + `sbt/want_file.*` + `tools/update_spike_want.py`）
 2) **测试清单 manifest 化**（compile-first 与 run 分层；失败分类标准化）
 3) **builtin 支持层模块化**（registry + micro-tests）
 4) **ABI adapter 分层**（把 PoCL 专有 prologue 规则从 emitter 主体抽离）

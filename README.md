@@ -16,8 +16,8 @@ Ventus ISA向量部分对RVV指令语义的修改（待完善）
 
 # 项目结构
 项目文件结构（目前项目刚刚开始，文件数量很少）
-* README.nd, AGENTS.md
-* `VEntusInst_basic.xlsx` 是Ventus ISA的基本指令表。第A列标注了指令的分类例如Custom/RV32I/M/V等；第B~AG列是指令的二进制格式；第AH列是指令的汇编格式；第AI列是指令的简单描述；第AJ列是备注信息；第AK列的yes/no标识本项目目前是否需要考虑此指令，标注no的行直接可忽略。
+* README.md, AGENTS.md
+* `VentusInst_basic.xlsx` 是Ventus ISA的基本指令表。第A列标注了指令的分类例如Custom/RV32I/M/V等；第B~AG列是指令的二进制格式；第AH列是指令的汇编格式；第AI列是指令的简单描述；第AJ列是备注信息；第AK列的yes/no标识本项目目前是否需要考虑此指令，标注no的行直接可忽略。
   * 文件中存在较多的合并单元格，读取时需要注意
   * Custom指令描述比较详细，RISC-V官方定义的指令如果没有重解释可能只在第AH列列出指令名
 * 将 xlsx 中当前阶段需要关注的指令提取到纯文本文件 `VentusInst_basic.txt` 中便于阅读
@@ -91,6 +91,29 @@ cd ventus-env/pocl/build/examples/vecadd
 # 5) 跑 Rodinia（示例：bfs）
 cd ventus-env/rodinia/opencl/bfs
 ./run
+```
+
+阶段 5（指令覆盖 gate + Spike-vs-PTX 微测例）：
+```bash
+# 需要 ventus-env 的 OpenCL 环境与可用 GPU（PTX backend）
+source ventus-env/env.sh
+
+# 构建本仓库工具（CMake 在检测到 ventus-env/install/include/CL/cl.h + OpenCL lib 时会额外生成 build/ventus_ocl_run）
+cmake -S . -B build
+cmake --build build -j
+
+# 跑 Spike-vs-PTX 微测例，并做 VentusInst_basic.txt mnemonic 覆盖 gate（包含 _start；除 data/inst_exceptions.txt 中的例外）
+tools/microtest_coverage_gate.sh
+
+# 可选：调浮点容差（atol/rtol）
+tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
+
+# 如需更新 Spike pattern 白名单（单一真相：data/spike_want.txt）
+python3 tools/update_spike_want.py --dry-run
+python3 tools/update_spike_want.py
+
+# want 文件一致性 smoke（生成 subset + decode + emit）
+tools/check_spike_want_consistency.sh
 ```
 
 回归耗时分析/加速（当前 PoCL Ventus 侧有一些较慢的 shell-out）：

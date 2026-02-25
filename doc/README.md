@@ -23,4 +23,4 @@
 
 - `README.md`：项目目标与命令用法（用户入口）。
 - `lab/`：原理验证阶段的可行性分析与实验记录（不等同于当前实现）。
-- `openspec/`：OpenSpec 变更提案与阶段 gate（当前 `openspec/specs/` 为空，后续可考虑把已落地能力沉淀成 specs）。
+- `openspec/`：OpenSpec 变更提案与阶段 gate（已沉淀部分能力到 `openspec/specs/`；历史变更归档在 `openspec/changes/archive/`）。

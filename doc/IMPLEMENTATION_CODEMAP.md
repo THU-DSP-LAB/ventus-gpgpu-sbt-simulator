@@ -23,6 +23,11 @@
   - 解析 `ventus-env/spike/riscv/encoding.h` 中 `#define MATCH_*/MASK_*` 与 `DECLARE_INSN(...)`，得到 `name/match/mask`。
   - 说明：是纯文本解析器，不跑预处理器；用于 bring-up 工具链联动。
 
+- `sbt/want_file.{hpp,cpp}`
+  - Spike pattern 白名单（`DECLARE_INSN` id）的**单一输入源**：默认使用仓库内 `data/spike_want.txt`。
+  - 路径解析：优先读环境变量 `GPU_SBT_WANT_FILE`；否则从可执行文件路径向上定位 repo root；最后回退到 `data/spike_want.txt`（相对 CWD）。
+  - `load_spike_want_list()`：按行加载、去重、支持 `#` 注释。
+
 - `sbt/riscv_decode.{hpp,cpp}`
   - `decode_text(text, vaddr, opt, patterns)`：按 4B 指令解码。
   - 支持 `regext/regexti` 前缀 bundling：前缀只作用下一条指令；CFG 里会把“bundle pc”和“真实指令 pc”区分开。
@@ -59,7 +64,10 @@
     - 标量（x-reg）状态：存放在 per-warp shared 的 `WarpCtx`（当前实现的具体布局见 `doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md`）。
     - 标量副作用执行策略：支持 leader-only 或 all-lanes（由 `Options::scalar_exec_leader_only` 与 `GPU_SBT_SCALAR_LEADER_ONLY` 控制）。
     - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（shared / ELF backing / heap backing），对应 `Options::{shared_base_vaddr,elf_base_vaddr,heap_base_vaddr}`。
-    - `vlw.v/vsw.v`：当前按“private indexed ops”临时用 PTX `.local` 数组模拟（原因与限制见 `doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md` 的 PDS 说明）。
+    - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
+      - `.entry` 参数包含 `pds_base_vaddr/pds_size_per_thread`；
+      - 按软件栈公式计算 `CSR_PDS`（warp base）；
+      - 再通过统一的数值地址映射 helper 落到 `.global` 访问。
   - 调用（call）：
     - 一小部分 builtin 仍在 emitter 内按名字内联（OpenCL id/query + 少量 helper）。
     - 其它 direct call（`jal ra, imm`）会翻译为 PTX `call.uni`，并要求被调函数也被翻译为 `.func`（由 `tools/sbt_ptx.cpp` 的 call graph 闭包收集保证）。
@@ -72,7 +80,7 @@
   - `verify`：对照 `.dump` 校验 `.text` 字节一致（golden）
   - `pretty`：近似 objdump 输出
   - `cfgverify`：批量跑 Stage2 verify 并输出 JSON（含统计）
-  - 注意：其 pattern 白名单与 `sbt_ptx` 存在重复，且实现里为解决 pattern 名字生命周期做了“泄漏静态 vector”的折中做法（CLI 生命周期内可接受，但不利于库化）。
+  - 注意：pattern 白名单与 `sbt_ptx`/`gen_spike_encoding_subset` 统一来自 `data/spike_want.txt`（经 `sbt/want_file.*` 解析）；为解决 pattern 名字生命周期，CLI 内仍使用“泄漏静态 vector”的折中做法（工具生命周期内可接受，但不利于库化）。
 
 - `tools/sbt_ptx.cpp` → `build/sbt_ptx`
   - 主流水线：`read .text + .symtab → 入口函数切片 → decode/CFG/verify → 扫描 direct call → 收集可达函数闭包 → emit PTX module（.entry + .func）→ 写文件`。
@@ -88,6 +96,25 @@
   - 调 `make` + 跑 ventus-env 下的 PoCL/Rodinia/testcases（端到端），统计每个 testcase 的 compile/run/total wall time，并可收集 `sbt_ptx` profile jsonl。
   - 说明：依赖 `ventus-env` 目录存在，且测试列表是硬编码 `TestCase` 数组。
 
+- `tools/update_spike_want.py`
+  - 从 `VentusInst_basic.txt`（Custom/V 部分）+ Spike `encoding.h` 更新 `data/spike_want.txt`（用于 pattern 输入）。
+
+- `tools/check_spike_want_consistency.sh`
+  - 最小 smoke：用当前 `data/spike_want.txt` 生成 subset header，并确保 `sbt_decode/sbt_ptx` 在 `--require-known` 下能 decode/emit（用于防止 want 漂移）。
+
+- `tools/ventus_ocl_run.cpp` → `build/ventus_ocl_run`（可选构建）
+  - OpenCL host runner：按 A/B buffer 约定跑指定 kernel，并把 B 写回/输出 hash。
+  - 用于 Spike vs PTX 语义对照的 micro-test 执行器。
+
+- `tools/ventus_ocl_compare.py` + `tools/microtest_coverage_gate.sh`
+  - 以同一份 OpenCL 源码为输入，分别在 `VENTUS_BACKEND=spike` 与 `VENTUS_BACKEND=ptx` 下运行 kernel 列表，对比输出 B：
+    - 整数/位运算：byte-exact；
+    - 浮点：atol/rtol 容差。
+  - `--coverage`：对 `_start` + 各 kernel 导出 `sbt_decode --json`，调用 `tools/ventus_inst_coverage.py` 计算 `VentusInst_basic.txt` mnemonic 覆盖率，并按 `data/inst_exceptions.txt` 扣除例外。
+
+- `tools/regext_bundle_test.cpp` → `build/regext_bundle_test`
+  - `regext/regexti` bundling 边界情况的最小回归。
+
 ### 1.3 `testcases/`：小测例（语义对齐）
 
 - `testcases/simple/`：早期最小样例（手写 PTX + 对照 Ventus 汇编/ELF/dump）。
@@ -102,7 +129,7 @@
 1. `sbt::elf::read_section(elf, ".text")`
 2. `sbt::elf::read_func_symbols(elf)` → `sym_by_addr`（用于解析 call 目标符号 / 判断内联 builtin）
 3. 以 `--func` 选择函数范围（依赖 `.symtab` 的 `addr/size`，size=0 时用“下一个符号”兜底）
-4. `sbt::spike::parse_declared_insns(encoding.h)` + bring-up whitelist → `std::vector<sbt::Pattern>`
+4. `sbt::spike::parse_declared_insns(encoding.h)` + want（默认 `data/spike_want.txt`）→ `std::vector<sbt::Pattern>`
 5. `sbt::decode_text(slice, func_start, DecodeOptions, patterns)`
 6. `sbt::cfg::build_function_cfg(decoded, func_start, func_end)`
 7. `sbt::cfg::verify_function(cfg, func)`（fail-fast）
@@ -119,8 +146,8 @@
 ## 3. 当前实现的“硬前提/已知限制”（面向排错）
 
 - **ELF 约束**：要求 `.symtab` 存在，且函数符号覆盖 kernel 入口；不做 relocation；对 strip/无符号的 ELF 不友好。
-- **指令覆盖**：bring-up whitelist + RV32 子集；未覆盖指令直接 unknown/unsupported。
+- **指令覆盖**：目标集合为 `VentusInst_basic.txt`（减去 `data/inst_exceptions.txt`）；在 `--require-known` 下遇到 unknown/unsupported 仍 fail-fast。
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
 - **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
-- **ABI/元数据**：当前 PTX kernel 参数固定为 `(elf_base, heap_base, knl_vaddr)`，并在 prologue 初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
-- **PDS（private）**：`vlw.v/vsw.v` 暂用 PTX local memory 模拟，属于 bring-up 期权宜实现，不等同于真实 driver/Spike 的 PDS 分配语义。
+- **ABI/元数据**：当前 `.entry` 参数为 `(elf_base, heap_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread)`，并在 prologue 初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
+- **PDS（private）**：`vlw.v/vsw.v` 通过 `pds_base_vaddr/pds_size_per_thread` + 软件栈公式计算 `CSR_PDS`，再用数值地址映射落到 `.global` 访问。
