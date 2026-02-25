@@ -30,6 +30,9 @@ target_link_libraries(gen_spike_encoding_subset PRIVATE sbt_lib)
 add_executable(sbt_ptx tools/sbt_ptx.cpp)
 target_link_libraries(sbt_ptx PRIVATE sbt_lib)
 
+add_executable(regext_bundle_test tools/regext_bundle_test.cpp)
+target_link_libraries(regext_bundle_test PRIVATE sbt_lib)
+
 # Optional: OpenCL micro-test runner (requires Ventus OpenCL headers under ventus-env/install).
 if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ventus-env/install/include/CL/cl.h")
   find_library(OPENCL_LIB OpenCL

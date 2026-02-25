@@ -186,103 +186,32 @@ static Buffers run_once(cl_context ctx, cl_command_queue q, cl_device_id dev, co
     cl_check(e, "clEnqueueReadBuffer");
   };
 
-  // Prepare inputs/outputs for each test.
-  std::vector<cl_mem> inputs;
-  std::vector<cl_mem> outputs;
-  std::vector<std::vector<uint8_t>> out_host;
+  // Micro-test convention (scheme 1): every kernel uses an A/B buffer signature:
+  //   __kernel void K(__global const uint *A, __global uint *B)
+  // where A and B each contain N uint32 elements.
+  std::vector<uint32_t> a(n);
+  for (size_t i = 0; i < n; ++i) a[i] = uint32_t(i * 2654435761u) ^ 0xdeadbeefu;
 
-  auto append_output = [&](size_t bytes) {
-    out_host.emplace_back(bytes);
-    cl_mem m = make_buf(CL_MEM_READ_WRITE, nullptr, bytes);
-    outputs.push_back(m);
-  };
+  std::vector<uint8_t> out_host(n * sizeof(uint32_t));
+  cl_mem in_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, a.data(), a.size() * sizeof(uint32_t));
+  cl_mem out_m = make_buf(CL_MEM_READ_WRITE, nullptr, out_host.size());
 
-  if (std::string_view(kernel_name) == "test_u32_basic") {
-    std::vector<uint32_t> in(n);
-    for (size_t i = 0; i < n; ++i) in[i] = uint32_t(i * 2654435761u) ^ 0xdeadbeefu;
-    cl_mem in_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, in.data(), in.size() * sizeof(uint32_t));
-    inputs.push_back(in_m);
-    append_output(n * sizeof(uint32_t));
-
-    cl_check(clSetKernelArg(k, 0, sizeof(cl_mem), &inputs[0]), "clSetKernelArg(in)");
-    cl_check(clSetKernelArg(k, 1, sizeof(cl_mem), &outputs[0]), "clSetKernelArg(out)");
-  } else if (std::string_view(kernel_name) == "test_u32_divrem") {
-    std::vector<uint32_t> a(n), b(n);
-    for (size_t i = 0; i < n; ++i) {
-      a[i] = uint32_t(i * 17u + 123u) ^ 0x13579bdfu;
-      b[i] = uint32_t((i % 251u) + 1u); // keep non-zero
-    }
-    cl_mem a_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, a.data(), a.size() * sizeof(uint32_t));
-    cl_mem b_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, b.data(), b.size() * sizeof(uint32_t));
-    inputs.push_back(a_m);
-    inputs.push_back(b_m);
-    append_output(2 * n * sizeof(uint32_t));
-
-    cl_check(clSetKernelArg(k, 0, sizeof(cl_mem), &inputs[0]), "clSetKernelArg(a)");
-    cl_check(clSetKernelArg(k, 1, sizeof(cl_mem), &inputs[1]), "clSetKernelArg(b)");
-    cl_check(clSetKernelArg(k, 2, sizeof(cl_mem), &outputs[0]), "clSetKernelArg(out2)");
-  } else if (std::string_view(kernel_name) == "test_i8_i16_load") {
-    std::vector<int8_t> in8(n);
-    std::vector<uint8_t> inu8(n);
-    std::vector<int16_t> in16(n);
-    std::vector<uint16_t> inu16(n);
-    for (size_t i = 0; i < n; ++i) {
-      in8[i] = int8_t((i * 13u) ^ 0x80u);
-      inu8[i] = uint8_t((i * 29u) ^ 0x7fu);
-      in16[i] = int16_t((i * 257u) ^ 0x8000u);
-      inu16[i] = uint16_t((i * 911u) ^ 0x7fffu);
-    }
-    cl_mem in8_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, in8.data(), in8.size());
-    cl_mem inu8_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, inu8.data(), inu8.size());
-    cl_mem in16_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, in16.data(), in16.size() * sizeof(int16_t));
-    cl_mem inu16_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, inu16.data(), inu16.size() * sizeof(uint16_t));
-    inputs.push_back(in8_m);
-    inputs.push_back(inu8_m);
-    inputs.push_back(in16_m);
-    inputs.push_back(inu16_m);
-    append_output(4 * n * sizeof(int32_t));
-
-    cl_check(clSetKernelArg(k, 0, sizeof(cl_mem), &inputs[0]), "clSetKernelArg(in8)");
-    cl_check(clSetKernelArg(k, 1, sizeof(cl_mem), &inputs[1]), "clSetKernelArg(inu8)");
-    cl_check(clSetKernelArg(k, 2, sizeof(cl_mem), &inputs[2]), "clSetKernelArg(in16)");
-    cl_check(clSetKernelArg(k, 3, sizeof(cl_mem), &inputs[3]), "clSetKernelArg(inu16)");
-    cl_check(clSetKernelArg(k, 4, sizeof(cl_mem), &outputs[0]), "clSetKernelArg(out4)");
-  } else if (std::string_view(kernel_name) == "test_store_i8_i16") {
-    std::vector<uint32_t> in(n);
-    for (size_t i = 0; i < n; ++i) in[i] = uint32_t((i * 1315423911u) + 0x11223344u);
-    cl_mem in_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, in.data(), in.size() * sizeof(uint32_t));
-    inputs.push_back(in_m);
-
-    append_output(n * sizeof(int8_t));      // out8
-    append_output(n * sizeof(int16_t));     // out16
-    append_output(n * sizeof(uint32_t));    // out32
-
-    cl_check(clSetKernelArg(k, 0, sizeof(cl_mem), &inputs[0]), "clSetKernelArg(in)");
-    cl_check(clSetKernelArg(k, 1, sizeof(cl_mem), &outputs[0]), "clSetKernelArg(out8)");
-    cl_check(clSetKernelArg(k, 2, sizeof(cl_mem), &outputs[1]), "clSetKernelArg(out16)");
-    cl_check(clSetKernelArg(k, 3, sizeof(cl_mem), &outputs[2]), "clSetKernelArg(out32)");
-  } else {
-    std::cerr << "unknown kernel: " << kernel_name << "\n";
-    std::exit(2);
-  }
+  cl_check(clSetKernelArg(k, 0, sizeof(cl_mem), &in_m), "clSetKernelArg(A)");
+  cl_check(clSetKernelArg(k, 1, sizeof(cl_mem), &out_m), "clSetKernelArg(B)");
 
   const size_t global = n;
   const size_t local = (n >= 32 ? 32 : 1);
   cl_check(clEnqueueNDRangeKernel(q, k, 1, nullptr, &global, &local, 0, nullptr, nullptr), "clEnqueueNDRangeKernel");
   cl_check(clFinish(q), "clFinish");
 
-  for (size_t i = 0; i < outputs.size(); ++i) {
-    enqueue_read(outputs[i], out_host[i].data(), out_host[i].size());
-  }
+  enqueue_read(out_m, out_host.data(), out_host.size());
 
   Buffers res;
-  for (const auto &b : out_host) {
-    res.bytes.insert(res.bytes.end(), b.begin(), b.end());
-  }
+  res.bytes = out_host;
   res.hash = fnv1a64(res.bytes.data(), res.bytes.size());
 
-  for (cl_mem m : inputs) clReleaseMemObject(m);
-  for (cl_mem m : outputs) clReleaseMemObject(m);
+  clReleaseMemObject(in_m);
+  clReleaseMemObject(out_m);
   clReleaseKernel(k);
   clReleaseProgram(prog);
   (void)owned_bin;

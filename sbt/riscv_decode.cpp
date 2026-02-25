@@ -85,6 +85,13 @@ static void classify_by_name(std::string_view name, DecodedInst &out) {
     out.imm_kind = ImmKind::I12;
     return;
   }
+  if (name == "regext" || name == "regexti") {
+    // Prefix ops (normally bundled by the decoder).
+    out.rd_class = RegClass::X;
+    out.rs1_class = RegClass::X;
+    out.imm_kind = ImmKind::Raw12;
+    return;
+  }
   if (name == "barrier") {
     out.rd_class = RegClass::X;
     out.rs1_class = RegClass::X;
@@ -130,6 +137,30 @@ static void classify_by_name(std::string_view name, DecodedInst &out) {
     out.rs1_class = RegClass::X;
     return;
   }
+  if (name == "vmv_s_x") {
+    // vmv.s.x vd, rs1
+    out.rd_class = RegClass::V;
+    out.rs1_class = RegClass::X;
+    return;
+  }
+  if (name == "vmv_v_i") {
+    // vmv.v.i vd, imm
+    out.rd_class = RegClass::V;
+    out.imm_kind = ImmKind::SImm5;
+    return;
+  }
+  if (name == "vfmv_v_f") {
+    // vfmv.v.f vd, rs1
+    out.rd_class = RegClass::V;
+    out.rs1_class = RegClass::X;
+    return;
+  }
+  if (name == "vmv_x_s") {
+    // vmv.x.s rd, vs2
+    out.rd_class = RegClass::X;
+    out.rs2_class = RegClass::V;
+    return;
+  }
   if (name == "vadd12_vi" || name == "vsub12_vi") {
     // Custom v*.vi with 12-bit immediate in I-type encoding: vd, vs1, imm12.
     out.rd_class = RegClass::V;
@@ -139,6 +170,30 @@ static void classify_by_name(std::string_view name, DecodedInst &out) {
   }
 
   // Vector arithmetic common forms inferred from suffix.
+  if (ends_with(name, "_vvm")) {
+    out.rd_class = RegClass::V;
+    out.rs2_class = RegClass::V;
+    out.rs1_class = RegClass::V;
+    return;
+  }
+  if (ends_with(name, "_vxm")) {
+    out.rd_class = RegClass::V;
+    out.rs2_class = RegClass::V;
+    out.rs1_class = RegClass::X;
+    return;
+  }
+  if (ends_with(name, "_vim")) {
+    out.rd_class = RegClass::V;
+    out.rs2_class = RegClass::V;
+    out.imm_kind = ImmKind::SImm5;
+    return;
+  }
+  if (ends_with(name, "_vfm")) {
+    out.rd_class = RegClass::V;
+    out.rs2_class = RegClass::V;
+    out.rs1_class = RegClass::X;
+    return;
+  }
   if (ends_with(name, "_vv")) {
     out.rd_class = RegClass::V;
     out.rs2_class = RegClass::V;
@@ -151,6 +206,12 @@ static void classify_by_name(std::string_view name, DecodedInst &out) {
     out.rs1_class = RegClass::X;
     return;
   }
+  if (ends_with(name, "_vf")) {
+    out.rd_class = RegClass::V;
+    out.rs2_class = RegClass::V;
+    out.rs1_class = RegClass::X;
+    return;
+  }
   if (ends_with(name, "_vi")) {
     out.rd_class = RegClass::V;
     out.rs2_class = RegClass::V;
@@ -158,6 +219,12 @@ static void classify_by_name(std::string_view name, DecodedInst &out) {
                         name.find("sra") != std::string_view::npos
                     ? ImmKind::UImm5
                     : ImmKind::SImm5);
+    return;
+  }
+  if (ends_with(name, "_mm")) {
+    out.rd_class = RegClass::V;
+    out.rs2_class = RegClass::V;
+    out.rs1_class = RegClass::V;
     return;
   }
   if (ends_with(name, "_v")) {
@@ -194,6 +261,21 @@ static bool decode_scalar(uint32_t w, DecodedInst &out) {
     out.rs2_class = RegClass::X;
     out.imm_kind = ImmKind::S12;
   };
+
+  // Scalar floating-point register moves may appear as compiler-generated padding/NOPs.
+  // We do not model scalar F/D regfiles; treat these as ignorable instructions (must still be "known").
+  //
+  // fmv.{s,d} are pseudos for fsgnj.{s,d} with rs2==rs1.
+  if (opcode == 0x53u && funct3 == 0x0u && rs2_5 == rs1_5) {
+    if (funct7 == 0x10u) { // fsgnj.s
+      out.name = "fmv_s";
+      return true;
+    }
+    if (funct7 == 0x11u) { // fsgnj.d
+      out.name = "fmv_d";
+      return true;
+    }
+  }
   auto set_b = [&](std::string n) {
     out.name = std::move(n);
     out.rs1_class = RegClass::X;

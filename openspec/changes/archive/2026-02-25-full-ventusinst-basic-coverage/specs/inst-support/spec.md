@@ -20,6 +20,12 @@ Micro-tests MUST use the OpenCL buffer A/B pattern:
 - outputs are written into buffer B (or multiple output buffers),
 - the host reads back buffers and compares Spike vs PTX results.
 
+For the purposes of this requirement, **“exercised” means**:
+- the instruction is actually executed on both Spike and PTX backends under the micro-test run configuration, and
+- its effects are **observable** via output / memory that is read back and compared by the host.
+
+Instructions that only appear in “coverage-only” dead blocks (included in the binary but never executed) MUST NOT be counted as exercised.
+
 #### Scenario: Micro-test suite covers all mnemonics
 - **WHEN** the micro-test coverage tool runs
 - **THEN** it reports that all `VentusInst_basic.txt` mnemonics are covered except documented exceptions
@@ -47,4 +53,3 @@ Any additional exception MUST be added intentionally and MUST be visible in the 
 
 ## REMOVED Requirements
 None.
-

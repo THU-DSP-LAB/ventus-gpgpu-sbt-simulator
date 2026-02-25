@@ -687,7 +687,7 @@ struct EmitCtx final {
     }
 
     // No-ops under structured translation.
-    if (di.name == "setrpc" || di.name == "join" || di.name == "vsetvli") {
+    if (di.name == "setrpc" || di.name == "join" || di.name == "vsetvli" || di.name == "fmv_s" || di.name == "fmv_d") {
       return;
     }
 
@@ -856,14 +856,13 @@ struct EmitCtx final {
       return;
     }
 
-    // CSR reads (prototype: csrrs with rs1=x0).
-    if (di.name == "csrrs") {
+    // CSR ops (prototype: treat Ventus CSRs as read-only for bring-up).
+    if (di.name == "csrrw" || di.name == "csrrs" || di.name == "csrrc" || di.name == "csrrwi" || di.name == "csrrsi" || di.name == "csrrci") {
       require(di.imm_kind == sbt::ImmKind::CSR12, EmitError("invalid.csr", func_name, pc, "imm_kind"));
-      require(di.rs1 == 0, EmitError("unsupported.csr", func_name, pc, "write not supported"));
       const uint32_t csr = static_cast<uint32_t>(di.imm);
 
-      // Compute CSR value to %r14 (uniform), then store to x[rd].
-      // We keep values minimal for bring-up.
+      // Compute CSR value to %r14 (uniform), then store the old value to x[rd].
+      // NOTE: For now, csr writes are ignored (read-only model).
       if (csr == 0x803u) { // CSR_KNL
         emit_line(scalar_prefix() + "mov.u32 " + r(14) + ", " + r(30) + ";"); // %r30 holds knl_vaddr (loaded in prologue)
       } else if (csr == 0x802u) { // CSR_NUMT
@@ -1339,8 +1338,56 @@ struct EmitCtx final {
       emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
       return;
     }
+    if (di.name == "vmv_s_x") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vfmv_v_f") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmv_v_i") {
+      emit_line("mov.u32 " + v(di.rd) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vmv_v_v") {
+      emit_line("mov.u32 " + v(di.rd) + ", " + v(di.rs2) + ";");
+      return;
+    }
+    if (di.name == "vmv_x_s") {
+      // To avoid races on the shared scalar regfile, define vmv.x.s as leader-only.
+      emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + v(di.rs2) + ";");
+      emit_st_x_u32_leader(di.rd, r(14), pc);
+      emit_warp_sync();
+      return;
+    }
     if (di.name == "vid_v") {
       emit_line("mov.u32 " + v(di.rd) + ", " + r(0) + ";");
+      return;
+    }
+    if (di.name == "vmerge_vvm") {
+      // Use v0 as a per-lane boolean mask (non-zero => true).
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(0) + ", 0;");
+      emit_line("selp.u32 " + v(di.rd) + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + p(1) + ";");
+      return;
+    }
+    if (di.name == "vmerge_vxm") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(0) + ", 0;");
+      emit_line("selp.u32 " + v(di.rd) + ", " + r(14) + ", " + v(di.rs2) + ", " + p(1) + ";");
+      return;
+    }
+    if (di.name == "vmerge_vim") {
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(0) + ", 0;");
+      emit_line("selp.u32 " + v(di.rd) + ", " + std::to_string(di.imm) + ", " + v(di.rs2) + ", " + p(1) + ";");
+      return;
+    }
+    if (di.name == "vfmerge_vfm") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(0) + ", 0;");
+      emit_line("selp.u32 " + v(di.rd) + ", " + r(14) + ", " + v(di.rs2) + ", " + p(1) + ";");
       return;
     }
 
@@ -1370,6 +1417,51 @@ struct EmitCtx final {
       emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
       return;
     }
+    if (di.name == "vrsub_vi") {
+      emit_line("sub.s32 " + v(di.rd) + ", " + std::to_string(di.imm) + ", " + v(di.rs2) + ";");
+      return;
+    }
+    if (di.name == "vrsub_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("sub.u32 " + v(di.rd) + ", " + r(14) + ", " + v(di.rs2) + ";");
+      return;
+    }
+    if (di.name == "vminu_vv") {
+      emit_line("min.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vminu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("min.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmin_vv") {
+      emit_line("min.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vmin_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("min.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmaxu_vv") {
+      emit_line("max.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vmaxu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("max.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmax_vv") {
+      emit_line("max.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vmax_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("max.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
     if (di.name == "vsub12_vi" && di.imm_kind == sbt::ImmKind::I12) {
       emit_line("sub.s32 " + v(di.rd) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
       return;
@@ -1396,6 +1488,10 @@ struct EmitCtx final {
       emit_line("or.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
       return;
     }
+    if (di.name == "vor_vi") {
+      emit_line("or.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + hex_u32(static_cast<uint32_t>(di.imm)) + ";");
+      return;
+    }
     if (di.name == "vxor_vv") {
       emit_line("xor.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
       return;
@@ -1413,12 +1509,45 @@ struct EmitCtx final {
       emit_line("shl.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
       return;
     }
+    if (di.name == "vsll_vv") {
+      emit_line("and.b32 " + r(14) + ", " + v(di.rs1) + ", 31;");
+      emit_line("shl.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vsll_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("and.b32 " + r(14) + ", " + r(14) + ", 31;");
+      emit_line("shl.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
     if (di.name == "vsrl_vi") {
       emit_line("shr.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
       return;
     }
+    if (di.name == "vsrl_vv") {
+      emit_line("and.b32 " + r(14) + ", " + v(di.rs1) + ", 31;");
+      emit_line("shr.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vsrl_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("and.b32 " + r(14) + ", " + r(14) + ", 31;");
+      emit_line("shr.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
     if (di.name == "vsra_vi") {
       emit_line("shr.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      return;
+    }
+    if (di.name == "vsra_vv") {
+      emit_line("and.b32 " + r(14) + ", " + v(di.rs1) + ", 31;");
+      emit_line("shr.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vsra_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("and.b32 " + r(14) + ", " + r(14) + ", 31;");
+      emit_line("shr.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
       return;
     }
     if (di.name == "vmul_vx") {
@@ -1434,6 +1563,38 @@ struct EmitCtx final {
       // Spike semantics (vmulh vd,vs2,rs1): high half of signed multiplication.
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_line("mul.hi.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmulh_vv") {
+      emit_line("mul.hi.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vmulhu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mul.hi.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vmulhu_vv") {
+      emit_line("mul.hi.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vmulhsu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("cvt.s64.s32 " + rd(16) + ", " + v(di.rs2) + ";");
+      emit_line("cvt.s64.u32 " + rd(17) + ", " + r(14) + ";");
+      emit_line("mul.lo.s64 " + rd(18) + ", " + rd(16) + ", " + rd(17) + ";");
+      emit_line("shr.s64 " + rd(18) + ", " + rd(18) + ", 32;");
+      emit_line("cvt.u32.s64 " + r(15) + ", " + rd(18) + ";");
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(15) + ";");
+      return;
+    }
+    if (di.name == "vmulhsu_vv") {
+      emit_line("cvt.s64.s32 " + rd(16) + ", " + v(di.rs2) + ";");
+      emit_line("cvt.s64.u32 " + rd(17) + ", " + v(di.rs1) + ";");
+      emit_line("mul.lo.s64 " + rd(18) + ", " + rd(16) + ", " + rd(17) + ";");
+      emit_line("shr.s64 " + rd(18) + ", " + rd(18) + ", 32;");
+      emit_line("cvt.u32.s64 " + r(15) + ", " + rd(18) + ";");
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(15) + ";");
       return;
     }
     if (di.name == "vdivu_vx") {
@@ -1462,6 +1623,52 @@ struct EmitCtx final {
       emit_line("@!" + p(1) + " rem.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
       return;
     }
+    if (di.name == "vdiv_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.eq.u32 " + p(1) + ", " + r(14) + ", 0;");
+      emit_line("setp.eq.u32 " + p(2) + ", " + v(di.rs2) + ", 0x80000000;");
+      emit_line("setp.eq.u32 " + p(3) + ", " + r(14) + ", 0xffffffff;");
+      emit_line("and.pred " + p(2) + ", " + p(2) + ", " + p(3) + ";");
+      emit_line("or.pred " + p(4) + ", " + p(1) + ", " + p(2) + ";");
+      emit_line("@" + p(1) + " mov.u32 " + v(di.rd) + ", 0xffffffff;");
+      emit_line("@" + p(2) + " mov.u32 " + v(di.rd) + ", 0x80000000;");
+      emit_line("@!" + p(4) + " div.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vdiv_vv") {
+      emit_line("setp.eq.u32 " + p(1) + ", " + v(di.rs1) + ", 0;");
+      emit_line("setp.eq.u32 " + p(2) + ", " + v(di.rs2) + ", 0x80000000;");
+      emit_line("setp.eq.u32 " + p(3) + ", " + v(di.rs1) + ", 0xffffffff;");
+      emit_line("and.pred " + p(2) + ", " + p(2) + ", " + p(3) + ";");
+      emit_line("or.pred " + p(4) + ", " + p(1) + ", " + p(2) + ";");
+      emit_line("@" + p(1) + " mov.u32 " + v(di.rd) + ", 0xffffffff;");
+      emit_line("@" + p(2) + " mov.u32 " + v(di.rd) + ", 0x80000000;");
+      emit_line("@!" + p(4) + " div.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
+    if (di.name == "vrem_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.eq.u32 " + p(1) + ", " + r(14) + ", 0;");
+      emit_line("setp.eq.u32 " + p(2) + ", " + v(di.rs2) + ", 0x80000000;");
+      emit_line("setp.eq.u32 " + p(3) + ", " + r(14) + ", 0xffffffff;");
+      emit_line("and.pred " + p(2) + ", " + p(2) + ", " + p(3) + ";");
+      emit_line("or.pred " + p(4) + ", " + p(1) + ", " + p(2) + ";");
+      emit_line("@" + p(1) + " mov.u32 " + v(di.rd) + ", " + v(di.rs2) + ";");
+      emit_line("@" + p(2) + " mov.u32 " + v(di.rd) + ", 0;");
+      emit_line("@!" + p(4) + " rem.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vrem_vv") {
+      emit_line("setp.eq.u32 " + p(1) + ", " + v(di.rs1) + ", 0;");
+      emit_line("setp.eq.u32 " + p(2) + ", " + v(di.rs2) + ", 0x80000000;");
+      emit_line("setp.eq.u32 " + p(3) + ", " + v(di.rs1) + ", 0xffffffff;");
+      emit_line("and.pred " + p(2) + ", " + p(2) + ", " + p(3) + ";");
+      emit_line("or.pred " + p(4) + ", " + p(1) + ", " + p(2) + ";");
+      emit_line("@" + p(1) + " mov.u32 " + v(di.rd) + ", " + v(di.rs2) + ";");
+      emit_line("@" + p(2) + " mov.u32 " + v(di.rd) + ", 0;");
+      emit_line("@!" + p(4) + " rem.s32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      return;
+    }
     if (di.name == "vmadd_vv") {
       // RISC-V V: vmadd vd,vs1,vs2 => vd = (vd * vs1) + vs2
       emit_line("mad.lo.s32 " + v(di.rd) + ", " + v(di.rd) + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
@@ -1478,6 +1685,197 @@ struct EmitCtx final {
       // Spike: vd = -(vd * vs1) + vs2.
       emit_line("mul.lo.u32 " + r(14) + ", " + v(di.rd) + ", " + v(di.rs1) + ";");
       emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vnmsub_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mul.lo.u32 " + r(15) + ", " + v(di.rd) + ", " + r(14) + ";");
+      emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(15) + ";");
+      return;
+    }
+    if (di.name == "vmacc_vv") {
+      // Spike: vd = (vs1 * vs2) + vd
+      emit_line("mad.lo.s32 " + v(di.rd) + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
+      return;
+    }
+    if (di.name == "vmacc_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mad.lo.s32 " + v(di.rd) + ", " + r(14) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
+      return;
+    }
+    if (di.name == "vnmsac_vv") {
+      emit_line("mul.lo.s32 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
+      emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vnmsac_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mul.lo.s32 " + r(15) + ", " + r(14) + ", " + v(di.rs2) + ";");
+      emit_line("sub.u32 " + v(di.rd) + ", " + v(di.rd) + ", " + r(15) + ";");
+      return;
+    }
+
+    // Vector compare -> 0/1 mask (treat mask registers as u32).
+    auto emit_mask_from_pred = [&](const std::string &pred) { emit_line("selp.u32 " + v(di.rd) + ", 1, 0, " + pred + ";"); };
+
+    if (di.name == "vmseq_vv") {
+      emit_line("setp.eq.u32 " + p(1) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmseq_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.eq.u32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmseq_vi") {
+      emit_line("setp.eq.u32 " + p(1) + ", " + v(di.rs2) + ", " + hex_u32(static_cast<uint32_t>(di.imm)) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsne_vv") {
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsne_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsne_vi") {
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(di.rs2) + ", " + hex_u32(static_cast<uint32_t>(di.imm)) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsltu_vv") {
+      emit_line("setp.lt.u32 " + p(1) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmslt_vv") {
+      emit_line("setp.lt.s32 " + p(1) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsleu_vv") {
+      emit_line("setp.le.u32 " + p(1) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsleu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.le.u32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsleu_vi") {
+      emit_line("setp.le.u32 " + p(1) + ", " + v(di.rs2) + ", " + hex_u32(static_cast<uint32_t>(di.imm)) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsle_vv") {
+      emit_line("setp.le.s32 " + p(1) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsle_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.le.s32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsgtu_vi") {
+      emit_line("setp.gt.u32 " + p(1) + ", " + v(di.rs2) + ", " + hex_u32(static_cast<uint32_t>(di.imm)) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsgtu_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.gt.u32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsgt_vi") {
+      emit_line("setp.gt.s32 " + p(1) + ", " + v(di.rs2) + ", " + std::to_string(di.imm) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmsgt_vx") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("setp.gt.s32 " + p(1) + ", " + v(di.rs2) + ", " + r(14) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+
+    // Mask boolean ops (treat non-zero as true, produce 0/1).
+    if (di.name == "vmand_mm" || di.name == "vmandn_mm" || di.name == "vmor_mm" || di.name == "vmorn_mm" || di.name == "vmxor_mm" ||
+        di.name == "vmxnor_mm" || di.name == "vmnand_mm" || di.name == "vmnor_mm") {
+      emit_line("setp.ne.u32 " + p(1) + ", " + v(di.rs2) + ", 0;");
+      emit_line("setp.ne.u32 " + p(2) + ", " + v(di.rs1) + ", 0;");
+
+      const bool invert_b = (di.name == "vmandn_mm" || di.name == "vmorn_mm");
+      if (invert_b) emit_line("not.pred " + p(2) + ", " + p(2) + ";");
+
+      if (di.name == "vmand_mm" || di.name == "vmandn_mm") emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";");
+      else if (di.name == "vmor_mm" || di.name == "vmorn_mm") emit_line("or.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";");
+      else emit_line("xor.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // xor/xnor
+
+      if (di.name == "vmxnor_mm" || di.name == "vmnand_mm" || di.name == "vmnor_mm") emit_line("not.pred " + p(3) + ", " + p(3) + ";");
+      emit_mask_from_pred(p(3));
+      return;
+    }
+
+    // Float compares -> 0/1 mask.
+    auto emit_vf_cmp_vv = [&](const char *cmp) {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs1) + ";");
+      emit_line(std::string(cmp) + " " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      emit_mask_from_pred(p(1));
+    };
+    auto emit_vf_cmp_vf = [&](const char *cmp) {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + r(14) + ";");
+      emit_line(std::string(cmp) + " " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      emit_mask_from_pred(p(1));
+    };
+    if (di.name == "vmfeq_vv") { emit_vf_cmp_vv("setp.eq.f32"); return; }
+    if (di.name == "vmfeq_vf") { emit_vf_cmp_vf("setp.eq.f32"); return; }
+    if (di.name == "vmfle_vv") { emit_vf_cmp_vv("setp.le.f32"); return; }
+    if (di.name == "vmfle_vf") { emit_vf_cmp_vf("setp.le.f32"); return; }
+    if (di.name == "vmflt_vv") { emit_vf_cmp_vv("setp.lt.f32"); return; }
+    if (di.name == "vmflt_vf") { emit_vf_cmp_vf("setp.lt.f32"); return; }
+    if (di.name == "vmfgt_vf") {
+      // Spike: res = (rs1 < vs2)
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs2) + ";");
+      emit_line("setp.lt.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmfge_vf") {
+      // Spike: res = (rs1 <= vs2)
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs2) + ";");
+      emit_line("setp.le.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmfne_vv") {
+      emit_vf_cmp_vv("setp.eq.f32");
+      emit_line("not.pred " + p(1) + ", " + p(1) + ";");
+      emit_mask_from_pred(p(1));
+      return;
+    }
+    if (di.name == "vmfne_vf") {
+      emit_vf_cmp_vf("setp.eq.f32");
+      emit_line("not.pred " + p(1) + ", " + p(1) + ";");
+      emit_mask_from_pred(p(1));
       return;
     }
     if (di.name == "vmslt_vx") {
@@ -1503,6 +1901,117 @@ struct EmitCtx final {
       emit_line("mov.b32 " + v(di.rd) + ", " + f(0) + ";");
       return;
     }
+    if (di.name == "vfcvt_f_xu_v") {
+      emit_line("cvt.rn.f32.u32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(0) + ";");
+      return;
+    }
+	    if (di.name == "vfcvt_x_f_v") {
+	      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+	      emit_line("cvt.rni.s32.f32 " + r(14) + ", " + f(0) + ";");
+	      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+	      return;
+	    }
+	    if (di.name == "vfcvt_xu_f_v") {
+	      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+	      emit_line("cvt.rni.u32.f32 " + r(14) + ", " + f(0) + ";");
+	      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+	      return;
+	    }
+    if (di.name == "vfcvt_rtz_x_f_v") {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("cvt.rzi.s32.f32 " + r(14) + ", " + f(0) + ";");
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vfcvt_rtz_xu_f_v") {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("cvt.rzi.u32.f32 " + r(14) + ", " + f(0) + ";");
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vfclass_v") {
+      // RISC-V VFCLASS: return a 10-bit class mask in the destination element.
+      // Bits: 0..9 = -inf, -norm, -subnorm, -0, +0, +subnorm, +norm, +inf, sNaN, qNaN
+      emit_line("mov.u32 " + r(14) + ", " + v(di.rs2) + ";");
+      emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0x80000000;"); // sign bit
+      emit_line("and.b32 " + r(16) + ", " + r(14) + ", 0x7f800000;"); // exp bits
+      emit_line("and.b32 " + r(17) + ", " + r(14) + ", 0x007fffff;"); // frac bits
+
+      emit_line("setp.ne.u32 " + p(1) + ", " + r(15) + ", 0;");          // sign
+      emit_line("setp.eq.u32 " + p(2) + ", " + r(16) + ", 0;");          // exp==0
+      emit_line("setp.eq.u32 " + p(3) + ", " + r(16) + ", 0x7f800000;"); // exp==all1
+      emit_line("setp.eq.u32 " + p(4) + ", " + r(17) + ", 0;");          // frac==0
+
+      // is_zero = exp==0 && frac==0
+      emit_line("and.pred " + p(5) + ", " + p(2) + ", " + p(4) + ";");
+      // is_sub = exp==0 && frac!=0
+      emit_line("not.pred " + p(6) + ", " + p(4) + ";");
+      emit_line("and.pred " + p(6) + ", " + p(2) + ", " + p(6) + ";");
+      // is_inf = exp==all1 && frac==0
+      emit_line("and.pred " + p(7) + ", " + p(3) + ", " + p(4) + ";");
+      // is_nan = exp==all1 && frac!=0
+      emit_line("not.pred " + p(8) + ", " + p(4) + ";");
+      emit_line("and.pred " + p(8) + ", " + p(3) + ", " + p(8) + ";");
+      // is_norm = !exp==0 && !exp==all1
+      emit_line("not.pred " + p(9) + ", " + p(2) + ";");
+      emit_line("not.pred " + p(10) + ", " + p(3) + ";");
+      emit_line("and.pred " + p(9) + ", " + p(9) + ", " + p(10) + ";");
+
+      // qnan = is_nan && (frac[22]==1)
+      emit_line("and.b32 " + r(18) + ", " + r(17) + ", 0x00400000;");
+      emit_line("setp.ne.u32 " + p(10) + ", " + r(18) + ", 0;");
+      emit_line("and.pred " + p(10) + ", " + p(8) + ", " + p(10) + ";"); // qnan
+      // snan = is_nan && !qnan
+      emit_line("not.pred " + p(11) + ", " + p(10) + ";");
+      emit_line("and.pred " + p(11) + ", " + p(8) + ", " + p(11) + ";"); // snan
+
+      emit_line("mov.u32 " + r(19) + ", 0;");
+
+      // -inf / +inf
+      emit_line("and.pred " + p(12) + ", " + p(7) + ", " + p(1) + ";"); // -inf
+      emit_line("not.pred " + p(13) + ", " + p(1) + ";");
+      emit_line("and.pred " + p(13) + ", " + p(7) + ", " + p(13) + ";"); // +inf
+      emit_line("@" + p(12) + " or.b32 " + r(19) + ", " + r(19) + ", 1;");
+      emit_line("@" + p(13) + " or.b32 " + r(19) + ", " + r(19) + ", 128;");
+
+      // -0 / +0
+      emit_line("and.pred " + p(14) + ", " + p(5) + ", " + p(1) + ";"); // -0
+      emit_line("not.pred " + p(15) + ", " + p(1) + ";");
+      emit_line("and.pred " + p(15) + ", " + p(5) + ", " + p(15) + ";"); // +0
+      emit_line("@" + p(14) + " or.b32 " + r(19) + ", " + r(19) + ", 8;");
+      emit_line("@" + p(15) + " or.b32 " + r(19) + ", " + r(19) + ", 16;");
+
+      // -sub / +sub
+      emit_line("and.pred " + p(12) + ", " + p(6) + ", " + p(1) + ";"); // -sub
+      emit_line("not.pred " + p(13) + ", " + p(1) + ";");
+      emit_line("and.pred " + p(13) + ", " + p(6) + ", " + p(13) + ";"); // +sub
+      emit_line("@" + p(12) + " or.b32 " + r(19) + ", " + r(19) + ", 4;");
+      emit_line("@" + p(13) + " or.b32 " + r(19) + ", " + r(19) + ", 32;");
+
+      // -norm / +norm
+      emit_line("and.pred " + p(12) + ", " + p(9) + ", " + p(1) + ";"); // -norm
+      emit_line("not.pred " + p(13) + ", " + p(1) + ";");
+      emit_line("and.pred " + p(13) + ", " + p(9) + ", " + p(13) + ";"); // +norm
+      emit_line("@" + p(12) + " or.b32 " + r(19) + ", " + r(19) + ", 2;");
+      emit_line("@" + p(13) + " or.b32 " + r(19) + ", " + r(19) + ", 64;");
+
+      // NaNs
+      emit_line("@" + p(11) + " or.b32 " + r(19) + ", " + r(19) + ", 256;");
+      emit_line("@" + p(10) + " or.b32 " + r(19) + ", " + r(19) + ", 512;");
+
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(19) + ";");
+      return;
+    }
+	    if (di.name == "vfexp_v") {
+	      // exp(x) ≈ 2^(x * log2(e)).
+	      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+	      // PTX decimal float immediates must not use C-style `f` suffix.
+	      emit_line("mul.rn.f32 " + f(1) + ", " + f(0) + ", 1.4426950408889634;");
+	      emit_line("ex2.approx.f32 " + f(2) + ", " + f(1) + ";");
+	      emit_line("mov.b32 " + v(di.rd) + ", " + f(2) + ";");
+	      return;
+	    }
 
     // Float vector ops: treat v regs as f32 bits.
     auto vf_binop = [&](const char *op) {
@@ -1511,11 +2020,42 @@ struct EmitCtx final {
       emit_line(std::string(op) + " " + f(2) + ", " + f(0) + ", " + f(1) + ";");
       emit_line("mov.b32 " + v(di.rd) + ", " + f(2) + ";");
     };
+    auto vf_binop_vf = [&](const char *op) {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + r(14) + ";");
+      emit_line(std::string(op) + " " + f(2) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(2) + ";");
+    };
 
     if (di.name == "vfadd_vv") { vf_binop("add.rn.f32"); return; }
+    if (di.name == "vfadd_vf") { vf_binop_vf("add.rn.f32"); return; }
     if (di.name == "vfsub_vv") { vf_binop("sub.rn.f32"); return; }
+    if (di.name == "vfsub_vf") { vf_binop_vf("sub.rn.f32"); return; }
     if (di.name == "vfmul_vv") { vf_binop("mul.rn.f32"); return; }
+    if (di.name == "vfmul_vf") { vf_binop_vf("mul.rn.f32"); return; }
     if (di.name == "vfdiv_vv") { vf_binop("div.rn.f32"); return; }
+    if (di.name == "vfdiv_vf") { vf_binop_vf("div.rn.f32"); return; }
+    if (di.name == "vfrsub_vf") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs2) + ";");
+      emit_line("sub.rn.f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(2) + ";");
+      return;
+    }
+    if (di.name == "vfrdiv_vf") {
+      emit_ld_x_u32_all(r(14), di.rs1, pc);
+      emit_line("mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + v(di.rs2) + ";");
+      emit_line("div.rn.f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(2) + ";");
+      return;
+    }
+    if (di.name == "vfmin_vv") { vf_binop("min.f32"); return; }
+    if (di.name == "vfmin_vf") { vf_binop_vf("min.f32"); return; }
+    if (di.name == "vfmax_vv") { vf_binop("max.f32"); return; }
+    if (di.name == "vfmax_vf") { vf_binop_vf("max.f32"); return; }
     if (di.name == "vfmadd_vv") {
       // Spike semantics: vfmadd.vv vd,vs1,vs2 => vd = (vd * vs1) + vs2
       emit_line("mov.b32 " + f(0) + ", " + v(di.rd) + ";");  // old vd
@@ -1525,25 +2065,116 @@ struct EmitCtx final {
       emit_line("mov.b32 " + v(di.rd) + ", " + f(3) + ";");
       return;
     }
+    auto vf_fma_bits = [&](const std::string &a_bits, bool neg_a, const std::string &b_bits, bool neg_b, const std::string &c_bits, bool neg_c) {
+      emit_line("mov.u32 " + r(14) + ", " + a_bits + ";");
+      emit_line("mov.u32 " + r(15) + ", " + b_bits + ";");
+      emit_line("mov.u32 " + r(16) + ", " + c_bits + ";");
+      if (neg_a) emit_line("xor.b32 " + r(14) + ", " + r(14) + ", 0x80000000;");
+      if (neg_b) emit_line("xor.b32 " + r(15) + ", " + r(15) + ", 0x80000000;");
+      if (neg_c) emit_line("xor.b32 " + r(16) + ", " + r(16) + ", 0x80000000;");
+      emit_line("mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line("mov.b32 " + f(1) + ", " + r(15) + ";");
+      emit_line("mov.b32 " + f(2) + ", " + r(16) + ";");
+      emit_line("fma.rn.f32 " + f(3) + ", " + f(0) + ", " + f(1) + ", " + f(2) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(3) + ";");
+    };
+    if (di.name == "vfmadd_vf") {
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(v(di.rd), false, r(15), false, v(di.rs2), false);
+      return;
+    }
+    if (di.name == "vfmsub_vv") {
+      vf_fma_bits(v(di.rd), false, v(di.rs1), false, v(di.rs2), true);
+      return;
+    }
+    if (di.name == "vfmsub_vf") {
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(v(di.rd), false, r(15), false, v(di.rs2), true);
+      return;
+    }
+    if (di.name == "vfnmadd_vv") {
+      vf_fma_bits(v(di.rd), true, v(di.rs1), false, v(di.rs2), true);
+      return;
+    }
+    if (di.name == "vfnmadd_vf") {
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(v(di.rd), true, r(15), false, v(di.rs2), true);
+      return;
+    }
+    if (di.name == "vfnmsub_vv") {
+      vf_fma_bits(v(di.rd), true, v(di.rs1), false, v(di.rs2), false);
+      return;
+    }
+    if (di.name == "vfnmsub_vf") {
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(v(di.rd), true, r(15), false, v(di.rs2), false);
+      return;
+    }
+    if (di.name == "vfmacc_vv") {
+      // Spike: vd = (vs1 * vs2) + vd
+      vf_fma_bits(v(di.rs1), false, v(di.rs2), false, v(di.rd), false);
+      return;
+    }
+    if (di.name == "vfmacc_vf") {
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(r(15), false, v(di.rs2), false, v(di.rd), false);
+      return;
+    }
+    if (di.name == "vfnmacc_vv") {
+      // Spike: vd = -(vs1 * vs2) - vd  == fma(-vs2, vs1, -vd)
+      vf_fma_bits(v(di.rs2), true, v(di.rs1), false, v(di.rd), true);
+      return;
+    }
+    if (di.name == "vfnmacc_vf") {
+      // Spike: vd = -(rs1 * vs2) - vd == fma(rs1, -vs2, -vd)
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(r(15), false, v(di.rs2), true, v(di.rd), true);
+      return;
+    }
+    if (di.name == "vfmsac_vv") {
+      // Spike: vd = (vs1 * vs2) - vd == fma(vs1, vs2, -vd)
+      vf_fma_bits(v(di.rs1), false, v(di.rs2), false, v(di.rd), true);
+      return;
+    }
+    if (di.name == "vfmsac_vf") {
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(r(15), false, v(di.rs2), false, v(di.rd), true);
+      return;
+    }
+    if (di.name == "vfnmsac_vv") {
+      // Spike: vd = -(vs2 * vs1) + vd == fma(-vs1, vs2, vd)
+      vf_fma_bits(v(di.rs1), true, v(di.rs2), false, v(di.rd), false);
+      return;
+    }
+    if (di.name == "vfnmsac_vf") {
+      // Spike: vd = -(rs1 * vs2) + vd == fma(rs1, -vs2, vd)
+      emit_ld_x_u32_all(r(15), di.rs1, pc);
+      vf_fma_bits(r(15), false, v(di.rs2), true, v(di.rd), false);
+      return;
+    }
     if (di.name == "vfsqrt_v") {
       emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
       emit_line("sqrt.rn.f32 " + f(1) + ", " + f(0) + ";");
       emit_line("mov.b32 " + v(di.rd) + ", " + f(1) + ";");
       return;
     }
-    if (di.name == "vfsgnjn_vv") {
-      // vd = abs(vs2) with sign = ~sign(vs1)
-      emit_line("and.b32 " + r(14) + ", " + v(di.rs2) + ", 0x7fffffff;");
-      emit_line("not.b32 " + r(15) + ", " + v(di.rs1) + ";");
-      emit_line("and.b32 " + r(15) + ", " + r(15) + ", 0x80000000;");
-      emit_line("or.b32 " + v(di.rd) + ", " + r(14) + ", " + r(15) + ";");
-      return;
-    }
-    if (di.name == "vmflt_vv") {
-      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
-      emit_line("mov.b32 " + f(1) + ", " + v(di.rs1) + ";");
-      emit_line("setp.lt.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
-      emit_line("selp.u32 " + v(di.rd) + ", 1, 0, " + p(1) + ";");
+    if (di.name == "vfsgnj_vv" || di.name == "vfsgnj_vf" || di.name == "vfsgnjn_vv" || di.name == "vfsgnjn_vf" || di.name == "vfsgnjx_vv" ||
+        di.name == "vfsgnjx_vf") {
+      if (di.name == "vfsgnj_vf" || di.name == "vfsgnjn_vf" || di.name == "vfsgnjx_vf") {
+        emit_ld_x_u32_all(r(14), di.rs1, pc);
+      }
+      const std::string sign_src = (di.name == "vfsgnj_vf" || di.name == "vfsgnjn_vf" || di.name == "vfsgnjx_vf") ? r(14) : v(di.rs1);
+      emit_line("and.b32 " + r(15) + ", " + v(di.rs2) + ", 0x7fffffff;"); // magnitude from vs2
+      if (di.name == "vfsgnj_vv" || di.name == "vfsgnj_vf") {
+        emit_line("and.b32 " + r(16) + ", " + sign_src + ", 0x80000000;");
+      } else if (di.name == "vfsgnjn_vv" || di.name == "vfsgnjn_vf") {
+        emit_line("not.b32 " + r(16) + ", " + sign_src + ";");
+        emit_line("and.b32 " + r(16) + ", " + r(16) + ", 0x80000000;");
+      } else { // vfsgnjx
+        emit_line("xor.b32 " + r(16) + ", " + sign_src + ", " + v(di.rs2) + ";");
+        emit_line("and.b32 " + r(16) + ", " + r(16) + ", 0x80000000;");
+      }
+      emit_line("or.b32 " + v(di.rd) + ", " + r(15) + ", " + r(16) + ";");
       return;
     }
 

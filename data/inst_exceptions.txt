@@ -1,0 +1,12 @@
+# Instruction support exceptions (mnemonic-level).
+#
+# Format:
+#   - one mnemonic per line (use '_' instead of '.' to match sbt_decode JSON names)
+#   - blank lines and '#' comments are ignored
+#
+# NOTE:
+#   - Initial scope: only `jalr` non-`ret` forms (indirect jump/call).
+#   - Do NOT add new exceptions without explicit review/approval.
+
+jalr
+
