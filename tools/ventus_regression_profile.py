@@ -99,6 +99,10 @@ def _ventus_testcases(ventus_root: Path) -> list[TestCase]:
         ),
         TestCase(name="mnist_conv_small", path=ventus_testcase_dir / "_get_case/MNIST_conv_small", cmd=["./conv.out"]),
         TestCase(name="mnist", path=ventus_testcase_dir / "_get_case/MNIST", cmd=["./nn_forward.out"]),
+        TestCase(name="alexnet", path=ventus_testcase_dir / "_get_case/AlexNet", cmd=["./AlexNet.out"], timeout_s=240),
+        TestCase(name="lenet5", path=ventus_testcase_dir / "_get_case/LeNet5", cmd=["./LeNet5.out"], timeout_s=240),
+        TestCase(name="lenet5_simple", path=ventus_testcase_dir / "_get_case/LeNet5-simple", cmd=["./LeNet5-simple.out"], timeout_s=240),
+        # TestCase(name="resnet18", path=ventus_testcase_dir / "_get_case/ResNet", cmd=["./ResNet18.out"], timeout_s=600),
     ]
 
 
