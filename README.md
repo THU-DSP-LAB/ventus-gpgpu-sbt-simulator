@@ -114,5 +114,6 @@ python3 tools/ventus_regression_profile.py --clean
 
 ## 文档与归档
 - 实现文档索引：`doc/README.md`
+- 工具清单与分层：`tools/README.md`
 - 历史阶段快照：`doc/archive/`
 - `lab/` 与 `testcases/simple/` 均为历史归档，不再作为当前实现与回归基线

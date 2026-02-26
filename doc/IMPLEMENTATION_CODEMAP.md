@@ -115,6 +115,9 @@
 - `tools/regext_bundle_test.cpp` → `build/regext_bundle_test`
   - `regext/regexti` bundling 边界情况的最小回归。
 
+- `tools/archive/`
+  - 历史工具/补丁快照归档目录（不作为当前构建与回归入口）。
+
 ### 1.3 `testcases/`：小测例（语义对齐）
 
 - `testcases/simple/`：早期最小样例（手写 PTX + 对照 Ventus 汇编/ELF/dump）。
