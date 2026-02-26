@@ -1,4 +1,4 @@
-# lab/01_start: PTX backend ABI-compat PoC
+# lab/01_host_device_abi: PTX backend ABI-compat PoC
 
 ## 1. 目标
 本实验验证一种“**PTX 后端兼容 Ventus 现有 kernel ABI**”的做法：
@@ -13,11 +13,11 @@
 ### 2.1 `CSR_KNL` -> metadata
 Ventus `crt0.S` 的关键逻辑是：读取 `CSR_KNL` 得到 metadata 地址，然后从 metadata 取出入口地址与参数区地址：
 
-- 读取 metadata：见 [crt0.S:65](lab/01_start/reference/crt0.S#L65)
-- `KNL_ENTRY`：见 [crt0.S:66](lab/01_start/reference/crt0.S#L66)
-- `KNL_ARG_BASE`：见 [crt0.S:67](lab/01_start/reference/crt0.S#L67)
+- 读取 metadata：见 [crt0.S:65](reference/crt0.S#L65)
+- `KNL_ENTRY`：见 [crt0.S:66](reference/crt0.S#L66)
+- `KNL_ARG_BASE`：见 [crt0.S:67](reference/crt0.S#L67)
 
-metadata 的布局与字段偏移由 [ventus.h](lab/01_start/reference/ventus.h) 定义（全是 32-bit 字段，单位字节偏移），本实验用到：
+metadata 的布局与字段偏移由 [ventus.h](reference/ventus.h) 定义（全是 32-bit 字段，单位字节偏移），本实验用到：
 - `KNL_ARG_BASE` = 4
 - `KNL_GL_SIZE_X` = 12
 - `KNL_LC_SIZE_X` = 24
@@ -26,7 +26,7 @@ metadata 的布局与字段偏移由 [ventus.h](lab/01_start/reference/ventus.h)
 ### 2.2 arg buffer
 `crt0.S` 将 `a0 = KNL_ARG_BASE` 后跳到 kernel entry。
 在 `vecadd.dump` 中，kernel 函数 `vecadd` 入口处会从 `a0` 读取 3 个指针（arg0/arg1/arg2）：
-- `lw t0, 8(a0)` / `lw t0, 4(a0)` / `lw t0, 0(a0)`：见 [vecadd.dump:75](lab/01_start/testcase/vecadd.dump#L75) 到 [vecadd.dump:80](lab/01_start/testcase/vecadd.dump#L80)
+- `lw t0, 8(a0)` / `lw t0, 4(a0)` / `lw t0, 0(a0)`：见 [vecadd.dump:75](testcase/vecadd.dump#L75) 到 [vecadd.dump:80](testcase/vecadd.dump#L80)
 
 这意味着 arg buffer 的前 12 字节是：
 - +0: `a_ptr`（u32）
@@ -50,13 +50,13 @@ Ventus kernel（以及其 ABI）在该实验里体现为“u32 指针”。但�
   - `offset = p_u32 - VENTUS_BASE`
   - `cuda_ptr = heap_base_u64 + offset`
 
-这个映射在 PTX kernel 中实现（见 [vecadd.ptx](lab/01_start/ptx/vecadd.ptx) 的注释和地址计算逻辑）。
+这个映射在 PTX kernel 中实现（见 [vecadd.ptx](ptx/vecadd.ptx) 的注释和地址计算逻辑）。
 
 这样，上层仍然可以使用 u32 指针（例如 `a_ptr_u32`），而 PTX 能把它转换成真正的 CUDA global 地址。
 
 ### 4.2 用 PTX kernel 模拟 `CSR_KNL` 入口
 PTX kernel 入口：
-- 文件： [vecadd.ptx](lab/01_start/ptx/vecadd.ptx)
+- 文件： [vecadd.ptx](ptx/vecadd.ptx)
 - kernel：`ventus_start`
 - 参数：
   - `heap_base`（u64）：CUDA device pointer，指向 heap
@@ -64,7 +64,7 @@ PTX kernel 入口：
 
 PTX kernel 内部做的事情（都是“ABI 兼容层”）：
 1) `knl_addr(u32)` -> `knl_ptr(u64)`
-2) 按 [ventus.h](lab/01_start/reference/ventus.h) 的偏移读取 metadata 字段：
+2) 按 [ventus.h](reference/ventus.h) 的偏移读取 metadata 字段：
    - `KNL_ARG_BASE / KNL_GL_SIZE_X / KNL_LC_SIZE_X / KNL_GL_OFFSET_X`
 3) 按 arg buffer 约定读取 `a/b/c` 三个 u32 指针
 4) 用 `VENTUS_BASE` 映射成真实的 global 地址
@@ -73,7 +73,7 @@ PTX kernel 内部做的事情（都是“ABI 兼容层”）：
 注意：本阶段 PoC **不需要**在 PTX 里解释 RISC-V 的 `csrr CSR_KNL` 指令；而是把 `CSR_KNL` 作为一个显式 PTX kernel 参数 `knl_addr` 传入。
 
 ### 4.3 NDRange / get_global_id(0) 的兼容点
-Ventus 侧的 `get_global_id` 在 `vecadd.dump` 中有完整实现（包含 `setrpc/vbeq/vbne/join` 等 SIMT 控制指令），见 [vecadd.dump:98](lab/01_start/testcase/vecadd.dump#L98) 开始。
+Ventus 侧的 `get_global_id` 在 `vecadd.dump` 中有完整实现（包含 `setrpc/vbeq/vbne/join` 等 SIMT 控制指令），见 [vecadd.dump:98](testcase/vecadd.dump#L98) 开始。
 
 在本 PoC 中，目标是 ABI 兼容而不是逐条指令翻译，所以采用等价语义：
 - `linear_tid = ctaid.x * ntid.x + tid.x`
@@ -85,7 +85,7 @@ metadata 中的 `KNL_LC_SIZE_X` 在本 PoC 中主要用于“保持 ABI 字段�
 ## 5. Host 侧做了哪些事情（扮演 Ventus runtime）
 本实验的 runner 用来“模拟 Ventus runtime/驱动”在启动 kernel 前会做的准备工作：
 
-- 文件： [run_vecadd_ptx.cc](lab/01_start/run_vecadd_ptx.cc)
+- 文件： [run_vecadd_ptx.cc](run_vecadd_ptx.cc)
 - 关键职责：
   1) 在 host 端构造 heap（byte array）并按小端写入 u32/f32（保证与 Ventus 端内存视图一致）
   2) 在 heap 中布局：metadata、arg buffer、a/b/c 数组
@@ -96,21 +96,21 @@ metadata 中的 `KNL_LC_SIZE_X` 在本 PoC 中主要用于“保持 ABI 字段�
 特别说明：这里的 `knl_addr`、`arg_base`、`a_addr` 等都是 **Ventus 虚拟地址（u32）**，通过 `VENTUS_BASE + offset` 构造。
 
 ## 6. 构建与运行
-- Build 脚本： [build_vecadd.sh](lab/01_start/build_vecadd.sh)
+- Build 脚本： [build_vecadd.sh](build_vecadd.sh)
   - `nvcc -cubin` 把 PTX 编译成 cubin
   - `nvcc` 编译 runner（Driver API）
-- Smoke 脚本： [smoke_vecadd.sh](lab/01_start/smoke_vecadd.sh)
+- Smoke 脚本： [smoke_vecadd.sh](smoke_vecadd.sh)
 
 运行：
 
 ```bash
-ARCH=sm_89 ./lab/01_start/smoke_vecadd.sh
+ARCH=sm_89 ./lab/01_host_device_abi/smoke_vecadd.sh
 ```
 
 ## 7. 与“最终目标：软件栈不改动支持后端”的关系
 本 PoC 证明了：只要后端能提供以下能力，就可以让上层继续使用 Ventus ABI：
 
-- 能接收/提供 `CSR_KNL` 所代表的 metadata 指针（u32），并按 [ventus.h](lab/01_start/reference/ventus.h) 解释 metadata
+- 能接收/提供 `CSR_KNL` 所代表的 metadata 指针（u32），并按 [ventus.h](reference/ventus.h) 解释 metadata
 - 能解释 arg buffer（u32 指针数组）
 - 能支持 Ventus 的 32-bit 指针模型（通过 `VENTUS_BASE` 映射到真实后端地址空间）
 

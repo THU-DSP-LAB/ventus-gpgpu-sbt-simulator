@@ -1,3 +1,10 @@
 **/build/
 ventus-env/
 **/__pycache__/
+lab/**/*.riscv
+testcases/simple/*.riscv
+mt_*_0.data
+mt_*_0.log
+mt_*_0.metadata
+object0.cl
+object0.riscv

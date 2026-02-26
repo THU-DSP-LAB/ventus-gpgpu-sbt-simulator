@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
   // Ventus ABI emulation constants.
   constexpr std::uint32_t VENTUS_BASE = 0x90000000u;
 
-  // Offsets inside metadata buffer (u32 fields), per lab/01_start/reference/ventus.h
+  // Offsets inside metadata buffer (u32 fields), per lab/01_host_device_abi/reference/ventus.h
   constexpr std::size_t KNL_ENTRY = 0;
   constexpr std::size_t KNL_ARG_BASE = 4;
   constexpr std::size_t KNL_WORK_DIM = 8;

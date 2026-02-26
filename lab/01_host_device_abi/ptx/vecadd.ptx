@@ -2,7 +2,7 @@
 .target sm_75
 .address_size 64
 
-// Manual PTX for lab/01_start
+// Manual PTX for lab/01_host_device_abi
 // Emulates the Ventus kernel ABI used by crt0.S + ventus.h metadata.
 //
 // Inputs:
@@ -13,7 +13,7 @@
 //   global_ptr = heap_base + (ventus_u32_addr - VENTUS_BASE)
 // where VENTUS_BASE = 0x90000000.
 //
-// Metadata layout (u32 fields) from lab/01_start/reference/ventus.h:
+// Metadata layout (u32 fields) from lab/01_host_device_abi/reference/ventus.h:
 //   KNL_ARG_BASE    @ +4
 //   KNL_GL_SIZE_X   @ +12
 //   KNL_LC_SIZE_X   @ +24

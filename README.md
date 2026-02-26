@@ -1,143 +1,118 @@
 # 项目概述
-乘影(Ventus)开源GPGPU项目是一个基于RISC-V及其V扩展指令集的学术界GPGPU项目    
-包含指令集定义、软件栈与编译器实现、Chisel RTL与仿真器实现等    
-编程模型（SIMT）与底层硬件结构与NVIDIA GPU有相似之处，本仓库希望尝试将乘影GPGPU的指令做静态二进制翻译为PTX指令，从而在NVIDIA GPU上做快速的功能仿真
+本仓库实现 Ventus ELF 到 NVIDIA PTX 的原型级静态二进制翻译（SBT）流程，当前重点是：
+- `ELF(.riscv) -> decode -> CFG verify -> PTX emit`
+- compile-first（`ptxas` 可编译）与 Spike-vs-PTX 微测例对照
+- 与 `ventus-env` 的 PoCL/driver 端到端联调
 
-# 乘影相关信息
-乘影Ventus的指令集(ISA)存在两部分：标量部分与向量部分
-* 标量：主要基于RV32IMA_zicsr_zfinx，这类似于NVIDIA SASS中的Uniform datapath(per-warp)
-* 向量：主要基于RISC-V V扩展，但经过重解释以适配GPGPU的需求。类似于NVIDIA SASS中per-thread的普通指令
-* 额外增加了一些标量/向量的Custom指令以适配GPGPU的需求
+输入以 Ventus ELF 为准（当前阶段不使用 `.vmem`）：
+- `ventus-env/rodinia/opencl/*/*.riscv`
+- `ventus-env/pocl/build/examples/*/*.riscv`
 
-Ventus ISA向量部分对RVV指令语义的修改（待完善）
-* 基本不使用RVV的访存指令
-* 完全不支持所有RISC-V C扩展指令
-* 不使用RVV的mask机制，v0寄存器是普通向量寄存器。使用自定义的vbranch系列（例如vbeq, vbne等）指令、setrpc指令、join指令实现基于SIMT stack的warp分支管理
+## ISA 资料
+- `VentusInst_basic.xlsx`：Ventus 指令表原始来源
+- `VentusInst_basic.txt`：当前阶段提取后的文本版本（便于审阅与脚本处理）
 
-# 项目结构
-项目文件结构（目前项目刚刚开始，文件数量很少）
-* README.md, AGENTS.md
-* `VentusInst_basic.xlsx` 是Ventus ISA的基本指令表。第A列标注了指令的分类例如Custom/RV32I/M/V等；第B~AG列是指令的二进制格式；第AH列是指令的汇编格式；第AI列是指令的简单描述；第AJ列是备注信息；第AK列的yes/no标识本项目目前是否需要考虑此指令，标注no的行直接可忽略。
-  * 文件中存在较多的合并单元格，读取时需要注意
-  * Custom指令描述比较详细，RISC-V官方定义的指令如果没有重解释可能只在第AH列列出指令名
-* 将 xlsx 中当前阶段需要关注的指令提取到纯文本文件 `VentusInst_basic.txt` 中便于阅读
+## 仓库分层（当前）
+- 核心实现：`sbt/`、`tools/`、`data/`、`testcases/ocl_compare/`
+- 长期文档：`doc/`
+- 规格/变更：`openspec/`
+- 归档实验：`lab/`（已归档，不作为当前实现入口）
+- 历史最小样例：`testcases/simple/`（已归档，不作为当前回归入口）
 
-# 项目进行
-本项目使用 C++ 20 语言标准，推荐使用新语言特性
-使用 CMake 做项目编译
-
-阶段 1（ELF 读取 + 解码/对照）工具：
+## 构建
 ```bash
 cmake -S . -B build
 cmake --build build -j
+```
 
-# 校验 ELF 的 .text 字节与 *.dump 一致（golden：ventus-env 现有 dump）
+## 阶段 1/2：解码与 CFG 验证
+```bash
+# 对照 .dump 校验 .text 字节
 ./build/sbt_decode verify ventus-env/rodinia/opencl/bfs/object0.riscv
 
-# 列出 ELF 的函数符号（用于找到 kernel 入口）
+# 列出函数符号
 ./build/sbt_decode funcs ventus-env/rodinia/opencl/bfs/object0.riscv
 
-# 以函数符号为入口做 pretty 输出（默认会合并 regext 前缀）
+# pretty 输出（默认合并 regext 前缀）
 ./build/sbt_decode pretty ventus-env/rodinia/opencl/backprop/object0.riscv --func bpnn_layerforward_ocl
 
-# 严格模式：遇到 unknown 指令直接失败
+# 严格解码
 ./build/sbt_decode decode ventus-env/rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known >/dev/null
 
-# Stage 2：CFG + setrpc/vbranch/join 结构化验证 + barrier 合法性检查（输出 JSON）
-./build/sbt_decode cfgverify ventus-env/rodinia/opencl/b+tree/object0.riscv --func findRangeK --require-known --verbose >/tmp/findRangeK.cfg.json
+# CFG + setrpc/vbranch/join + barrier 校验（JSON）
+./build/sbt_decode cfgverify ventus-env/rodinia/opencl/b+tree/object0.riscv --func findRangeK --require-known --json /tmp/findRangeK.cfg.json
 ```
 
-阶段 3（Ventus → PTX，compile-first）工具：
+## 阶段 3：Ventus -> PTX（compile-first）
 ```bash
-cmake -S . -B build
-cmake --build build -j
-
-# 生成某个 kernel 的 PTX（默认输出到 build/ptx/，避免写入 ventus-env/）
+# 生成 PTX（默认输出到 build/ptx/）
 ./build/sbt_ptx ventus-env/rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known
 
-# 也可显式指定输出与目标 SM（默认 --sm 75）
+# 显式指定输出与目标 SM
 ./build/sbt_ptx ventus-env/rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known --out /tmp/BFS_1.ptx --sm 75
 
-# 用 ptxas 做可编译性验证（先用 ptxas --list-arch 查看本机支持的架构；原型期建议用 sm_75）
+# ptxas 可编译性验证
 ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
-# 一键 smoke：对 Rodinia 11 个 kernel 生成 PTX 并用 ptxas 编译
+# Rodinia compile-first smoke（11 kernels）
 ARCH=sm_75 tools/rodinia_ptx_smoke.sh
+
+# PDS 参数/映射 smoke
+tools/pds_ptx_smoke.sh
 ```
 
-阶段 4（PoCL/driver 端到端，SBT PTX JIT）：
+## 阶段 4：PoCL/driver 端到端（SBT PTX JIT）
 ```bash
-# 1) 构建本仓库工具（需要 build/sbt_ptx）
+# 1) 构建本仓库工具
 cmake -S . -B build
 cmake --build build -j
 
-# 2) 构建并安装 ventus-env driver（产物在 ventus-env/install/lib/）
+# 2) 构建并安装 ventus-env driver
 bash ventus-env/build-ventus.sh --build "driver"
 
-# 3) 配置环境并选择后端
+# 3) 环境与后端选择
 source ventus-env/env.sh
 export VENTUS_BACKEND=ptx
-
-# 可选：强制 PTX .target（原型期默认 clamp 到 sm_75，避免 sm_89 + PTX .version 7.0 的兼容性问题）
 export VENTUS_PTX_SM=75
-
-# 可选：heap 大小（MiB，默认 1024）
 export VENTUS_PTX_HEAP_MB=1024
 
-# 4) 跑 PoCL vecadd（会自动编译 object0.riscv，并触发 driver 侧 SBT 翻译+JIT）
+# 4) PoCL 示例
 cd ventus-env/pocl/build/examples/vecadd
 ./vecadd 128 64
 
-# 5) 跑 Rodinia（示例：bfs）
+# 5) Rodinia 示例
 cd ventus-env/rodinia/opencl/bfs
 ./run
 ```
 
-阶段 5（指令覆盖 gate + Spike-vs-PTX 微测例）：
+## 阶段 5：指令覆盖 gate + Spike-vs-PTX 微测例
 ```bash
-# 需要 ventus-env 的 OpenCL 环境与可用 GPU（PTX backend）
 source ventus-env/env.sh
-
-# 构建本仓库工具（CMake 在检测到 ventus-env/install/include/CL/cl.h + OpenCL lib 时会额外生成 build/ventus_ocl_run）
 cmake -S . -B build
 cmake --build build -j
 
-# 跑 Spike-vs-PTX 微测例，并做 VentusInst_basic.txt mnemonic 覆盖 gate（包含 _start；除 data/inst_exceptions.txt 中的例外）
+# 对照 + 全覆盖 gate（除 data/inst_exceptions.txt）
 tools/microtest_coverage_gate.sh
 
-# 可选：调浮点容差（atol/rtol）
+# 浮点容差可调
 tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
 
-# 如需更新 Spike pattern 白名单（单一真相：data/spike_want.txt）
+# want 列表更新
 python3 tools/update_spike_want.py --dry-run
 python3 tools/update_spike_want.py
 
-# want 文件一致性 smoke（生成 subset + decode + emit）
+# want 一致性 smoke
 tools/check_spike_want_consistency.sh
 ```
 
-回归耗时分析/加速（当前 PoCL Ventus 侧有一些较慢的 shell-out）：
+## 回归耗时统计
 ```bash
-# 输出每个 testcase 的 compile/run/total wall-time（结果写到 build/ventus-regression-profile/summary.json）
 source ventus-env/env.sh
 export VENTUS_BACKEND=ptx
 python3 tools/ventus_regression_profile.py --clean
-
-# 可选：绕过 pocl_ventus.cc 中对 assemble.sh 和 nm|grep 的调用（PTX 后端不依赖这些产物）
-# 注：已经在PoCL中修复此问题，可以忽略
-cmake -S . -B build
-cmake --build build -j
-export VENTUS_POCL_FASTPATH=1
-export LD_PRELOAD=$PWD/build/libventus_pocl_fastpath.so
-python3 tools/ventus_regression_profile.py --clean
 ```
 
-设想feature：
-* “用户态”仿真：不支持多虚拟地址空间
-* device ABI兼容：不需要对现有软件栈做太多修改，直接兼容原有host-devie约定（指令语义 + kernel meta (CTA调度器接口+metadata buffer, 这些信息稍后大都保存在CSR中) + 内存视图）
-  * 必要的kernel meta 采用 PTX kernel param 形式传递，ventus kernel args 被内嵌于 CSR_KNL 指向的地址中按照 `_start` 中的方案取出即可
-  * 库函数采用同语义替换（`_start`, `get_global_id`等）
-
-项目进度: 
-* 原理验证阶段，在 `lab/` 目录下做一些 idea 有效性验证实验（大部分完成，后续编码过程中可能需要补充实验）
-* 当前：最小原型阶段
+## 文档与归档
+- 实现文档索引：`doc/README.md`
+- 历史阶段快照：`doc/archive/`
+- `lab/` 与 `testcases/simple/` 均为历史归档，不再作为当前实现与回归基线

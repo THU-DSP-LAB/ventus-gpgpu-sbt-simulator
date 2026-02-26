@@ -1,10 +1,13 @@
-当前项目处于原理验证阶段，在本路径下做一些简单的实验验证idea的可行性
+# lab/（归档）
 
-本路径下做完的实验，列一句简单的描述在下边
+本目录已整体归档，仅保留历史探索记录与复盘材料，不再作为当前实现、测试或回归入口。
 
-阶段0：手工转换 ventus isa -> ptx
-* `00_prototype`：极简易的手动转换 ventus isa -> ptx 完成单warp向量加法
-* `01_host_device_abi`：手工实现 ventus kernel ABI（CSR_KNL metadata + arg buffer）的PTX并在NVIDIA GPU运行 vecadd，主要目的是探究能否兼容Ventus host-device API/ABI
+当前有效入口请使用仓库根目录 `README.md` 与 `doc/README.md`。
 
-阶段1：集成到现有工具链
-* `02_host_device_abi_integrate`：在 ventus-env 的 driver 中新增 `ptx_device` 后端，通过 PoCL 端到端运行 vecadd（`VENTUS_BACKEND=ptx`），实现“无需改 PoCL 上层代码”的真实验证
+历史子目录说明：
+- `00_prototype`：手工 Ventus ISA -> PTX 最小验证
+- `01_host_device_abi`：手工验证 Ventus kernel ABI 与 PTX 兼容性
+- `02_host_device_abi_integrate`：早期与 `ventus-env` driver 集成实验
+- `03_sbt_feasibility`：SBT 可行性分析与草稿
+- `04_instruction_decode`：早期解码设计记录
+- `others`：外围调研记录

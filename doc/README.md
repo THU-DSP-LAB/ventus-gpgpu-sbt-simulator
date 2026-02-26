@@ -22,5 +22,5 @@
 ## 3. 相关但不在 doc/ 的材料
 
 - `README.md`：项目目标与命令用法（用户入口）。
-- `lab/`：原理验证阶段的可行性分析与实验记录（不等同于当前实现）。
+- `lab/`：历史归档实验目录（不再作为当前实现入口）。
 - `openspec/`：OpenSpec 变更提案与阶段 gate（已沉淀部分能力到 `openspec/specs/`；历史变更归档在 `openspec/changes/archive/`）。
