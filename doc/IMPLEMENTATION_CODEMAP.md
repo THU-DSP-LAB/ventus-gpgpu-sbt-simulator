@@ -92,6 +92,9 @@
   - 固定列表：Rodinia 11 个 kernel（compile-first），生成 PTX 并用 `ptxas` 编译。
   - 说明：当前是“最小 smoke”，偏 bring-up 期硬编码。
 
+- `tools/regress.sh`
+  - 统一回归入口：按 preset 聚合调用 compile-first/PDS/want/microtest gate/端到端回归等脚本与可执行文件。
+
 - `tools/ventus_regression_profile.py`
   - 调 `make` + 跑 ventus-env 下的 PoCL/Rodinia/testcases（端到端），统计每个 testcase 的 compile/run/total wall time，并可收集 `sbt_ptx` profile jsonl。
   - 说明：依赖 `ventus-env` 目录存在，且测试列表是硬编码 `TestCase` 数组。

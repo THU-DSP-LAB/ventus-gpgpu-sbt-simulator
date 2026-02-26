@@ -25,6 +25,19 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
+## 统一回归入口（推荐）
+```bash
+# 快速回归（不含端到端）：decode/emit + ptxas compile-first + PDS smoke + microtest gate
+tools/regress.sh --preset quick --arch sm_75
+
+# 全量回归（包含端到端）：在 quick 基础上增加 PoCL/driver 端到端回归
+tools/regress.sh --preset all --arch sm_75
+
+# 仅端到端（两种 runner 二选一）
+tools/regress.sh --preset e2e --e2e-runner profile --timeout-scale 1.0
+tools/regress.sh --preset e2e --e2e-runner ventus-env --jobs 8 --timeout-scale 1.0
+```
+
 ## 阶段 1/2：解码与 CFG 验证
 ```bash
 # 对照 .dump 校验 .text 字节
