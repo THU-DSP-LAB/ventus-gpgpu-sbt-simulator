@@ -94,6 +94,7 @@
 
 - `tools/regress.sh`
   - 统一回归入口：按 preset 聚合调用 compile-first/PDS/want/microtest gate/端到端回归等脚本与可执行文件。
+  - 默认切换到临时工作目录执行并在退出时清理，避免污染调用目录；可通过 `--in-place/--workdir/--keep-workdir` 覆盖。
 
 - `tools/ventus_regression_profile.py`
   - 调 `make` + 跑 ventus-env 下的 PoCL/Rodinia/testcases（端到端），统计每个 testcase 的 compile/run/total wall time，并可收集 `sbt_ptx` profile jsonl。
@@ -114,6 +115,7 @@
     - 整数/位运算：byte-exact；
     - 浮点：atol/rtol 容差。
   - `--coverage`：对 `_start` + 各 kernel 导出 `sbt_decode --json`，调用 `tools/ventus_inst_coverage.py` 计算 `VentusInst_basic.txt` mnemonic 覆盖率，并按 `data/inst_exceptions.txt` 扣除例外。
+  - 路径解析采用脚本绝对路径（`env.sh` 与 `ventus_inst_coverage.py`），不依赖调用时当前目录。
 
 - `tools/regext_bundle_test.cpp` → `build/regext_bundle_test`
   - `regext/regexti` bundling 边界情况的最小回归。

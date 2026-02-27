@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
 import argparse
 import math
+import shlex
 import subprocess
 import struct
 import tempfile
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+DEFAULT_EXE = REPO_ROOT / "build/ventus_ocl_run"
+DEFAULT_SBT_DECODE = REPO_ROOT / "build/sbt_decode"
+DEFAULT_SRC = REPO_ROOT / "testcases/ocl_compare/kernels.cl"
+DEFAULT_EXCEPTIONS = REPO_ROOT / "data/inst_exceptions.txt"
+DEFAULT_COVERAGE_TARGET = REPO_ROOT / "VentusInst_basic.txt"
+DEFAULT_ENCODING_H = (REPO_ROOT / ".." / "spike" / "riscv" / "encoding.h").resolve()
+DEFAULT_ENV_SH = (REPO_ROOT / ".." / "env.sh").resolve()
+DEFAULT_COVERAGE_TOOL = SCRIPT_DIR / "ventus_inst_coverage.py"
 
-def run_one(backend: str, exe: Path, src: Path, kernel: str, n: int, out: Path) -> str:
+
+def run_one(backend: str, exe: Path, src: Path, kernel: str, n: int, out: Path, env_sh: Path) -> str:
     cmd = (
-        f"source ../env.sh >/dev/null 2>&1 && "
-        f"VENTUS_BACKEND={backend} "
-        f"{exe} --src {src} --kernel {kernel} --n {n} --out {out}"
+        f"source {shlex.quote(str(env_sh))} >/dev/null 2>&1 && "
+        f"VENTUS_BACKEND={shlex.quote(backend)} "
+        f"{shlex.quote(str(exe))} --src {shlex.quote(str(src))} "
+        f"--kernel {shlex.quote(kernel)} --n {n} --out {shlex.quote(str(out))}"
     )
     p = subprocess.run(["bash", "-lc", cmd], text=True, capture_output=True)
     if p.returncode != 0:
@@ -48,8 +61,13 @@ def _compare_f32_bytes(a: bytes, b: bytes, *, atol: float, rtol: float) -> tuple
     return True, f"f32_ok n={n} atol={atol} rtol={rtol}"
 
 
-def dump_decoded_json(sbt_decode: Path, elf: Path, func: str, out_json: Path) -> None:
-    cmd = f"{sbt_decode} decode {elf} --func {func} --require-known --json {out_json} >/dev/null"
+def dump_decoded_json(sbt_decode: Path, encoding_h: Path, elf: Path, func: str, out_json: Path) -> None:
+    cmd = (
+        f"{shlex.quote(str(sbt_decode))} decode {shlex.quote(str(elf))} "
+        f"--func {shlex.quote(func)} --require-known "
+        f"--encoding-h {shlex.quote(str(encoding_h))} "
+        f"--json {shlex.quote(str(out_json))} >/dev/null"
+    )
     p = subprocess.run(["bash", "-lc", cmd], text=True, capture_output=True)
     if p.returncode != 0:
         raise RuntimeError(f"sbt_decode failed rc={p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}\n")
@@ -57,9 +75,9 @@ def dump_decoded_json(sbt_decode: Path, elf: Path, func: str, out_json: Path) ->
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exe", default="build/ventus_ocl_run", help="Path to ventus_ocl_run")
-    ap.add_argument("--sbt-decode", default="build/sbt_decode", help="Path to sbt_decode")
-    ap.add_argument("--src", default="testcases/ocl_compare/kernels.cl", help="Kernel source file")
+    ap.add_argument("--exe", type=Path, default=DEFAULT_EXE, help="Path to ventus_ocl_run")
+    ap.add_argument("--sbt-decode", type=Path, default=DEFAULT_SBT_DECODE, help="Path to sbt_decode")
+    ap.add_argument("--src", type=Path, default=DEFAULT_SRC, help="Kernel source file")
     ap.add_argument("--n", type=int, default=256)
     ap.add_argument(
         "--kernels",
@@ -83,7 +101,7 @@ def main() -> int:
     ap.add_argument("--backend-a", default="spike")
     ap.add_argument("--backend-b", default="ptx")
     ap.add_argument("--coverage", action="store_true", help="Collect per-kernel decoded JSON and print coverage stats")
-    ap.add_argument("--exceptions", default="data/inst_exceptions.txt", help="Mnemonic-level exception list for coverage gate")
+    ap.add_argument("--exceptions", type=Path, default=DEFAULT_EXCEPTIONS, help="Mnemonic-level exception list for coverage gate")
     ap.add_argument("--min-covered", type=int, default=0, help="Coverage gate: minimum covered mnemonics in VentusInst_basic")
     ap.add_argument("--min-ratio", type=float, default=0.0, help="Coverage gate: minimum covered/total ratio")
     ap.add_argument("--require-full", action="store_true", help="Coverage gate: require full coverage except exceptions")
@@ -102,15 +120,28 @@ def main() -> int:
     ap.add_argument("--rtol", type=float, default=1e-5, help="Float compare rel tolerance (default: 1e-5)")
     args = ap.parse_args()
 
-    exe = Path(args.exe)
-    sbt_decode = Path(args.sbt_decode)
-    src = Path(args.src)
+    exe = args.exe.resolve()
+    sbt_decode = args.sbt_decode.resolve()
+    src = args.src.resolve()
+    exceptions = args.exceptions.resolve()
+    coverage_target = DEFAULT_COVERAGE_TARGET.resolve()
+    encoding_h = DEFAULT_ENCODING_H
+    env_sh = DEFAULT_ENV_SH
+    coverage_tool = DEFAULT_COVERAGE_TOOL.resolve()
     if not exe.exists():
         raise SystemExit(f"missing exe: {exe}")
     if not sbt_decode.exists():
         raise SystemExit(f"missing sbt_decode: {sbt_decode}")
     if not src.exists():
         raise SystemExit(f"missing src: {src}")
+    if not env_sh.exists():
+        raise SystemExit(f"missing env.sh: {env_sh}")
+    if args.coverage and not coverage_target.exists():
+        raise SystemExit(f"missing coverage target: {coverage_target}")
+    if not encoding_h.exists():
+        raise SystemExit(f"missing encoding.h: {encoding_h}")
+    if args.coverage and not coverage_tool.exists():
+        raise SystemExit(f"missing coverage tool: {coverage_tool}")
 
     # The Ventus PoCL device may choose to emit a side-effect ELF (object0.riscv) into the CWD.
     # If it already exists, it can become stale and break coverage accounting across edits.
@@ -130,8 +161,8 @@ def main() -> int:
         for k in args.kernels:
             out_a = tdp / f"{k}.{args.backend_a}.bin"
             out_b = tdp / f"{k}.{args.backend_b}.bin"
-            log_a = run_one(args.backend_a, exe, src, k, args.n, out_a)
-            log_b = run_one(args.backend_b, exe, src, k, args.n, out_b)
+            log_a = run_one(args.backend_a, exe, src, k, args.n, out_a, env_sh)
+            log_b = run_one(args.backend_b, exe, src, k, args.n, out_b, env_sh)
 
             ba = out_a.read_bytes()
             bb = out_b.read_bytes()
@@ -161,19 +192,21 @@ def main() -> int:
                 if elf.exists():
                     if not decoded_start:
                         out_start = tdp / "_start.decoded.json"
-                        dump_decoded_json(sbt_decode, elf, "_start", out_start)
+                        dump_decoded_json(sbt_decode, encoding_h, elf, "_start", out_start)
                         decoded_jsons.append(out_start)
                         decoded_start = True
                     out_json = tdp / f"{k}.decoded.json"
-                    dump_decoded_json(sbt_decode, elf, k, out_json)
+                    dump_decoded_json(sbt_decode, encoding_h, elf, k, out_json)
                     decoded_jsons.append(out_json)
 
         if args.coverage and decoded_jsons:
             cov_cmd = [
                 "python3",
-                "tools/ventus_inst_coverage.py",
+                str(coverage_tool),
+                "--target",
+                str(coverage_target),
                 "--exceptions",
-                str(Path(args.exceptions)),
+                str(exceptions),
                 "--decoded-json",
                 *[str(p) for p in decoded_jsons],
                 "--min-covered",

@@ -15,6 +15,8 @@ set -euo pipefail
 #   tools/regress.sh --preset all --arch sm_75
 #   tools/regress.sh --preset e2e --e2e-runner profile
 #   tools/regress.sh --preset e2e --e2e-runner ventus-env --jobs 8 --timeout-scale 1.0
+#   tools/regress.sh --preset quick --in-place
+#   tools/regress.sh --preset quick --workdir /tmp/sbtsim-regress --keep-workdir
 #
 # 关键参数：
 # - --preset {quick|all|e2e}
@@ -23,14 +25,17 @@ set -euo pipefail
 # - --build / --no-build
 # - --timeout-scale <float>      (传给端到端 runner)
 # - --jobs <int>                 (仅对 ventus-env/regression-test.py 生效)
+# - 默认在临时目录运行并自动清理，可用 --in-place/--workdir/--keep-workdir 覆盖
 #
 # 实现原理/处理步骤
 # 1) 解析参数，确定需要运行的 suite/preset。
-# 2) 按需执行 cmake configure/build，确保回归依赖的二进制存在。
-# 3) 依次调用既有 smoke/gate/e2e 入口；任何一步失败立即退出并打印失败点。
+# 2) 默认切到临时工作目录执行，并在退出时自动清理（除非显式要求保留）。
+# 3) 按需执行 cmake configure/build，确保回归依赖的二进制存在。
+# 4) 依次调用既有 smoke/gate/e2e 入口；任何一步失败立即退出并打印失败点。
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
+ORIG_CWD="$(pwd)"
 
 PRESET="quick"
 ARCH="${ARCH:-}"
@@ -38,6 +43,13 @@ E2E_RUNNER="profile"
 DO_BUILD="auto" # auto|yes|no
 TIMEOUT_SCALE="1.0"
 JOBS=""
+WORKDIR_MODE="temp" # temp|inplace|custom
+WORKDIR_OPTION_SET="no"
+WORKDIR_PATH=""
+KEEP_WORKDIR="no"
+
+RUN_DIR=""
+TEMP_RUN_DIR=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -51,6 +63,9 @@ Options:
   --jobs <int>                     Parallel jobs for ventus-env runner (optional)
   --build                          Force cmake configure/build
   --no-build                       Do not build (error if required binaries missing)
+  --in-place                       Run in current directory (legacy behavior)
+  --workdir <path>                 Run in given directory (auto create, do not auto delete)
+  --keep-workdir                   Keep temp directory after run (only for default temp mode)
   -h, --help                       Show this help
 EOF
 }
@@ -69,6 +84,26 @@ run_step() {
   shift
   echo "[RUN] $name"
   "$@"
+}
+
+run_step_in_root() {
+  local name="$1"
+  shift
+  echo "[RUN] $name (cwd=${ROOT_DIR})"
+  (
+    cd "${ROOT_DIR}"
+    "$@"
+  )
+}
+
+set_workdir_mode() {
+  local mode="$1"
+  local flag_name="$2"
+  if [[ "${WORKDIR_OPTION_SET}" == "yes" && "${WORKDIR_MODE}" != "${mode}" ]]; then
+    die "conflicting workdir mode options (current=${WORKDIR_MODE}, new=${flag_name})"
+  fi
+  WORKDIR_MODE="${mode}"
+  WORKDIR_OPTION_SET="yes"
 }
 
 parse_args() {
@@ -107,6 +142,20 @@ parse_args() {
         DO_BUILD="no"
         shift
         ;;
+      --in-place)
+        set_workdir_mode "inplace" "--in-place"
+        shift
+        ;;
+      --workdir)
+        [[ $# -ge 2 ]] || die "--workdir requires a value"
+        set_workdir_mode "custom" "--workdir"
+        WORKDIR_PATH="$2"
+        shift 2
+        ;;
+      --keep-workdir)
+        KEEP_WORKDIR="yes"
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -131,6 +180,65 @@ normalize_arch() {
     ARCH="sm_${ARCH}"
   fi
   [[ "${ARCH}" =~ ^sm_[0-9]+$ ]] || die "invalid --arch: ${ARCH} (expect 75 or sm_75)"
+}
+
+setup_workdir() {
+  case "${WORKDIR_MODE}" in
+    temp)
+      RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sbtsim-regress.XXXXXX")"
+      TEMP_RUN_DIR="${RUN_DIR}"
+      ;;
+    inplace)
+      RUN_DIR="${ORIG_CWD}"
+      ;;
+    custom)
+      [[ -n "${WORKDIR_PATH}" ]] || die "--workdir mode selected but path is empty"
+      if [[ "${WORKDIR_PATH}" != /* ]]; then
+        WORKDIR_PATH="${ORIG_CWD}/${WORKDIR_PATH}"
+      fi
+      mkdir -p "${WORKDIR_PATH}"
+      RUN_DIR="$(cd "${WORKDIR_PATH}" && pwd)"
+      ;;
+    *)
+      die "invalid workdir mode: ${WORKDIR_MODE}"
+      ;;
+  esac
+
+  if [[ "${KEEP_WORKDIR}" == "yes" && "${WORKDIR_MODE}" != "temp" ]]; then
+    echo "[INFO] --keep-workdir is ignored when mode=${WORKDIR_MODE}"
+  fi
+
+  echo "[INFO] workdir mode=${WORKDIR_MODE} path=${RUN_DIR}"
+  cd "${RUN_DIR}"
+}
+
+cleanup_workdir() {
+  local rc=$?
+  local cleanup_rc=0
+
+  if ! cd "${ORIG_CWD}" >/dev/null 2>&1; then
+    echo "ERROR: failed to restore cwd: ${ORIG_CWD}" >&2
+    cleanup_rc=1
+  fi
+
+  if [[ -n "${TEMP_RUN_DIR}" ]]; then
+    if [[ "${KEEP_WORKDIR}" == "yes" ]]; then
+      echo "[INFO] kept temp workdir: ${TEMP_RUN_DIR}"
+    else
+      if rm -rf "${TEMP_RUN_DIR}"; then
+        echo "[INFO] removed temp workdir: ${TEMP_RUN_DIR}"
+      else
+        echo "ERROR: failed to remove temp workdir: ${TEMP_RUN_DIR}" >&2
+        cleanup_rc=1
+      fi
+    fi
+  fi
+
+  trap - EXIT
+  if [[ "${rc}" -ne 0 ]]; then
+    exit "${rc}"
+  fi
+  exit "${cleanup_rc}"
 }
 
 cmake_build_if_needed() {
@@ -175,21 +283,25 @@ cmake_build_if_needed() {
 }
 
 run_regext_bundle_test() {
-  run_step "regext_bundle_test" "${BUILD_DIR}/regext_bundle_test"
+  # regext_bundle_test currently uses default ../spike/riscv/encoding.h relative to cwd.
+  run_step_in_root "regext_bundle_test" "${BUILD_DIR}/regext_bundle_test"
 }
 
 run_want_consistency() {
-  run_step "want consistency smoke" bash "${ROOT_DIR}/tools/check_spike_want_consistency.sh"
+  # check_spike_want_consistency.sh relies on sbt_decode/sbt_ptx default encoding-h relative to cwd.
+  run_step_in_root "want consistency smoke" bash "${ROOT_DIR}/tools/check_spike_want_consistency.sh"
 }
 
 run_compile_first_smoke() {
   need_cmd ptxas
-  run_step "Rodinia compile-first smoke (ARCH=${ARCH})" env ARCH="${ARCH}" bash "${ROOT_DIR}/tools/rodinia_ptx_smoke.sh"
+  # rodinia_ptx_smoke.sh relies on sbt_ptx default encoding-h and relative Rodinia ELF paths.
+  run_step_in_root "Rodinia compile-first smoke (ARCH=${ARCH})" env ARCH="${ARCH}" bash "${ROOT_DIR}/tools/rodinia_ptx_smoke.sh"
 }
 
 run_pds_smoke() {
   need_cmd ptxas
-  run_step "PDS smoke (ARCH=${ARCH})" env ARCH="${ARCH}" bash "${ROOT_DIR}/tools/pds_ptx_smoke.sh"
+  # pds_ptx_smoke.sh relies on sbt_decode/sbt_ptx default encoding-h and relative Rodinia ELF paths.
+  run_step_in_root "PDS smoke (ARCH=${ARCH})" env ARCH="${ARCH}" bash "${ROOT_DIR}/tools/pds_ptx_smoke.sh"
 }
 
 run_microtest_gate() {
@@ -199,7 +311,10 @@ run_microtest_gate() {
 run_e2e_profile() {
   need_cmd python3
   run_step "end-to-end (tools/ventus_regression_profile.py)" \
-    python3 "${ROOT_DIR}/tools/ventus_regression_profile.py" --clean --timeout-scale "${TIMEOUT_SCALE}"
+    python3 "${ROOT_DIR}/tools/ventus_regression_profile.py" \
+      --ventus-root "${ROOT_DIR}/.." \
+      --clean \
+      --timeout-scale "${TIMEOUT_SCALE}"
 }
 
 run_e2e_ventus_env() {
@@ -208,10 +323,14 @@ run_e2e_ventus_env() {
   if [[ -n "${JOBS}" ]]; then
     args+=("--jobs" "${JOBS}")
   fi
+  local ventus_root="${ROOT_DIR}/.."
+  if [[ ! -f "${ventus_root}/regression-test.py" ]]; then
+    die "ventus-env regression-test.py not found: ${ventus_root}/regression-test.py (expected ventus-env at ..)"
+  fi
   echo "[RUN] end-to-end (ventus-env/regression-test.py)"
   # ventus-env runner uses -t for timeout scale
   (
-    cd "${ROOT_DIR}/ventus-env"
+    cd "${ventus_root}"
     VENTUS_BACKEND="${VENTUS_BACKEND:-ptx}" python3 regression-test.py -t "${TIMEOUT_SCALE}" "${args[@]}"
   )
 }
@@ -219,6 +338,7 @@ run_e2e_ventus_env() {
 main() {
   parse_args "$@"
   normalize_arch
+  trap cleanup_workdir EXIT
 
   case "${PRESET}" in
     quick|all|e2e) ;;
@@ -229,6 +349,8 @@ main() {
     profile|ventus-env) ;;
     *) die "invalid --e2e-runner: ${E2E_RUNNER} (expect profile|ventus-env)" ;;
   esac
+
+  setup_workdir
 
   # Build dependencies for all presets except a pure e2e run (which can be used to validate toolchain/runtime only).
   if [[ "${PRESET}" == "e2e" ]]; then
