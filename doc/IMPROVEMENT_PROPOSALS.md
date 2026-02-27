@@ -1,6 +1,6 @@
 # 改进点与通用化演进建议（不改代码版）
 
-本文基于仓库当前实现（`sbt/` + `tools/`）与既有文档（`doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md`、`doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`、`lab/03_sbt_feasibility/*`）整理：**只指出问题与给出改进方案**，不直接修改代码。
+本文基于仓库当前实现（`sbt/` + `tools/`）与既有文档（`doc/archive/STATUS_SBT_PIPELINE_2026-02-22.md`、`doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md`、`doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`、`lab/03_sbt_feasibility/*`）整理：**只指出问题与给出改进方案**，不直接修改代码。
 
 ## 0. 你现在“已经拥有的东西”（利好）
 
@@ -14,25 +14,16 @@
 
 ## 1. 当前实现中偏“测例驱动”的地方（建议优先抽离）
 
-### 1.1 指令白名单与编码表来源重复且分散
+### 1.1 （已落地）Spike pattern 子集 build-time 生成并固化到二进制
 
-现状：
-- bring-up whitelist 在至少三处重复：
-  - `tools/sbt_ptx.cpp`（`want` 列表）
-  - `tools/sbt_decode.cpp`（`want` 集合）
-  - `tools/gen_spike_encoding_subset.cpp`（另一个 `want` 列表，且内容与前两者并不完全一致）
-- runtime 依赖 `ventus-env/spike/riscv/encoding.h` 的文本解析（`sbt/spike_encoding_parser.*`）。
+现状（修正后）：
+- bring-up whitelist 仍以仓库内 `data/spike_want.txt` 作为 single source of truth（主要供生成器与维护脚本使用）。
+- CMake 在构建期调用 `gen_spike_encoding_subset`，用 `data/spike_want.txt` + Spike `encoding.h` 生成 `<build>/generated/spike_encoding_subset.hpp`，并编译进 `sbt_decode/sbt_ptx`。
+- 因此 `sbt_decode/sbt_ptx` 运行期不再读取 want 文件，也不再解析 `encoding.h`；相关运行期覆盖入口（`GPU_SBT_WANT_FILE`、`--encoding-h`）已移除。
 
-问题：
-- 白名单内容不一致会导致“decode 能过/ptx 不支持”或相反的隐性分叉。
-- 对 `ventus-env` 的路径依赖让仓库很难独立复现（尤其对 CI/外部用户）。
-
-建议：
-- **单一事实源（single source of truth）**：
-  1) 用 `gen_spike_encoding_subset` 生成 `sbt/generated/spike_encoding_subset.hpp`（或 JSON），作为“pattern 子集”的稳定输入；
-  2) `sbt_decode/sbt_ptx` 都只引用生成产物，不再各自维护列表；
-  3) 将“支持子集”显式版本化（例如在生成文件头写入 Spike commit/encoding.h mtime）。
-- 若担心“生成文件提交进仓库”的维护成本：至少把 whitelist 从代码搬到 `doc/`/`data/` 的一个列表文件，让工具加载同一份配置。
+代价/影响：
+- 构建机必须能访问 Spike `encoding.h`；非默认目录布局时需在 configure 时显式指定 `-DSBT_SPIKE_ENCODING_H=/abs/path/to/encoding.h`。
+- want 或 `encoding.h` 变更需要重新构建二进制才能生效（可复现性优先的取舍）。
 
 ### 1.2 （已部分修正）builtin call 支持集合偏 Rodinia/PoCL 经验列表
 
@@ -210,6 +201,7 @@
 ### 3.1 用数据驱动描述 testcases（替代硬编码列表）
 
 现状：
+- 已有统一回归入口 `tools/regress.sh`（按 preset 聚合调用既有 smoke/gate/e2e），但具体 testcase/kernels 清单仍分散在多处硬编码。
 - `tools/rodinia_ptx_smoke.sh`：kernel 列表硬编码。
 - `tools/ventus_regression_profile.py`：testcase 列表硬编码。
 
@@ -219,13 +211,16 @@
   - `rodinia_ptx_smoke` 与 profile 脚本都读取同一份 manifest。
 - 额外收益：未来可以自然支持“新增 benchmark 只改数据，不改脚本/代码”。
 
-### 3.2 把“compile-first”与“run”分成可组合 pipeline
+### 3.2 （已部分落地）把“compile-first”与“run”分成可组合 pipeline
 
-建议把回归拆成两个独立层级：
-- Layer1：`ELF → PTX → ptxas`（无需 GPU 运行即可做，最适合 CI）
-- Layer2：`PoCL/driver → JIT → run`（依赖 GPU/权限/运行环境）
+现状（修正后）：
+- `tools/regress.sh` 已按 preset 把回归拆成可组合层级：
+  - Layer1（无需端到端运行）：`--preset quick`（compile-first + gate 等）
+  - Layer2（端到端）：`--preset e2e`
+  - Layer1+2：`--preset all`
 
-对每个 testcase 显式标注属于哪一层，并把失败原因写入统一 JSON（用于统计与趋势分析）。
+遗留改进点：
+- 仍缺少“可审阅的单一测试清单”（manifest）与统一的失败分类/JSON 结构，导致回归统计更依赖脚本输出而非结构化数据。
 
 ### 3.3 为“非功能失败”建立清晰分类（环境/权限/工具链）
 
@@ -258,7 +253,7 @@
 下面按“能独立验收、且尽量不引入破坏性”的顺序排列（每条都建议走 OpenSpec change 做 gate）：
 
 1) **统一指令白名单与 pattern 源**（已基本完成：`data/spike_want.txt` + `sbt/want_file.*` + `tools/update_spike_want.py`）
-2) **测试清单 manifest 化**（compile-first 与 run 分层；失败分类标准化）
+2) **测试清单 manifest 化 + 回归元数据规范化**（`tools/regress.sh` 已提供 preset 分层；下一步将测试清单数据化，并标准化失败分类/JSON 输出）
 3) **builtin 支持层模块化**（registry + micro-tests）
 4) **ABI adapter 分层**（把 PoCL 专有 prologue 规则从 emitter 主体抽离）
 5) **诊断规范统一**（verify 与 emitter 的 reason_code 对齐；JSON 结构固定）

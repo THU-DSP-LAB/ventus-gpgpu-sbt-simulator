@@ -21,12 +21,13 @@
 
 - `sbt/spike_encoding_parser.{hpp,cpp}`
   - 解析 `ventus-env/spike/riscv/encoding.h` 中 `#define MATCH_*/MASK_*` 与 `DECLARE_INSN(...)`，得到 `name/match/mask`。
-  - 说明：是纯文本解析器，不跑预处理器；用于 bring-up 工具链联动。
+  - 说明：是纯文本解析器，不跑预处理器；主要供 build-time subset 生成器（`gen_spike_encoding_subset`）与少量工具/单测使用。
 
 - `sbt/want_file.{hpp,cpp}`
   - Spike pattern 白名单（`DECLARE_INSN` id）的**单一输入源**：默认使用仓库内 `data/spike_want.txt`。
-  - 路径解析：优先读环境变量 `GPU_SBT_WANT_FILE`；否则从可执行文件路径向上定位 repo root；最后回退到 `data/spike_want.txt`（相对 CWD）。
-  - `load_spike_want_list()`：按行加载、去重、支持 `#` 注释。
+  - `load_spike_want_list(path)`：按行加载、去重、支持 `#` 注释。
+  - 注意：不再提供 `GPU_SBT_WANT_FILE`/repo-root/CWD 的“自动路径解析”；want 文件路径由构建系统/脚本显式传入（如 CMake 调用 `gen_spike_encoding_subset --want-file ...`）。
+  - 补充：`sbt_decode/sbt_ptx` 的 pattern 子集已在构建期固化，不再在运行期读取 want 文件；本模块主要供生成器与维护脚本使用。
 
 - `sbt/riscv_decode.{hpp,cpp}`
   - `decode_text(text, vaddr, opt, patterns)`：按 4B 指令解码。
@@ -80,12 +81,12 @@
   - `verify`：对照 `.dump` 校验 `.text` 字节一致（golden）
   - `pretty`：近似 objdump 输出
   - `cfgverify`：批量跑 Stage2 verify 并输出 JSON（含统计）
-  - 注意：pattern 白名单与 `sbt_ptx`/`gen_spike_encoding_subset` 统一来自 `data/spike_want.txt`（经 `sbt/want_file.*` 解析）；为解决 pattern 名字生命周期，CLI 内仍使用“泄漏静态 vector”的折中做法（工具生命周期内可接受，但不利于库化）。
+  - 注意：`sbt_decode/sbt_ptx` 的 Ventus pattern 子集在构建期由 `gen_spike_encoding_subset` 生成 `<build>/generated/spike_encoding_subset.hpp` 并编译进二进制；运行期不再读取 want/encoding 文件。
 
 - `tools/sbt_ptx.cpp` → `build/sbt_ptx`
   - 主流水线：`read .text + .symtab → 入口函数切片 → decode/CFG/verify → 扫描 direct call → 收集可达函数闭包 → emit PTX module（.entry + .func）→ 写文件`。
   - PTX 输出：默认 `build/ptx/<bench>.<stem>.<func>.ptx`（路径规则偏 Rodinia 目录布局）。
-  - 缓存：`<out>.meta` 记录输入 ELF/encoding.h/自身 exe 的时间戳与参数，命中则直接复用已有 PTX。
+  - 缓存：`<out>.meta` 记录输入 ELF/自身 exe 的时间戳与参数（pattern 子集已固化在二进制中），命中则直接复用已有 PTX。
   - 环境变量（行为开关/调试）：见 `doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md` 与 `tools/sbt_ptx.cpp`。
 
 - `tools/rodinia_ptx_smoke.sh`
@@ -104,7 +105,7 @@
   - 从 `VentusInst_basic.txt`（Custom/V 部分）+ Spike `encoding.h` 更新 `data/spike_want.txt`（用于 pattern 输入）。
 
 - `tools/check_spike_want_consistency.sh`
-  - 最小 smoke：用当前 `data/spike_want.txt` 生成 subset header，并确保 `sbt_decode/sbt_ptx` 在 `--require-known` 下能 decode/emit（用于防止 want 漂移）。
+  - 最小 smoke：用当前 want+encoding 重新生成 subset header，并与构建期生成的 `<build>/generated/spike_encoding_subset.hpp` 做 diff；再确保 `sbt_decode/sbt_ptx` 在 `--require-known` 下能 decode/emit（用于防止 want 漂移/构建产物过期）。
 
 - `tools/ventus_ocl_run.cpp` → `build/ventus_ocl_run`（可选构建）
   - OpenCL host runner：按 A/B buffer 约定跑指定 kernel，并把 B 写回/输出 hash。
@@ -137,7 +138,7 @@
 1. `sbt::elf::read_section(elf, ".text")`
 2. `sbt::elf::read_func_symbols(elf)` → `sym_by_addr`（用于解析 call 目标符号 / 判断内联 builtin）
 3. 以 `--func` 选择函数范围（依赖 `.symtab` 的 `addr/size`，size=0 时用“下一个符号”兜底）
-4. `sbt::spike::parse_declared_insns(encoding.h)` + want（默认 `data/spike_want.txt`）→ `std::vector<sbt::Pattern>`
+4. 构建期生成并编译进二进制的 subset header（`<build>/generated/spike_encoding_subset.hpp`）→ `std::vector<sbt::Pattern>`
 5. `sbt::decode_text(slice, func_start, DecodeOptions, patterns)`
 6. `sbt::cfg::build_function_cfg(decoded, func_start, func_end)`
 7. `sbt::cfg::verify_function(cfg, func)`（fail-fast）

@@ -3,8 +3,7 @@
 #include "sbt/elf_reader.hpp"
 #include "sbt/ptx_emit.hpp"
 #include "sbt/riscv_decode.hpp"
-#include "sbt/spike_encoding_parser.hpp"
-#include "sbt/want_file.hpp"
+#include "spike_encoding_subset.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -101,7 +100,7 @@ static std::optional<fs::path> self_exe_path() {
 
 static void usage() {
   std::cerr << "用法:\n";
-  std::cerr << "  sbt_ptx <elf> --func <kernel> [--out <ptx>] [--sm <cc>] [--encoding-h <path>]\n";
+  std::cerr << "  sbt_ptx <elf> --func <kernel> [--out <ptx>] [--sm <cc>]\n";
   std::cerr << "          [--require-known] [--no-bundle-regext] [--no-comments]\n";
   std::cerr << "          [--no-cache]\n";
 }
@@ -112,33 +111,12 @@ static std::string hex_u32(uint32_t x) {
   return std::string(buf);
 }
 
-struct PatternPack final {
-  std::vector<std::string> names;
-  std::vector<sbt::Pattern> patterns;
-};
-
-static PatternPack build_patterns_from_encoding(const fs::path &encoding_h_path) {
-  const auto decl = sbt::spike::parse_declared_insns(encoding_h_path);
-
-  const sbt::WantList want = sbt::load_spike_want_list(sbt::resolve_spike_want_file());
-
-  PatternPack out;
-  out.names.reserve(want.ids.size());
-  out.patterns.reserve(want.ids.size());
-
-  for (const auto &n : want.ids) {
-    auto it = decl.find(n);
-    if (it == decl.end()) {
-      throw std::runtime_error("encoding.h 缺少 DECLARE_INSN: " + n);
-    }
-    out.names.push_back(it->second.name);
-    sbt::Pattern ptn;
-    ptn.name = out.names.back().c_str();
-    ptn.match = it->second.match;
-    ptn.mask = it->second.mask;
-    out.patterns.push_back(ptn);
+static std::vector<sbt::Pattern> build_patterns_from_subset_header() {
+  std::vector<sbt::Pattern> out;
+  out.reserve(sizeof(sbt::gen::kPatterns) / sizeof(sbt::gen::kPatterns[0]));
+  for (const auto &p : sbt::gen::kPatterns) {
+    out.push_back({p.name, p.match, p.mask});
   }
-
   return out;
 }
 
@@ -244,8 +222,6 @@ struct CacheKey final {
   bool bundle_regext = true;
   bool include_comments = true;
   bool scalar_leader_only = false;
-  std::string encoding_h_abs;
-  long long encoding_time = 0;
   std::string exe_abs;
   long long exe_time = 0;
 };
@@ -256,7 +232,7 @@ static fs::path cache_meta_path_for(const fs::path &out_path) {
 
 static std::string render_cache_meta(const CacheKey &k) {
   std::ostringstream o;
-  o << "format=1\n";
+  o << "format=2\n";
   o << "elf_abs=" << k.elf_abs << "\n";
   o << "elf_time=" << k.elf_time << "\n";
   o << "func=" << k.func << "\n";
@@ -266,8 +242,6 @@ static std::string render_cache_meta(const CacheKey &k) {
   o << "bundle_regext=" << (k.bundle_regext ? 1 : 0) << "\n";
   o << "include_comments=" << (k.include_comments ? 1 : 0) << "\n";
   o << "scalar_leader_only=" << (k.scalar_leader_only ? 1 : 0) << "\n";
-  o << "encoding_h_abs=" << k.encoding_h_abs << "\n";
-  o << "encoding_time=" << k.encoding_time << "\n";
   o << "exe_abs=" << k.exe_abs << "\n";
   o << "exe_time=" << k.exe_time << "\n";
   return o.str();
@@ -312,12 +286,11 @@ static bool cache_meta_matches(const CacheKey &k, const std::string &meta) {
   };
 
   auto fmt = get_kv(meta, "format");
-  if (!fmt || *fmt != "1") return false;
+  if (!fmt || *fmt != "2") return false;
 
   return eqs("elf_abs", k.elf_abs) && eql("elf_time", k.elf_time) && eqs("func", k.func) && eqs("out_abs", k.out_abs.string()) && eqi("sm", k.sm) &&
          eqi("require_known", k.require_known ? 1 : 0) && eqi("bundle_regext", k.bundle_regext ? 1 : 0) && eqi("include_comments", k.include_comments ? 1 : 0) &&
-         eqi("scalar_leader_only", k.scalar_leader_only ? 1 : 0) &&
-         eqs("encoding_h_abs", k.encoding_h_abs) && eql("encoding_time", k.encoding_time) && eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
+         eqi("scalar_leader_only", k.scalar_leader_only ? 1 : 0) && eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
 }
 
 } // namespace
@@ -331,7 +304,6 @@ int main(int argc, char **argv) {
   fs::path elf_path;
   std::optional<std::string> func;
   fs::path out_path;
-  fs::path encoding_h = "../spike/riscv/encoding.h";
   bool require_known = false;
   bool bundle_regext = true;
   bool include_comments = true;
@@ -346,8 +318,6 @@ int main(int argc, char **argv) {
       func = argv[++i];
     } else if (a == "--out" && i + 1 < argc) {
       out_path = argv[++i];
-    } else if (a == "--encoding-h" && i + 1 < argc) {
-      encoding_h = argv[++i];
     } else if (a == "--sm" && i + 1 < argc) {
       sm = std::stoi(argv[++i]);
     } else if (a == "--require-known") {
@@ -392,8 +362,6 @@ int main(int argc, char **argv) {
     key.bundle_regext = bundle_regext;
     key.include_comments = include_comments;
     key.scalar_leader_only = env_bool("GPU_SBT_SCALAR_LEADER_ONLY", /*default_value=*/true);
-    key.encoding_h_abs = fs::absolute(encoding_h).string();
-    key.encoding_time = file_time_token(encoding_h);
     if (auto exe = self_exe_path()) {
       key.exe_abs = fs::absolute(*exe).string();
       key.exe_time = file_time_token(*exe);
@@ -469,12 +437,12 @@ int main(int argc, char **argv) {
     const size_t len = fr->end - fr->start;
     std::vector<uint8_t> slice(text.data.begin() + static_cast<long>(off), text.data.begin() + static_cast<long>(off + len));
 
-    const auto pack = build_patterns_from_encoding(encoding_h);
+    const auto patterns = build_patterns_from_subset_header();
 
     sbt::DecodeOptions dopt;
     dopt.bundle_regext = bundle_regext;
     dopt.require_known = require_known;
-    const auto decoded = sbt::decode_text(slice, fr->start, dopt, pack.patterns);
+    const auto decoded = sbt::decode_text(slice, fr->start, dopt, patterns);
 
     const auto cfg = sbt::cfg::build_function_cfg(decoded, fr->start, fr->end);
     const auto verify = sbt::cfg::verify_function(cfg, *func);
@@ -501,7 +469,7 @@ int main(int argc, char **argv) {
       const size_t off = fr.start - text.vaddr;
       const size_t len = fr.end - fr.start;
       std::vector<uint8_t> slice(text.data.begin() + static_cast<long>(off), text.data.begin() + static_cast<long>(off + len));
-      const auto decoded = sbt::decode_text(slice, fr.start, dopt, pack.patterns);
+      const auto decoded = sbt::decode_text(slice, fr.start, dopt, patterns);
       const auto cfg = sbt::cfg::build_function_cfg(decoded, fr.start, fr.end);
       const auto verify = sbt::cfg::verify_function(cfg, name);
 

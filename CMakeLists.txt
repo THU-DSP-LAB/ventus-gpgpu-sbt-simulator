@@ -6,6 +6,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Build-time pattern source (Spike encoding.h) for generating a hermetic subset header.
+set(SBT_SPIKE_ENCODING_H "${CMAKE_CURRENT_SOURCE_DIR}/../spike/riscv/encoding.h" CACHE FILEPATH "Path to Spike encoding.h")
+if (NOT EXISTS "${SBT_SPIKE_ENCODING_H}")
+  message(FATAL_ERROR
+    "SBT_SPIKE_ENCODING_H not found: ${SBT_SPIKE_ENCODING_H}\n"
+    "Pass -DSBT_SPIKE_ENCODING_H=/abs/path/to/spike/riscv/encoding.h"
+  )
+endif ()
+
 add_library(sbt_lib
   sbt/elf_reader.cpp
   sbt/spike_encoding_parser.cpp
@@ -27,8 +36,37 @@ target_link_libraries(sbt_decode PRIVATE sbt_lib)
 add_executable(gen_spike_encoding_subset tools/gen_spike_encoding_subset.cpp)
 target_link_libraries(gen_spike_encoding_subset PRIVATE sbt_lib)
 
+set(SBT_SPIKE_WANT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/data/spike_want.txt")
+if (NOT EXISTS "${SBT_SPIKE_WANT_FILE}")
+  message(FATAL_ERROR "Spike want file not found: ${SBT_SPIKE_WANT_FILE}")
+endif ()
+set(SBT_SPIKE_SUBSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(SBT_SPIKE_SUBSET_HEADER "${SBT_SPIKE_SUBSET_DIR}/spike_encoding_subset.hpp")
+
+add_custom_command(
+  OUTPUT "${SBT_SPIKE_SUBSET_HEADER}"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${SBT_SPIKE_SUBSET_DIR}"
+  COMMAND "$<TARGET_FILE:gen_spike_encoding_subset>"
+          --encoding-h "${SBT_SPIKE_ENCODING_H}"
+          --want-file "${SBT_SPIKE_WANT_FILE}"
+          --out "${SBT_SPIKE_SUBSET_HEADER}"
+  DEPENDS
+    gen_spike_encoding_subset
+    "${SBT_SPIKE_WANT_FILE}"
+    "${SBT_SPIKE_ENCODING_H}"
+  VERBATIM
+  COMMENT "Generating Spike encoding subset header: ${SBT_SPIKE_SUBSET_HEADER}"
+)
+
+add_custom_target(spike_encoding_subset_header DEPENDS "${SBT_SPIKE_SUBSET_HEADER}")
+
 add_executable(sbt_ptx tools/sbt_ptx.cpp)
 target_link_libraries(sbt_ptx PRIVATE sbt_lib)
+
+add_dependencies(sbt_decode spike_encoding_subset_header)
+add_dependencies(sbt_ptx spike_encoding_subset_header)
+target_include_directories(sbt_decode PRIVATE "${SBT_SPIKE_SUBSET_DIR}")
+target_include_directories(sbt_ptx PRIVATE "${SBT_SPIKE_SUBSET_DIR}")
 
 add_executable(regext_bundle_test tools/regext_bundle_test.cpp)
 target_link_libraries(regext_bundle_test PRIVATE sbt_lib)

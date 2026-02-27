@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+"""
+背景
+- 需要在 bring-up 阶段对比同一份 OpenCL kernel 在 Spike backend 与 PTX backend 下的行为是否一致，并统计指令覆盖率。
+
+需求/作用
+- 通过 ventus_ocl_run 分别在 VENTUS_BACKEND=spike 与 VENTUS_BACKEND=ptx 下运行 kernel，比较输出 buffer。
+- 可选导出 sbt_decode decoded JSON，并调用 ventus_inst_coverage.py 统计 VentusInst_basic.txt 的 mnemonic 覆盖率。
+
+用法
+- tools/ventus_ocl_compare.py --help
+- tools/ventus_ocl_compare.py --kernels mt_int_all --n 256
+- tools/ventus_ocl_compare.py --coverage
+
+实现原理/处理步骤
+1) `source ../env.sh` 后设置 `VENTUS_BACKEND=<spike|ptx>`，运行 ventus_ocl_run 生成输出文件。
+2) 读取输出并按整数/浮点规则做对比（浮点按 atol/rtol 容差）。
+3) 覆盖率模式下，对目标 ELF/函数调用 sbt_decode 导出 JSON，再由 ventus_inst_coverage.py 聚合统计。
+"""
+
 import argparse
 import math
 import shlex
@@ -14,7 +33,6 @@ DEFAULT_SBT_DECODE = REPO_ROOT / "build/sbt_decode"
 DEFAULT_SRC = REPO_ROOT / "testcases/ocl_compare/kernels.cl"
 DEFAULT_EXCEPTIONS = REPO_ROOT / "data/inst_exceptions.txt"
 DEFAULT_COVERAGE_TARGET = REPO_ROOT / "VentusInst_basic.txt"
-DEFAULT_ENCODING_H = (REPO_ROOT / ".." / "spike" / "riscv" / "encoding.h").resolve()
 DEFAULT_ENV_SH = (REPO_ROOT / ".." / "env.sh").resolve()
 DEFAULT_COVERAGE_TOOL = SCRIPT_DIR / "ventus_inst_coverage.py"
 
@@ -61,11 +79,10 @@ def _compare_f32_bytes(a: bytes, b: bytes, *, atol: float, rtol: float) -> tuple
     return True, f"f32_ok n={n} atol={atol} rtol={rtol}"
 
 
-def dump_decoded_json(sbt_decode: Path, encoding_h: Path, elf: Path, func: str, out_json: Path) -> None:
+def dump_decoded_json(sbt_decode: Path, elf: Path, func: str, out_json: Path) -> None:
     cmd = (
         f"{shlex.quote(str(sbt_decode))} decode {shlex.quote(str(elf))} "
         f"--func {shlex.quote(func)} --require-known "
-        f"--encoding-h {shlex.quote(str(encoding_h))} "
         f"--json {shlex.quote(str(out_json))} >/dev/null"
     )
     p = subprocess.run(["bash", "-lc", cmd], text=True, capture_output=True)
@@ -125,7 +142,6 @@ def main() -> int:
     src = args.src.resolve()
     exceptions = args.exceptions.resolve()
     coverage_target = DEFAULT_COVERAGE_TARGET.resolve()
-    encoding_h = DEFAULT_ENCODING_H
     env_sh = DEFAULT_ENV_SH
     coverage_tool = DEFAULT_COVERAGE_TOOL.resolve()
     if not exe.exists():
@@ -138,8 +154,6 @@ def main() -> int:
         raise SystemExit(f"missing env.sh: {env_sh}")
     if args.coverage and not coverage_target.exists():
         raise SystemExit(f"missing coverage target: {coverage_target}")
-    if not encoding_h.exists():
-        raise SystemExit(f"missing encoding.h: {encoding_h}")
     if args.coverage and not coverage_tool.exists():
         raise SystemExit(f"missing coverage tool: {coverage_tool}")
 
@@ -192,11 +206,11 @@ def main() -> int:
                 if elf.exists():
                     if not decoded_start:
                         out_start = tdp / "_start.decoded.json"
-                        dump_decoded_json(sbt_decode, encoding_h, elf, "_start", out_start)
+                        dump_decoded_json(sbt_decode, elf, "_start", out_start)
                         decoded_jsons.append(out_start)
                         decoded_start = True
                     out_json = tdp / f"{k}.decoded.json"
-                    dump_decoded_json(sbt_decode, encoding_h, elf, k, out_json)
+                    dump_decoded_json(sbt_decode, elf, k, out_json)
                     decoded_jsons.append(out_json)
 
         if args.coverage and decoded_jsons:

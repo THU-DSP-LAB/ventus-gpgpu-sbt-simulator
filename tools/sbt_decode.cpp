@@ -3,8 +3,7 @@
 #include "sbt/cfg.hpp"
 #include "sbt/cfg_verify.hpp"
 #include "sbt/riscv_decode.hpp"
-#include "sbt/spike_encoding_parser.hpp"
-#include "sbt/want_file.hpp"
+#include "spike_encoding_subset.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -23,10 +22,10 @@ namespace {
 static void usage() {
   std::cerr << "用法:\n";
   std::cerr << "  sbt_decode funcs  <elf>\n";
-  std::cerr << "  sbt_decode decode <elf> [--encoding-h <path>] [--dump <dump>] [--func <name>] [--json <path>]\n";
+  std::cerr << "  sbt_decode decode <elf> [--dump <dump>] [--func <name>] [--json <path>]\n";
   std::cerr << "                  [--require-known] [--no-bundle-regext]\n";
-  std::cerr << "  sbt_decode pretty <elf> [--encoding-h <path>] [--func <name>] [--require-known] [--no-bundle-regext]\n";
-  std::cerr << "  sbt_decode cfgverify <elf> [--encoding-h <path>] [--func <name>] [--json <path>]\n";
+  std::cerr << "  sbt_decode pretty <elf> [--func <name>] [--require-known] [--no-bundle-regext]\n";
+  std::cerr << "  sbt_decode cfgverify <elf> [--func <name>] [--json <path>]\n";
   std::cerr << "                     [--include-start] [--verbose] [--require-known] [--no-bundle-regext]\n";
   std::cerr << "  sbt_decode verify <elf> [--dump <dump>]\n";
 }
@@ -74,24 +73,12 @@ static std::string json_escape(const std::string &s) {
   return out;
 }
 
-static std::vector<sbt::Pattern> build_patterns_from_encoding(const fs::path &encoding_h_path) {
-  const auto decl = sbt::spike::parse_declared_insns(encoding_h_path);
-
-  const sbt::WantList want = sbt::load_spike_want_list(sbt::resolve_spike_want_file());
-
-  // Keep names alive by leaking them (tool lifetime). This is acceptable for CLI tools.
-  auto *names = new std::vector<std::string>();
-  names->reserve(want.ids.size());
-
+static std::vector<sbt::Pattern> build_patterns_from_subset_header() {
   std::vector<sbt::Pattern> out;
-  out.reserve(want.ids.size());
-  for (const auto &id : want.ids) {
-    const auto it = decl.find(id);
-    if (it == decl.end()) throw std::runtime_error("encoding.h 缺少 DECLARE_INSN: " + id);
-    names->push_back(it->second.name);
-    out.push_back({names->back().c_str(), it->second.match, it->second.mask});
+  out.reserve(sizeof(sbt::gen::kPatterns) / sizeof(sbt::gen::kPatterns[0]));
+  for (const auto &p : sbt::gen::kPatterns) {
+    out.push_back({p.name, p.match, p.mask});
   }
-
   return out;
 }
 
@@ -252,7 +239,6 @@ int main(int argc, char **argv) {
   const fs::path elf_path = argv[2];
 
   fs::path dump_path = default_dump_path(elf_path);
-  fs::path encoding_h = "../spike/riscv/encoding.h";
   std::optional<std::string> func;
   std::optional<fs::path> json_out;
   bool require_known = false;
@@ -264,8 +250,6 @@ int main(int argc, char **argv) {
     std::string a = argv[i];
     if (a == "--dump" && i + 1 < argc) {
       dump_path = argv[++i];
-    } else if (a == "--encoding-h" && i + 1 < argc) {
-      encoding_h = argv[++i];
     } else if (a == "--func" && i + 1 < argc) {
       func = argv[++i];
     } else if (a == "--json" && i + 1 < argc) {
@@ -332,7 +316,7 @@ int main(int argc, char **argv) {
     if (cmd == "decode") {
       const auto text = sbt::elf::read_section(elf_path, ".text");
       const auto syms = sbt::elf::read_func_symbols(elf_path);
-      const auto patterns = build_patterns_from_encoding(encoding_h);
+      const auto patterns = build_patterns_from_subset_header();
 
       sbt::DecodeOptions opt;
       opt.bundle_regext = bundle_regext;
@@ -405,7 +389,7 @@ int main(int argc, char **argv) {
     if (cmd == "pretty") {
       const auto text = sbt::elf::read_section(elf_path, ".text");
       const auto syms = sbt::elf::read_func_symbols(elf_path);
-      const auto patterns = build_patterns_from_encoding(encoding_h);
+      const auto patterns = build_patterns_from_subset_header();
 
       sbt::DecodeOptions opt;
       opt.bundle_regext = bundle_regext;
@@ -452,7 +436,7 @@ int main(int argc, char **argv) {
     if (cmd == "cfgverify") {
       const auto text = sbt::elf::read_section(elf_path, ".text");
       const auto syms = sbt::elf::read_func_symbols(elf_path);
-      const auto patterns = build_patterns_from_encoding(encoding_h);
+      const auto patterns = build_patterns_from_subset_header();
 
       sbt::DecodeOptions opt;
       opt.bundle_regext = bundle_regext;

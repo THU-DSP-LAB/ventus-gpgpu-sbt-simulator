@@ -288,7 +288,7 @@ run_regext_bundle_test() {
 }
 
 run_want_consistency() {
-  # check_spike_want_consistency.sh relies on sbt_decode/sbt_ptx default encoding-h relative to cwd.
+  # check_spike_want_consistency.sh regenerates the build-time subset header and diffs it with build outputs.
   run_step_in_root "want consistency smoke" bash "${ROOT_DIR}/tools/check_spike_want_consistency.sh"
 }
 

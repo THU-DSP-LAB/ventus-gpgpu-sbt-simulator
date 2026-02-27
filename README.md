@@ -6,7 +6,7 @@
 - compile-first（`ptxas` 可编译）与 Spike-vs-PTX 微测例对照
 - 与 `ventus-env` 的 PoCL/driver 端到端联调
 
-注：本项目默认假定自身作为 (ventus-env)[https://github.com/THU-DSP-LAB/ventus-env] 项目的子项目集成进 Ventus 软件栈，
+注：本项目默认假定自身作为 [ventus-env](https://github.com/THU-DSP-LAB/ventus-env) 项目的子项目集成进 Ventus 软件栈，
 假定 `..` 上级目录即为 ventus-env 项目路径
 
 输入以 Ventus ELF 为准（当前阶段不使用 `.vmem`）：
@@ -30,6 +30,12 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
+Spike `encoding.h` 用于在构建期生成并固化解码所需的 pattern 子集（运行期不再读取 want/encoding 文件）。默认假定 `ventus-env` 位于上级目录 `..`，即使用 `../spike/riscv/encoding.h`；如目录布局不同，可显式指定：
+```bash
+cmake -S . -B build -DSBT_SPIKE_ENCODING_H=/abs/path/to/spike/riscv/encoding.h
+cmake --build build -j
+```
+
 ## 统一回归入口（推荐）
 ```bash
 # 快速回归（不含端到端）：decode/emit + ptxas compile-first + PDS smoke + microtest gate
@@ -41,7 +47,17 @@ tools/regress.sh --preset all --arch sm_75
 # 仅端到端（两种 runner 二选一）
 tools/regress.sh --preset e2e --e2e-runner profile --timeout-scale 1.0
 tools/regress.sh --preset e2e --e2e-runner ventus-env --jobs 8 --timeout-scale 1.0
+
+# 覆盖默认工作目录策略
+# 1) 在当前目录执行（旧行为）
+tools/regress.sh --preset quick --in-place
+# 2) 指定工作目录（不会自动删除）
+tools/regress.sh --preset quick --workdir /tmp/sbtsim-regress
+# 3) 临时目录模式下保留目录（用于排障）
+tools/regress.sh --preset quick --keep-workdir
 ```
+
+`tools/regress.sh` 默认会切换到临时目录执行，并在退出后自动删除该目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。
 
 ## 阶段 1/2：解码与 CFG 验证
 ```bash
