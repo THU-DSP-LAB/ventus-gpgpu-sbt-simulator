@@ -1,4 +1,6 @@
-# 项目概述
+# sbtsim
+
+## 项目概述
 本仓库实现 Ventus ELF 到 NVIDIA PTX 的原型级静态二进制翻译（SBT）流程，当前重点是：
 - `ELF(.riscv) -> decode -> CFG verify -> PTX emit`
 - compile-first（`ptxas` 可编译）与 Spike-vs-PTX 微测例对照

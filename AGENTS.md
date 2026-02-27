@@ -2,7 +2,8 @@
 
 本仓库作为 `ventus-env` 的子项目集成使用时，`ventus-env` 位于本仓库的上级目录（`../`），。
 * ventus 有关的软件工具使用 `../install/bin` 目录下的可执行程序
-* 反汇编：`../install/bin/llvm-objdump -d --mattr=+v,+zfinx kernel.riscv > kernel.dump`
+* ventus 编译器：`../install/bin/clang -cl-std=CL2.0 -target riscv32 -mcpu=ventus-gpgpu kernel.cl -o kernel.riscv -nodefaultlibs -Wl,${VENTUS_ENV_PATH}/install/lib/crt0.o -Wl,${VENTUS_ENV_PATH}/install/lib/riscv32clc.o -Wl,--gc-sections -L${VENTUS_ENV_PATH}/install/lib -lworkitem -I${VENTUS_ENV_PATH}/installinclude/clc -O1 -Wl,-T,${VENTUS_ENV_PATH}/install/lib/ldscripts/ventus/elf32lriscv.ld -Wl,--init=${KERNEL_FUNC_NAME}  -w  -D__opencl_c_generic_address_space=1 -D__opencl_c_named_address_space_builtins=1  -D__OPENCL_VERSION__=200` 注意替换 ${VENTUS_ENV_PATH} 和 ${KERNEL_FUNC_NAME}
+* ventus 反汇编器：`../install/bin/llvm-objdump -d --mattr=+v,+zfinx kernel.riscv > kernel.dump`
 * `ventus-env` 具有一系列子仓库列举如下（你可以通过判断它们是否存在来判断上级目录是否为 `ventus-env`）：
   * 编译器 `../llvm`
   * 功能仿真器 `../spike` （对本项目有参考价值）

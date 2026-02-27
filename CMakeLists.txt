@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(gpusim_sbt LANGUAGES CXX)
+project(sbtsim LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,7 +36,7 @@ target_link_libraries(regext_bundle_test PRIVATE sbt_lib)
 # Optional: OpenCL micro-test runner (requires Ventus OpenCL headers under Ventus install prefix).
 set(VENTUS_INSTALL_PREFIX_HINT "$ENV{VENTUS_INSTALL_PREFIX}")
 if (NOT VENTUS_INSTALL_PREFIX_HINT)
-  # Integrated layout: this repo lives at "<ventus-env>/gpusim".
+  # Integrated layout: this repo lives at "<ventus-env>/sbtsim".
   set(VENTUS_INSTALL_PREFIX_HINT "${CMAKE_CURRENT_SOURCE_DIR}/../install")
 endif ()
 
