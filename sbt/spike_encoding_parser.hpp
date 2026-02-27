@@ -13,7 +13,7 @@ struct InsnPattern final {
   uint32_t mask = 0;
 };
 
-// Parse `ventus-env/spike/riscv/encoding.h` and return all `DECLARE_INSN(name, MATCH_*, MASK_*)`.
+// Parse Spike's `encoding.h` and return all `DECLARE_INSN(name, MATCH_*, MASK_*)`.
 //
 // Notes:
 // - This is a text parser: it does not run the preprocessor.
@@ -22,4 +22,3 @@ std::unordered_map<std::string, InsnPattern>
 parse_declared_insns(const std::filesystem::path &encoding_h_path);
 
 } // namespace sbt::spike
-

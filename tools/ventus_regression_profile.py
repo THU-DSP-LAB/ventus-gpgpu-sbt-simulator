@@ -167,7 +167,7 @@ def _run_logged(cmd: list[str], *, cwd: Path, timeout_s: float, log_path: Path, 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Profile Ventus regression testcases with per-case wall-time breakdown.")
-    ap.add_argument("--ventus-root", type=Path, default=Path("ventus-env"), help="Path to ventus-env root (default: ./ventus-env)")
+    ap.add_argument("--ventus-root", type=Path, default=Path(".."), help="Path to ventus-env root (default: ..)")
     ap.add_argument("--timeout-scale", type=float, default=1.0, help="Scale each testcase timeout (default: 1.0)")
     ap.add_argument("--log-dir", type=Path, default=Path("build/ventus-regression-profile/logs"), help="Directory to store per-case logs")
     ap.add_argument("--json-out", type=Path, default=Path("build/ventus-regression-profile/summary.json"), help="Where to write JSON summary")

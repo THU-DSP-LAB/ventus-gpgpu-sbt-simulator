@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
 
-  const fs::path encoding_h = "ventus-env/spike/riscv/encoding.h";
+  const fs::path encoding_h = "../spike/riscv/encoding.h";
   const auto decl = sbt::spike::parse_declared_insns(encoding_h);
 
   std::vector<std::string> name_storage;

@@ -9,7 +9,7 @@ from pathlib import Path
 
 def run_one(backend: str, exe: Path, src: Path, kernel: str, n: int, out: Path) -> str:
     cmd = (
-        f"source ventus-env/env.sh >/dev/null 2>&1 && "
+        f"source ../env.sh >/dev/null 2>&1 && "
         f"VENTUS_BACKEND={backend} "
         f"{exe} --src {src} --kernel {kernel} --n {n} --out {out}"
     )

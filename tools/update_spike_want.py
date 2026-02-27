@@ -83,7 +83,7 @@ def _render_want(ids: list[str]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Update data/spike_want.txt from VentusInst_basic.txt + Spike encoding.h")
     ap.add_argument("--ventusinst", default="VentusInst_basic.txt", type=Path)
-    ap.add_argument("--encoding-h", default="ventus-env/spike/riscv/encoding.h", type=Path)
+    ap.add_argument("--encoding-h", default="../spike/riscv/encoding.h", type=Path)
     ap.add_argument("--out", default="data/spike_want.txt", type=Path)
     ap.add_argument("--dry-run", action="store_true", help="Do not write, only report")
     args = ap.parse_args()

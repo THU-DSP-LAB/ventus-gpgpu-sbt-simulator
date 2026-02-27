@@ -252,7 +252,7 @@ int main(int argc, char **argv) {
   const fs::path elf_path = argv[2];
 
   fs::path dump_path = default_dump_path(elf_path);
-  fs::path encoding_h = "ventus-env/spike/riscv/encoding.h";
+  fs::path encoding_h = "../spike/riscv/encoding.h";
   std::optional<std::string> func;
   std::optional<fs::path> json_out;
   bool require_known = false;

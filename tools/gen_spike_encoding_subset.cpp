@@ -17,7 +17,7 @@ static void usage() {
 } // namespace
 
 int main(int argc, char **argv) {
-  std::filesystem::path encoding_h = "ventus-env/spike/riscv/encoding.h";
+  std::filesystem::path encoding_h = "../spike/riscv/encoding.h";
   std::filesystem::path out = "sbt/generated/spike_encoding_subset.hpp";
 
   for (int i = 1; i < argc; ++i) {

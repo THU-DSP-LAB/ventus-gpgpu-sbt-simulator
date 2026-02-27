@@ -33,17 +33,23 @@ target_link_libraries(sbt_ptx PRIVATE sbt_lib)
 add_executable(regext_bundle_test tools/regext_bundle_test.cpp)
 target_link_libraries(regext_bundle_test PRIVATE sbt_lib)
 
-# Optional: OpenCL micro-test runner (requires Ventus OpenCL headers under ventus-env/install).
-if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ventus-env/install/include/CL/cl.h")
+# Optional: OpenCL micro-test runner (requires Ventus OpenCL headers under Ventus install prefix).
+set(VENTUS_INSTALL_PREFIX_HINT "$ENV{VENTUS_INSTALL_PREFIX}")
+if (NOT VENTUS_INSTALL_PREFIX_HINT)
+  # Integrated layout: this repo lives at "<ventus-env>/gpusim".
+  set(VENTUS_INSTALL_PREFIX_HINT "${CMAKE_CURRENT_SOURCE_DIR}/../install")
+endif ()
+
+if (EXISTS "${VENTUS_INSTALL_PREFIX_HINT}/include/CL/cl.h")
   find_library(OPENCL_LIB OpenCL
     HINTS
-      "${CMAKE_CURRENT_SOURCE_DIR}/ventus-env/install/lib"
+      "${VENTUS_INSTALL_PREFIX_HINT}/lib"
       /usr/local/cuda/targets/x86_64-linux/lib
       /usr/lib/x86_64-linux-gnu
   )
   if (OPENCL_LIB)
     add_executable(ventus_ocl_run tools/ventus_ocl_run.cpp)
-    target_include_directories(ventus_ocl_run PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ventus-env/install/include")
+    target_include_directories(ventus_ocl_run PRIVATE "${VENTUS_INSTALL_PREFIX_HINT}/include")
     target_compile_options(ventus_ocl_run PRIVATE -Wall -Wextra -Wpedantic)
     target_link_libraries(ventus_ocl_run PRIVATE "${OPENCL_LIB}")
   endif ()

@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
   fs::path elf_path;
   std::optional<std::string> func;
   fs::path out_path;
-  fs::path encoding_h = "ventus-env/spike/riscv/encoding.h";
+  fs::path encoding_h = "../spike/riscv/encoding.h";
   bool require_known = false;
   bool bundle_regext = true;
   bool include_comments = true;

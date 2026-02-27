@@ -17,17 +17,17 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/build/ptx}"
 mkdir -p "$OUT_DIR"
 
 declare -a kernels=(
-  "ventus-env/rodinia/opencl/b+tree/object0.riscv findRangeK"
-  "ventus-env/rodinia/opencl/b+tree/object1.riscv findK"
-  "ventus-env/rodinia/opencl/backprop/object0.riscv bpnn_layerforward_ocl"
-  "ventus-env/rodinia/opencl/backprop/object0.riscv bpnn_adjust_weights_ocl"
-  "ventus-env/rodinia/opencl/bfs/object0.riscv BFS_1"
-  "ventus-env/rodinia/opencl/bfs/object0.riscv BFS_2"
-  "ventus-env/rodinia/opencl/gaussian/object0.riscv Fan1"
-  "ventus-env/rodinia/opencl/gaussian/object0.riscv Fan2"
-  "ventus-env/rodinia/opencl/kmeans/object0.riscv kmeans_kernel_c"
-  "ventus-env/rodinia/opencl/kmeans/object0.riscv kmeans_swap"
-  "ventus-env/rodinia/opencl/nn/object0.riscv NearestNeighbor"
+  "../rodinia/opencl/b+tree/object0.riscv findRangeK"
+  "../rodinia/opencl/b+tree/object1.riscv findK"
+  "../rodinia/opencl/backprop/object0.riscv bpnn_layerforward_ocl"
+  "../rodinia/opencl/backprop/object0.riscv bpnn_adjust_weights_ocl"
+  "../rodinia/opencl/bfs/object0.riscv BFS_1"
+  "../rodinia/opencl/bfs/object0.riscv BFS_2"
+  "../rodinia/opencl/gaussian/object0.riscv Fan1"
+  "../rodinia/opencl/gaussian/object0.riscv Fan2"
+  "../rodinia/opencl/kmeans/object0.riscv kmeans_kernel_c"
+  "../rodinia/opencl/kmeans/object0.riscv kmeans_swap"
+  "../rodinia/opencl/nn/object0.riscv NearestNeighbor"
 )
 
 for entry in "${kernels[@]}"; do
@@ -43,4 +43,3 @@ for entry in "${kernels[@]}"; do
 done
 
 echo "ALL OK (ARCH=$ARCH, OUT_DIR=$OUT_DIR)"
-

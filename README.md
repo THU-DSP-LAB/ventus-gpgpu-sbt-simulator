@@ -4,9 +4,12 @@
 - compile-first（`ptxas` 可编译）与 Spike-vs-PTX 微测例对照
 - 与 `ventus-env` 的 PoCL/driver 端到端联调
 
+注：本项目默认假定自身作为 (ventus-env)[https://github.com/THU-DSP-LAB/ventus-env] 项目的子项目集成进 Ventus 软件栈，
+假定 `..` 上级目录即为 ventus-env 项目路径
+
 输入以 Ventus ELF 为准（当前阶段不使用 `.vmem`）：
-- `ventus-env/rodinia/opencl/*/*.riscv`
-- `ventus-env/pocl/build/examples/*/*.riscv`
+- `../rodinia/opencl/*/*.riscv`
+- `../pocl/build/examples/*/*.riscv`
 
 ## ISA 资料
 - `VentusInst_basic.xlsx`：Ventus 指令表原始来源
@@ -41,28 +44,28 @@ tools/regress.sh --preset e2e --e2e-runner ventus-env --jobs 8 --timeout-scale 1
 ## 阶段 1/2：解码与 CFG 验证
 ```bash
 # 对照 .dump 校验 .text 字节
-./build/sbt_decode verify ventus-env/rodinia/opencl/bfs/object0.riscv
+./build/sbt_decode verify ../rodinia/opencl/bfs/object0.riscv
 
 # 列出函数符号
-./build/sbt_decode funcs ventus-env/rodinia/opencl/bfs/object0.riscv
+./build/sbt_decode funcs ../rodinia/opencl/bfs/object0.riscv
 
 # pretty 输出（默认合并 regext 前缀）
-./build/sbt_decode pretty ventus-env/rodinia/opencl/backprop/object0.riscv --func bpnn_layerforward_ocl
+./build/sbt_decode pretty ../rodinia/opencl/backprop/object0.riscv --func bpnn_layerforward_ocl
 
 # 严格解码
-./build/sbt_decode decode ventus-env/rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known >/dev/null
+./build/sbt_decode decode ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known >/dev/null
 
 # CFG + setrpc/vbranch/join + barrier 校验（JSON）
-./build/sbt_decode cfgverify ventus-env/rodinia/opencl/b+tree/object0.riscv --func findRangeK --require-known --json /tmp/findRangeK.cfg.json
+./build/sbt_decode cfgverify ../rodinia/opencl/b+tree/object0.riscv --func findRangeK --require-known --json /tmp/findRangeK.cfg.json
 ```
 
 ## 阶段 3：Ventus -> PTX（compile-first）
 ```bash
 # 生成 PTX（默认输出到 build/ptx/）
-./build/sbt_ptx ventus-env/rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known
+./build/sbt_ptx ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known
 
 # 显式指定输出与目标 SM
-./build/sbt_ptx ventus-env/rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known --out /tmp/BFS_1.ptx --sm 75
+./build/sbt_ptx ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known --out /tmp/BFS_1.ptx --sm 75
 
 # ptxas 可编译性验证
 ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
@@ -80,27 +83,27 @@ tools/pds_ptx_smoke.sh
 cmake -S . -B build
 cmake --build build -j
 
-# 2) 构建并安装 ventus-env driver
-bash ventus-env/build-ventus.sh --build "driver"
+# 2) 构建并安装 ventus-env 的 ptx 后端（包含 driver/ptx_device + sbt_ptx）
+bash ../build-ventus.sh --build "ptx"
 
 # 3) 环境与后端选择
-source ventus-env/env.sh
+source ../env.sh
 export VENTUS_BACKEND=ptx
 export VENTUS_PTX_SM=75
 export VENTUS_PTX_HEAP_MB=1024
 
 # 4) PoCL 示例
-cd ventus-env/pocl/build/examples/vecadd
+cd ../pocl/build/examples/vecadd
 ./vecadd 128 64
 
 # 5) Rodinia 示例
-cd ventus-env/rodinia/opencl/bfs
+cd ../rodinia/opencl/bfs
 ./run
 ```
 
 ## 阶段 5：指令覆盖 gate + Spike-vs-PTX 微测例
 ```bash
-source ventus-env/env.sh
+source ../env.sh
 cmake -S . -B build
 cmake --build build -j
 
@@ -120,7 +123,7 @@ tools/check_spike_want_consistency.sh
 
 ## 回归耗时统计
 ```bash
-source ventus-env/env.sh
+source ../env.sh
 export VENTUS_BACKEND=ptx
 python3 tools/ventus_regression_profile.py --clean
 ```

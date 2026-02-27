@@ -18,9 +18,9 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/build/ptx}"
 mkdir -p "$OUT_DIR"
 
 declare -a candidates=(
-  "ventus-env/rodinia/opencl/nn/object0.riscv NearestNeighbor"
-  "ventus-env/rodinia/opencl/backprop/object0.riscv bpnn_layerforward_ocl"
-  "ventus-env/rodinia/opencl/b+tree/object0.riscv findRangeK"
+  "../rodinia/opencl/nn/object0.riscv NearestNeighbor"
+  "../rodinia/opencl/backprop/object0.riscv bpnn_layerforward_ocl"
+  "../rodinia/opencl/b+tree/object0.riscv findRangeK"
 )
 
 picked_elf=""
