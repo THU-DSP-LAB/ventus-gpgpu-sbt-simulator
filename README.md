@@ -30,6 +30,11 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
+如需将 `sbt_ptx`/`sbt_decode` 安装到某个前缀（例如集成到 `ventus-env` 的 `../install`），可执行：
+```bash
+cmake --install build --prefix ../install
+```
+
 Spike `encoding.h` 用于在构建期生成并固化解码所需的 pattern 子集（运行期不再读取 want/encoding 文件）。默认假定 `ventus-env` 位于上级目录 `..`，即使用 `../spike/riscv/encoding.h`；如目录布局不同，可显式指定：
 ```bash
 cmake -S . -B build -DSBT_SPIKE_ENCODING_H=/abs/path/to/spike/riscv/encoding.h

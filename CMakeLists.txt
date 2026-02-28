@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(sbtsim LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -106,3 +108,7 @@ if (CUDA_INCLUDE_DIR)
   target_compile_options(cuda_trace PRIVATE -Wall -Wextra -Wpedantic)
   target_link_libraries(cuda_trace PRIVATE dl)
 endif ()
+
+install(TARGETS sbt_ptx sbt_decode
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
