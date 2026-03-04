@@ -243,6 +243,158 @@ static bool decode_scalar(uint32_t w, DecodedInst &out) {
   const uint32_t rs2_5 = (w >> 20) & 0x1Fu;
   const uint32_t funct7 = (w >> 25) & 0x7Fu;
 
+  auto decode_fp = [&]() -> bool {
+    auto set_fp_r = [&](std::string n, FpRoundingMode rm) {
+      out.name = std::move(n);
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.rs2_class = RegClass::X;
+      out.fp_rm = rm;
+    };
+    auto set_fp_r_rm = [&](std::string n) {
+      set_fp_r(std::move(n), static_cast<FpRoundingMode>(funct3));
+    };
+    auto set_fp_r_nrm = [&](std::string n) {
+      set_fp_r(std::move(n), FpRoundingMode::None);
+    };
+
+    // Scalar FP loads/stores (Zfinx: use X regs for f32 bits).
+    if (opcode == 0x07u) { // LOAD-FP
+      if (funct3 != 0x2u) return false; // only flw
+      out.name = "flw";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.imm_kind = ImmKind::I12;
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      out.imm = sext(imm_i(w), 12);
+      return true;
+    }
+    if (opcode == 0x27u) { // STORE-FP
+      if (funct3 != 0x2u) return false; // only fsw
+      out.name = "fsw";
+      out.rs1_class = RegClass::X;
+      out.rs2_class = RegClass::X;
+      out.imm_kind = ImmKind::S12;
+      out.rs1 = int(rs1_5);
+      out.rs2 = int(rs2_5);
+      out.imm = sext(imm_s(w), 12);
+      return true;
+    }
+
+    // Scalar FP fused multiply-add family (R4-type).
+    if (opcode == 0x43u || opcode == 0x47u || opcode == 0x4Bu || opcode == 0x4Fu) {
+      const uint32_t fmt2 = (w >> 25) & 0x3u; // bits [26:25]
+      if (fmt2 != 0x0u) return false;         // only .s
+      const uint32_t rs3_5 = (w >> 27) & 0x1Fu;
+
+      if (opcode == 0x43u) set_fp_r_rm("fmadd_s");
+      else if (opcode == 0x47u) set_fp_r_rm("fmsub_s");
+      else if (opcode == 0x4Bu) set_fp_r_rm("fnmsub_s");
+      else if (opcode == 0x4Fu) set_fp_r_rm("fnmadd_s");
+      else return false;
+
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      out.rs2 = int(rs2_5);
+      out.rs3_class = RegClass::X;
+      out.rs3 = int(rs3_5);
+      return true;
+    }
+
+    // Scalar FP ops / conversions.
+    if (opcode != 0x53u) return false;
+
+    // Arithmetic (rm in funct3).
+    if (funct7 == 0x00u) { set_fp_r_rm("fadd_s"); }
+    else if (funct7 == 0x04u) { set_fp_r_rm("fsub_s"); }
+    else if (funct7 == 0x08u) { set_fp_r_rm("fmul_s"); }
+    else if (funct7 == 0x0Cu) { set_fp_r_rm("fdiv_s"); }
+    else if (funct7 == 0x2Cu && rs2_5 == 0x0u) { set_fp_r_rm("fsqrt_s"); }
+    // Sign injection (funct3 is funct3, not rm).
+    else if (funct7 == 0x10u && funct3 == 0x0u) { set_fp_r_nrm("fsgnj_s"); }
+    else if (funct7 == 0x10u && funct3 == 0x1u) { set_fp_r_nrm("fsgnjn_s"); }
+    else if (funct7 == 0x10u && funct3 == 0x2u) { set_fp_r_nrm("fsgnjx_s"); }
+    // Min/max (funct3 is funct3, not rm).
+    else if (funct7 == 0x14u && funct3 == 0x0u) { set_fp_r_nrm("fmin_s"); }
+    else if (funct7 == 0x14u && funct3 == 0x1u) { set_fp_r_nrm("fmax_s"); }
+    // Float compare (funct3 selects op, not rm): rd is integer.
+    else if (funct7 == 0x50u && funct3 == 0x2u) { set_fp_r_nrm("feq_s"); }
+    else if (funct7 == 0x50u && funct3 == 0x1u) { set_fp_r_nrm("flt_s"); }
+    else if (funct7 == 0x50u && funct3 == 0x0u) { set_fp_r_nrm("fle_s"); }
+    // Float-to-int conversions (rm in funct3, rs2 encodes int type).
+    else if (funct7 == 0x60u && rs2_5 == 0x0u) { // fcvt.w.s
+      out.name = "fcvt_w_s";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.fp_rm = static_cast<FpRoundingMode>(funct3);
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      return true;
+    } else if (funct7 == 0x60u && rs2_5 == 0x1u) { // fcvt.wu.s
+      out.name = "fcvt_wu_s";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.fp_rm = static_cast<FpRoundingMode>(funct3);
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      return true;
+    }
+    // Int-to-float conversions (rm in funct3, rs2 encodes int type).
+    else if (funct7 == 0x68u && rs2_5 == 0x0u) { // fcvt.s.w
+      out.name = "fcvt_s_w";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.fp_rm = static_cast<FpRoundingMode>(funct3);
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      return true;
+    } else if (funct7 == 0x68u && rs2_5 == 0x1u) { // fcvt.s.wu
+      out.name = "fcvt_s_wu";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.fp_rm = static_cast<FpRoundingMode>(funct3);
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      return true;
+    }
+    // fmv.x.w / fclass.s (rs2==0).
+    else if (funct7 == 0x70u && rs2_5 == 0x0u && funct3 == 0x0u) { // fmv.x.w
+      out.name = "fmv_x_w";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      return true;
+    } else if (funct7 == 0x70u && rs2_5 == 0x0u && funct3 == 0x1u) { // fclass.s
+      out.name = "fclass_s";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      return true;
+    }
+    // fmv.w.x (rs2==0, rm=0 in spec).
+    else if (funct7 == 0x78u && rs2_5 == 0x0u && funct3 == 0x0u) {
+      out.name = "fmv_w_x";
+      out.rd_class = RegClass::X;
+      out.rs1_class = RegClass::X;
+      out.rd = int(rd5);
+      out.rs1 = int(rs1_5);
+      return true;
+    } else {
+      return false;
+    }
+
+    // Shared register fill for most opcode=0x53 R-type ops.
+    out.rd = int(rd5);
+    out.rs1 = int(rs1_5);
+    out.rs2 = int(rs2_5);
+    return true;
+  };
+
+  if (decode_fp()) return true;
+
   auto set_r = [&](std::string n) {
     out.name = std::move(n);
     out.rd_class = RegClass::X;
@@ -262,20 +414,6 @@ static bool decode_scalar(uint32_t w, DecodedInst &out) {
     out.imm_kind = ImmKind::S12;
   };
 
-  // Scalar floating-point register moves may appear as compiler-generated padding/NOPs.
-  // We do not model scalar F/D regfiles; treat these as ignorable instructions (must still be "known").
-  //
-  // fmv.{s,d} are pseudos for fsgnj.{s,d} with rs2==rs1.
-  if (opcode == 0x53u && funct3 == 0x0u && rs2_5 == rs1_5) {
-    if (funct7 == 0x10u) { // fsgnj.s
-      out.name = "fmv_s";
-      return true;
-    }
-    if (funct7 == 0x11u) { // fsgnj.d
-      out.name = "fmv_d";
-      return true;
-    }
-  }
   auto set_b = [&](std::string n) {
     out.name = std::move(n);
     out.rs1_class = RegClass::X;
@@ -610,6 +748,20 @@ const char *to_string(ImmKind k) {
   case ImmKind::SImm5: return "simm5";
   case ImmKind::Raw12: return "raw12";
   case ImmKind::None: default: return "none";
+  }
+}
+
+const char *to_string(FpRoundingMode rm) {
+  switch (rm) {
+  case FpRoundingMode::RNE: return "rne";
+  case FpRoundingMode::RTZ: return "rtz";
+  case FpRoundingMode::RDN: return "rdn";
+  case FpRoundingMode::RUP: return "rup";
+  case FpRoundingMode::RMM: return "rmm";
+  case FpRoundingMode::Reserved5: return "reserved5";
+  case FpRoundingMode::Reserved6: return "reserved6";
+  case FpRoundingMode::DYN: return "dyn";
+  case FpRoundingMode::None: default: return "none";
   }
 }
 

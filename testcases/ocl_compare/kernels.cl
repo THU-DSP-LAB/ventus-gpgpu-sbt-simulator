@@ -716,3 +716,155 @@ __kernel void mt_float_cmp_misc_cov(__global const uint *A, __global uint *B) {
   __asm__ __volatile__("vmseq.vv v0, %0, %0\n" : : "vr"(v_zero) : "v0");
   B[gid] = out;
 }
+
+// Scalar FP (RV32F, Zfinx model: float values carried as raw f32 bits in X regs).
+// These microtests must execute each scalar-F mnemonic at least once and make effects observable via output.
+
+__kernel void mt_scalar_f_arith_fma_cov(__global const uint *A, __global uint *B) {
+  const uint gid = (uint)get_global_id(0);
+  (void)A;
+
+  // Keep operands as exact constants to minimize backend-dependent numeric drift.
+  const uint one = 0x3f800000u;  // 1.0f
+  const uint two = 0x40000000u;  // 2.0f
+  const uint half_bits = 0x3f000000u; // 0.5f
+
+  uint t0, t1;
+  // fadd.s with rm=DYN (tests rm policy; Spike frm is expected to be default RNE).
+  __asm__ __volatile__(".insn r 0x53, 7, 0x00, %0, %1, %2\n" : "=r"(t0) : "r"(one), "r"(two));
+  __asm__ __volatile__(".insn r 0x53, 0, 0x04, %0, %1, %2\n" : "=r"(t1) : "r"(t0), "r"(half_bits)); // fsub.s
+  __asm__ __volatile__(".insn r 0x53, 0, 0x08, %0, %1, %2\n" : "=r"(t0) : "r"(t1), "r"(two));  // fmul.s
+  __asm__ __volatile__(".insn r 0x53, 0, 0x0c, %0, %1, %2\n" : "=r"(t1) : "r"(t0), "r"(one));  // fdiv.s
+  __asm__ __volatile__(".insn r 0x53, 0, 0x2c, %0, %1, x0\n" : "=r"(t0) : "r"(t1));             // fsqrt.s
+
+  uint f0, f1, f2, f3;
+  __asm__ __volatile__(".insn r4 0x43, 0, 0, %0, %1, %2, %3\n" : "=r"(f0) : "r"(t0), "r"(one), "r"(two));  // fmadd.s
+  __asm__ __volatile__(".insn r4 0x47, 0, 0, %0, %1, %2, %3\n" : "=r"(f1) : "r"(f0), "r"(one), "r"(half_bits)); // fmsub.s
+  __asm__ __volatile__(".insn r4 0x4b, 0, 0, %0, %1, %2, %3\n" : "=r"(f2) : "r"(f1), "r"(one), "r"(two));  // fnmsub.s
+  __asm__ __volatile__(".insn r4 0x4f, 0, 0, %0, %1, %2, %3\n" : "=r"(f3) : "r"(f2), "r"(one), "r"(half_bits)); // fnmadd.s
+
+  uint s0, s1, s2;
+  __asm__ __volatile__(".insn r 0x53, 0, 0x10, %0, %1, %2\n" : "=r"(s0) : "r"(f3), "r"(f0)); // fsgnj.s
+  __asm__ __volatile__(".insn r 0x53, 1, 0x10, %0, %1, %2\n" : "=r"(s1) : "r"(s0), "r"(f1)); // fsgnjn.s
+  __asm__ __volatile__(".insn r 0x53, 2, 0x10, %0, %1, %2\n" : "=r"(s2) : "r"(s1), "r"(f2)); // fsgnjx.s
+
+  uint mn, mx;
+  __asm__ __volatile__(".insn r 0x53, 0, 0x14, %0, %1, %2\n" : "=r"(mn) : "r"(s2), "r"(f3)); // fmin.s
+  __asm__ __volatile__(".insn r 0x53, 1, 0x14, %0, %1, %2\n" : "=r"(mx) : "r"(mn), "r"(t0)); // fmax.s
+
+  // Float outputs are compared with tolerance; store raw bits.
+  B[gid] = mx;
+}
+
+__kernel void mt_scalar_f_cvt_float_cov(__global const uint *A, __global uint *B) {
+  const uint gid = (uint)get_global_id(0);
+  const int si = (int)(A[0] & 0x7fu) - 64; // small signed
+  const uint ui = (A[1] & 0xffu);          // small unsigned
+
+  uint fs, fu;
+  // fcvt.s.w / fcvt.s.wu (rm=RNE).
+  __asm__ __volatile__(".insn r 0x53, 0, 0x68, %0, %1, x0\n" : "=r"(fs) : "r"(si));
+  __asm__ __volatile__(".insn r 0x53, 0, 0x68, %0, %1, x1\n" : "=r"(fu) : "r"(ui));
+
+  // Compare as raw bits (integer) to avoid backend-specific scalar-F register aliasing quirks
+  // while still making both conversion results observable.
+  const uint out = fs ^ u32_rotl(fu, 7) ^ (gid * 17u);
+  B[gid] = out;
+}
+
+__kernel void mt_scalar_f_cvt_int_cov(__global const uint *A, __global uint *B) {
+  const uint gid = (uint)get_global_id(0);
+  (void)A;
+
+  const uint f15 = 0x3fc00000u; // 1.5f
+
+  uint w_rtz, w_dyn;
+  uint wu_rdn, wu_rup;
+  // fcvt.w.s / fcvt.wu.s with multiple rounding modes (rm).
+  __asm__ __volatile__(".insn r 0x53, 1, 0x60, %0, %1, x0\n" : "=r"(w_rtz) : "r"(f15));  // RTZ
+  __asm__ __volatile__(".insn r 0x53, 7, 0x60, %0, %1, x0\n" : "=r"(w_dyn) : "r"(f15));  // DYN (treated as default RNE)
+  __asm__ __volatile__(".insn r 0x53, 2, 0x60, %0, %1, x1\n" : "=r"(wu_rdn) : "r"(f15)); // RDN
+  __asm__ __volatile__(".insn r 0x53, 3, 0x60, %0, %1, x1\n" : "=r"(wu_rup) : "r"(f15)); // RUP
+
+  const uint packed = (w_rtz & 0xffu) | ((w_dyn & 0xffu) << 8) | ((wu_rdn & 0xffu) << 16) | ((wu_rup & 0xffu) << 24);
+  B[gid] = packed ^ (gid * 29u);
+}
+
+__kernel void mt_scalar_f_cmp_class_cov(__global const uint *A, __global uint *B) {
+  const uint gid = (uint)get_global_id(0);
+  (void)A;
+
+  const uint one = 0x3f800000u;   // 1.0f
+  const uint two = 0x40000000u;   // 2.0f
+  const uint pos_inf = 0x7f800000u;
+  const uint qnan = 0x7fc00000u;
+  const uint snan = 0x7f800001u;
+  const uint neg_zero = 0x80000000u;
+  const uint sub = 0x00000001u;
+  uint pos_zero = 0u;
+  // Force a non-x0 register to carry +0.0 bits so spike+aliasing doesn't read ft0 (f0) garbage.
+  __asm__ __volatile__("addi %0, x0, 0\n" : "=r"(pos_zero));
+
+  uint eq_11, lt_12, le_21, eq_nan;
+  __asm__ __volatile__(".insn r 0x53, 2, 0x50, %0, %1, %2\n" : "=r"(eq_11) : "r"(one), "r"(one));   // feq.s
+  __asm__ __volatile__(".insn r 0x53, 1, 0x50, %0, %1, %2\n" : "=r"(lt_12) : "r"(one), "r"(two));   // flt.s
+  __asm__ __volatile__(".insn r 0x53, 0, 0x50, %0, %1, %2\n" : "=r"(le_21) : "r"(two), "r"(one));   // fle.s
+  __asm__ __volatile__(".insn r 0x53, 2, 0x50, %0, %1, %2\n" : "=r"(eq_nan) : "r"(qnan), "r"(qnan)); // feq.s (NaN => 0)
+
+  uint cls_inf, cls_qnan, cls_snan, cls_sub, cls_negz, cls_posz;
+  __asm__ __volatile__(".insn r 0x53, 1, 0x70, %0, %1, x0\n" : "=r"(cls_inf) : "r"(pos_inf));   // fclass.s
+  __asm__ __volatile__(".insn r 0x53, 1, 0x70, %0, %1, x0\n" : "=r"(cls_qnan) : "r"(qnan));
+  __asm__ __volatile__(".insn r 0x53, 1, 0x70, %0, %1, x0\n" : "=r"(cls_snan) : "r"(snan));
+  __asm__ __volatile__(".insn r 0x53, 1, 0x70, %0, %1, x0\n" : "=r"(cls_sub) : "r"(sub));
+  __asm__ __volatile__(".insn r 0x53, 1, 0x70, %0, %1, x0\n" : "=r"(cls_negz) : "r"(neg_zero));
+  __asm__ __volatile__(".insn r 0x53, 1, 0x70, %0, %1, x0\n" : "=r"(cls_posz) : "r"(pos_zero));
+
+  // fmin/fmax signed-zero behavior: fmin(-0,+0) => -0; fmax(-0,+0) => +0
+  uint zmin, zmax;
+  __asm__ __volatile__(".insn r 0x53, 0, 0x14, %0, %1, %2\n" : "=r"(zmin) : "r"(neg_zero), "r"(pos_zero)); // fmin.s
+  __asm__ __volatile__(".insn r 0x53, 1, 0x14, %0, %1, %2\n" : "=r"(zmax) : "r"(neg_zero), "r"(pos_zero)); // fmax.s
+
+  uint out = 0u;
+  out |= (eq_11 & 1u) << 0;
+  out |= (lt_12 & 1u) << 1;
+  out |= (le_21 & 1u) << 2;
+  out |= (eq_nan & 1u) << 3;
+  out ^= u32_rotl(cls_inf, 5) ^ u32_rotl(cls_qnan, 9) ^ u32_rotl(cls_snan, 13);
+  out ^= u32_rotl(cls_sub, 17) ^ u32_rotl(cls_negz, 21) ^ u32_rotl(cls_posz, 25);
+  out ^= zmin ^ u32_rotl(zmax, 7);
+
+  B[gid] = out;
+}
+
+__kernel void mt_scalar_f_mem_move_cov(__global const uint *A, __global uint *B) {
+  const uint gid = (uint)get_global_id(0);
+  const uint x = A[0] ^ 0x12345678u;
+
+  uint f_bits;
+  uint loaded;
+  uint back;
+
+  // fmv.w.x / fmv.x.w: bit-preserving moves.
+  __asm__ __volatile__(".insn r 0x53, 0, 0x78, %0, %1, x0\n" : "=r"(f_bits) : "r"(x));     // fmv.w.x
+
+  // flw/fsw scratch access must not race with other work-groups (n can be > 32, local=32).
+  // Use the first element of this work-group as a per-group scratch slot (warp-uniform, no divergence).
+  //
+  // NOTE: Avoid calling `get_group_id/get_local_size` here: current codegen may introduce RV32D moves
+  // (e.g. `fmv.d`) that `sbt_ptx` doesn't support yet. Instead, read the same CSRs as the runtime
+  // builtins: workgroup_id_x in CSR2056 and local_size metadata pointer in CSR2051 (x offset=24).
+  uint wg_id_x = 0u;
+  uint ls_meta_ptr = 0u;
+  uint ls_x = 0u;
+  __asm__ __volatile__("csrr %0, 2056\n" : "=r"(wg_id_x));
+  __asm__ __volatile__("csrr %0, 2051\n" : "=r"(ls_meta_ptr));
+  __asm__ __volatile__("lw %0, 24(%1)\n" : "=r"(ls_x) : "r"(ls_meta_ptr) : "memory");
+  const uint scratch_idx = wg_id_x * ls_x;
+  __global uint *scratch = B + scratch_idx;
+  __asm__ __volatile__(".insn s 0x27, 2, %1, 0(%0)\n" : : "r"(scratch), "r"(f_bits) : "memory"); // fsw
+  __asm__ __volatile__(".insn i 0x07, 2, %0, %1, 0\n" : "=r"(loaded) : "r"(scratch) : "memory"); // flw
+  __asm__ __volatile__(".insn r 0x53, 0, 0x70, %0, %1, x0\n" : "=r"(back) : "r"(loaded));      // fmv.x.w
+
+  const uint out = back ^ u32_rotl(loaded, 9) ^ u32_rotl(f_bits, 17) ^ (gid * 5u);
+  B[gid] = out;
+}

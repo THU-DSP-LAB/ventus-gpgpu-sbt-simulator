@@ -25,6 +25,21 @@ enum class ImmKind : uint8_t {
   Raw12,
 };
 
+// RISC-V floating-point rounding mode (rm field).
+// - For scalar FP ops in Ventus, the ISA is close to Zfinx: float values are carried as raw f32 bits in X regs.
+// - rm=111 (DYN) means "use CSR.frm". We currently do not model frm; see design doc for the chosen policy.
+enum class FpRoundingMode : uint8_t {
+  None = 0xFF,
+  RNE = 0, // round to nearest, ties to even
+  RTZ = 1, // round toward zero
+  RDN = 2, // round down (toward -inf)
+  RUP = 3, // round up (toward +inf)
+  RMM = 4, // round to nearest, ties to max magnitude
+  Reserved5 = 5,
+  Reserved6 = 6,
+  DYN = 7, // dynamic (use CSR.frm)
+};
+
 struct RegextPrefix final {
   bool valid = false;
   bool validi = false; // regexti: extends rs2/rd and immediate
@@ -55,6 +70,9 @@ struct DecodedInst final {
   ImmKind imm_kind = ImmKind::None;
   int32_t imm = 0;
 
+  // FP rm field for scalar F-extension instructions (when applicable).
+  FpRoundingMode fp_rm = FpRoundingMode::None;
+
   bool had_regext = false;
   RegextPrefix regext{};
 };
@@ -76,5 +94,6 @@ decode_text(const std::vector<uint8_t> &text, uint32_t text_vaddr, const DecodeO
 
 const char *to_string(RegClass c);
 const char *to_string(ImmKind k);
+const char *to_string(FpRoundingMode rm);
 
 } // namespace sbt

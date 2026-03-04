@@ -113,6 +113,11 @@ def main() -> int:
             "mt_float_fma_cov",
             "mt_float_conv_cov",
             "mt_float_cmp_misc_cov",
+            "mt_scalar_f_arith_fma_cov",
+            "mt_scalar_f_cvt_float_cov",
+            "mt_scalar_f_cvt_int_cov",
+            "mt_scalar_f_cmp_class_cov",
+            "mt_scalar_f_mem_move_cov",
         ],
     )
     ap.add_argument("--backend-a", default="spike")
@@ -130,6 +135,7 @@ def main() -> int:
             "mt_float_basic_cov",
             "mt_float_fma_cov",
             "mt_float_conv_cov",
+            "mt_scalar_f_arith_fma_cov",
         ],
         help="Kernels whose outputs are compared as float32 arrays (tolerance-based)",
     )

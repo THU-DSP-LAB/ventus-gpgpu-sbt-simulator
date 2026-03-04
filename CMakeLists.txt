@@ -73,6 +73,9 @@ target_include_directories(sbt_ptx PRIVATE "${SBT_SPIKE_SUBSET_DIR}")
 add_executable(regext_bundle_test tools/regext_bundle_test.cpp)
 target_link_libraries(regext_bundle_test PRIVATE sbt_lib)
 
+add_executable(ptx_emit_call_prototype_test tools/ptx_emit_call_prototype_test.cpp)
+target_link_libraries(ptx_emit_call_prototype_test PRIVATE sbt_lib)
+
 # Optional: OpenCL micro-test runner (requires Ventus OpenCL headers under Ventus install prefix).
 set(VENTUS_INSTALL_PREFIX_HINT "$ENV{VENTUS_INSTALL_PREFIX}")
 if (NOT VENTUS_INSTALL_PREFIX_HINT)

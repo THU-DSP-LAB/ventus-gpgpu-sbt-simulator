@@ -44,10 +44,10 @@ static bool is_vector_load(std::string_view name) {
 static bool is_vector_store(std::string_view name) { return name == "vsw12_v" || name == "vsb12_v" || name == "vsh12_v" || name == "vsw_v"; }
 
 static bool is_scalar_load(std::string_view name) {
-  return name == "lb" || name == "lh" || name == "lw" || name == "lbu" || name == "lhu";
+  return name == "lb" || name == "lh" || name == "lw" || name == "lbu" || name == "lhu" || name == "flw";
 }
 
-static bool is_scalar_store(std::string_view name) { return name == "sb" || name == "sh" || name == "sw"; }
+static bool is_scalar_store(std::string_view name) { return name == "sb" || name == "sh" || name == "sw" || name == "fsw"; }
 
 static bool is_uncond_jump(const sbt::DecodedInst &di) {
   return di.name == "jal" && di.rd_class == sbt::RegClass::X && di.rd == 0 && di.imm_kind == sbt::ImmKind::J21;
@@ -90,6 +90,21 @@ EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::st
 
 namespace {
 
+static void emit_helper_func_signature(std::ostringstream &out, const std::string &ptx_name, bool need_vctx) {
+  out << ".func " << ptx_name << "(\n";
+  out << "    .param .u64 __sbt_arg_elf_base,\n";
+  out << "    .param .u64 __sbt_arg_heap_base,\n";
+  out << "    .param .u64 __sbt_arg_wctx_ptr,\n";
+  out << "    .param .u64 __sbt_arg_lds_ptr,\n";
+  out << "    .param .u32 __sbt_arg_knl_vaddr,\n";
+  out << "    .param .u32 __sbt_arg_pds_base_vaddr,\n";
+  out << "    .param .u32 __sbt_arg_pds_size_per_thread,\n";
+  out << "    .param .u32 __sbt_arg_warp_id,\n";
+  out << "    .param .u32 __sbt_arg_warps_per_block";
+  if (need_vctx) out << ",\n    .param .u64 __sbt_arg_vctx_base";
+  out << "\n)";
+}
+
 struct ModuleInfo final {
   bool need_vctx = false;
   const std::unordered_map<uint32_t, std::string> *ptx_name_by_addr = nullptr;
@@ -106,6 +121,7 @@ struct EmitCtx final {
 
   std::ostringstream out;
   int tmp_label_id = 0;
+  bool emitted_fp_dyn_note = false;
 
   EmitCtx(const sbt::cfg::FunctionCfg &cfg_, const std::unordered_map<uint32_t, std::string> &sym_by_addr_,
           const std::string &func_name_, const std::string &ptx_name_, const Options &opt_, const ModuleInfo &mod_, bool is_entry_)
@@ -333,6 +349,48 @@ struct EmitCtx final {
   bool scalar_leader_only() const { return opt.scalar_exec_leader_only; }
 
   std::string scalar_prefix() const { return scalar_leader_only() ? ("@" + p(0) + " ") : ""; }
+
+  void maybe_note_fp_dyn_rm(uint32_t pc_for_err) {
+    if (!opt.include_comments) return;
+    if (emitted_fp_dyn_note) return;
+    emit_line("// NOTE: scalar FP rm=DYN treated as RNE (CSR.frm not modeled)");
+    emitted_fp_dyn_note = true;
+    (void)pc_for_err;
+  }
+
+  sbt::FpRoundingMode normalize_fp_rm(sbt::FpRoundingMode rm, uint32_t pc_for_err) {
+    if (rm == sbt::FpRoundingMode::None) return rm;
+    if (rm == sbt::FpRoundingMode::DYN) {
+      maybe_note_fp_dyn_rm(pc_for_err);
+      return sbt::FpRoundingMode::RNE;
+    }
+    if (rm == sbt::FpRoundingMode::RMM || rm == sbt::FpRoundingMode::Reserved5 || rm == sbt::FpRoundingMode::Reserved6) {
+      throw EmitError("unsupported.fp_rm", func_name, pc_for_err, "rm=" + std::string(sbt::to_string(rm)));
+    }
+    return rm;
+  }
+
+  std::string ptx_rm_f32(sbt::FpRoundingMode rm, uint32_t pc_for_err) {
+    rm = normalize_fp_rm(rm, pc_for_err);
+    switch (rm) {
+    case sbt::FpRoundingMode::RNE: return ".rn";
+    case sbt::FpRoundingMode::RTZ: return ".rz";
+    case sbt::FpRoundingMode::RDN: return ".rm";
+    case sbt::FpRoundingMode::RUP: return ".rp";
+    case sbt::FpRoundingMode::None: default: throw EmitError("invalid.fp_rm", func_name, pc_for_err, "rm=none");
+    }
+  }
+
+  std::string ptx_rm_cvt_i32(sbt::FpRoundingMode rm, uint32_t pc_for_err) {
+    rm = normalize_fp_rm(rm, pc_for_err);
+    switch (rm) {
+    case sbt::FpRoundingMode::RNE: return ".rni";
+    case sbt::FpRoundingMode::RTZ: return ".rzi";
+    case sbt::FpRoundingMode::RDN: return ".rmi";
+    case sbt::FpRoundingMode::RUP: return ".rpi";
+    case sbt::FpRoundingMode::None: default: throw EmitError("invalid.fp_rm", func_name, pc_for_err, "rm=none");
+    }
+  }
 
   void emit_ld_x_u32_scalar(const std::string &dst_r, int xreg, uint32_t pc_for_err) {
     if (scalar_leader_only()) emit_ld_x_u32_leader(dst_r, xreg, pc_for_err);
@@ -814,6 +872,212 @@ struct EmitCtx final {
     emit_line("call.uni " + callee_ptx + ", (" + args + ");");
   }
 
+  void emit_scalar_fclass_s(const sbt::DecodedInst &di, uint32_t pc_for_err) {
+    // RISC-V FCLASS.S: return a 10-bit class mask in rd (integer bits).
+    // Bits: 0..9 = -inf, -norm, -subnorm, -0, +0, +subnorm, +norm, +inf, sNaN, qNaN
+    emit_ld_x_u32_scalar(r(14), di.rs1, pc_for_err); // f32 bits
+    emit_line(scalar_prefix() + "and.b32 " + r(15) + ", " + r(14) + ", 0x80000000;"); // sign bit
+    emit_line(scalar_prefix() + "and.b32 " + r(16) + ", " + r(14) + ", 0x7f800000;"); // exp bits
+    emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(14) + ", 0x007fffff;"); // frac bits
+
+    emit_line(scalar_prefix() + "setp.ne.u32 " + p(1) + ", " + r(15) + ", 0;");          // sign
+    emit_line(scalar_prefix() + "setp.eq.u32 " + p(2) + ", " + r(16) + ", 0;");          // exp==0
+    emit_line(scalar_prefix() + "setp.eq.u32 " + p(3) + ", " + r(16) + ", 0x7f800000;"); // exp==all1
+    emit_line(scalar_prefix() + "setp.eq.u32 " + p(4) + ", " + r(17) + ", 0;");          // frac==0
+
+    // is_zero = exp==0 && frac==0
+    emit_line(scalar_prefix() + "and.pred " + p(5) + ", " + p(2) + ", " + p(4) + ";");
+    // is_sub = exp==0 && frac!=0
+    emit_line(scalar_prefix() + "not.pred " + p(6) + ", " + p(4) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(6) + ", " + p(2) + ", " + p(6) + ";");
+    // is_inf = exp==all1 && frac==0
+    emit_line(scalar_prefix() + "and.pred " + p(7) + ", " + p(3) + ", " + p(4) + ";");
+    // is_nan = exp==all1 && frac!=0
+    emit_line(scalar_prefix() + "not.pred " + p(8) + ", " + p(4) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(8) + ", " + p(3) + ", " + p(8) + ";");
+    // is_norm = !exp==0 && !exp==all1
+    emit_line(scalar_prefix() + "not.pred " + p(9) + ", " + p(2) + ";");
+    emit_line(scalar_prefix() + "not.pred " + p(10) + ", " + p(3) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(9) + ", " + p(9) + ", " + p(10) + ";");
+
+    // qnan = is_nan && (frac[22]==1)
+    emit_line(scalar_prefix() + "and.b32 " + r(18) + ", " + r(17) + ", 0x00400000;");
+    emit_line(scalar_prefix() + "setp.ne.u32 " + p(10) + ", " + r(18) + ", 0;");
+    emit_line(scalar_prefix() + "and.pred " + p(10) + ", " + p(8) + ", " + p(10) + ";"); // qnan
+    // snan = is_nan && !qnan
+    emit_line(scalar_prefix() + "not.pred " + p(11) + ", " + p(10) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(11) + ", " + p(8) + ", " + p(11) + ";"); // snan
+
+    emit_line(scalar_prefix() + "mov.u32 " + r(19) + ", 0;");
+
+    // Derive per-class predicates.
+    // -inf / +inf
+    emit_line(scalar_prefix() + "and.pred " + p(12) + ", " + p(7) + ", " + p(1) + ";"); // -inf
+    emit_line(scalar_prefix() + "not.pred " + p(13) + ", " + p(1) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(13) + ", " + p(7) + ", " + p(13) + ";"); // +inf
+    // -0 / +0
+    emit_line(scalar_prefix() + "and.pred " + p(14) + ", " + p(5) + ", " + p(1) + ";"); // -0
+    emit_line(scalar_prefix() + "not.pred " + p(15) + ", " + p(1) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(15) + ", " + p(5) + ", " + p(15) + ";"); // +0
+
+    auto or_if = [&](const std::string &pred, uint32_t bit) {
+      emit_line(scalar_prefix() + "selp.u32 " + r(20) + ", " + std::to_string(bit) + ", 0, " + pred + ";");
+      emit_line(scalar_prefix() + "or.b32 " + r(19) + ", " + r(19) + ", " + r(20) + ";");
+    };
+
+    or_if(p(12), 1u);    // -inf
+    or_if(p(13), 128u);  // +inf
+    or_if(p(14), 8u);    // -0
+    or_if(p(15), 16u);   // +0
+
+    // -sub / +sub
+    emit_line(scalar_prefix() + "and.pred " + p(12) + ", " + p(6) + ", " + p(1) + ";"); // -sub
+    emit_line(scalar_prefix() + "not.pred " + p(13) + ", " + p(1) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(13) + ", " + p(6) + ", " + p(13) + ";"); // +sub
+    or_if(p(12), 4u);
+    or_if(p(13), 32u);
+
+    // -norm / +norm
+    emit_line(scalar_prefix() + "and.pred " + p(12) + ", " + p(9) + ", " + p(1) + ";"); // -norm
+    emit_line(scalar_prefix() + "not.pred " + p(13) + ", " + p(1) + ";");
+    emit_line(scalar_prefix() + "and.pred " + p(13) + ", " + p(9) + ", " + p(13) + ";"); // +norm
+    or_if(p(12), 2u);
+    or_if(p(13), 64u);
+
+    // NaNs
+    or_if(p(11), 256u); // sNaN
+    or_if(p(10), 512u); // qNaN
+
+    emit_st_x_u32_scalar(di.rd, r(19), pc_for_err);
+  }
+
+  bool try_emit_scalar_fp(const sbt::DecodedInst &di) {
+    const uint32_t pc = di.pc;
+
+    // Bitwise moves (Zfinx: both sides are X regs).
+    if (di.name == "fmv_w_x" || di.name == "fmv_x_w") {
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
+      emit_st_x_u32_scalar(di.rd, r(14), pc);
+      return true;
+    }
+
+    // Sign injection.
+    if (di.name == "fsgnj_s" || di.name == "fsgnjn_s" || di.name == "fsgnjx_s") {
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc); // magnitude source
+      emit_ld_x_u32_scalar(r(15), di.rs2, pc); // sign source
+      emit_line(scalar_prefix() + "and.b32 " + r(16) + ", " + r(14) + ", 0x7fffffff;");
+      if (di.name == "fsgnj_s") {
+        emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(15) + ", 0x80000000;");
+      } else if (di.name == "fsgnjn_s") {
+        emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(15) + ", 0x80000000;");
+        emit_line(scalar_prefix() + "xor.b32 " + r(17) + ", " + r(17) + ", 0x80000000;");
+      } else { // fsgnjx_s
+        emit_line(scalar_prefix() + "xor.b32 " + r(17) + ", " + r(14) + ", " + r(15) + ";");
+        emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(17) + ", 0x80000000;");
+      }
+      emit_line(scalar_prefix() + "or.b32 " + r(16) + ", " + r(16) + ", " + r(17) + ";");
+      emit_st_x_u32_scalar(di.rd, r(16), pc);
+      return true;
+    }
+
+    // Arithmetic.
+    auto f32_binop = [&](const char *op) {
+      const std::string rm = ptx_rm_f32(di.fp_rm, pc);
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
+      emit_ld_x_u32_scalar(r(15), di.rs2, pc);
+      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
+      emit_line(scalar_prefix() + std::string(op) + rm + ".f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + r(16) + ", " + f(2) + ";");
+      emit_st_x_u32_scalar(di.rd, r(16), pc);
+    };
+    if (di.name == "fadd_s") { f32_binop("add"); return true; }
+    if (di.name == "fsub_s") { f32_binop("sub"); return true; }
+    if (di.name == "fmul_s") { f32_binop("mul"); return true; }
+    if (di.name == "fdiv_s") { f32_binop("div"); return true; }
+    if (di.name == "fsqrt_s") {
+      const std::string rm = ptx_rm_f32(di.fp_rm, pc);
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
+      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line(scalar_prefix() + "sqrt" + rm + ".f32 " + f(1) + ", " + f(0) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + r(15) + ", " + f(1) + ";");
+      emit_st_x_u32_scalar(di.rd, r(15), pc);
+      return true;
+    }
+
+    // FMA family.
+    if (di.name == "fmadd_s" || di.name == "fmsub_s" || di.name == "fnmsub_s" || di.name == "fnmadd_s") {
+      const std::string rm = ptx_rm_f32(di.fp_rm, pc);
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc); // a
+      emit_ld_x_u32_scalar(r(15), di.rs2, pc); // b
+      emit_ld_x_u32_scalar(r(16), di.rs3, pc); // c
+      if (di.name == "fmsub_s" || di.name == "fnmadd_s") emit_line(scalar_prefix() + "xor.b32 " + r(16) + ", " + r(16) + ", 0x80000000;");
+      if (di.name == "fnmsub_s" || di.name == "fnmadd_s") emit_line(scalar_prefix() + "xor.b32 " + r(14) + ", " + r(14) + ", 0x80000000;");
+      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + f(2) + ", " + r(16) + ";");
+      emit_line(scalar_prefix() + "fma" + rm + ".f32 " + f(3) + ", " + f(0) + ", " + f(1) + ", " + f(2) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + r(17) + ", " + f(3) + ";");
+      emit_st_x_u32_scalar(di.rd, r(17), pc);
+      return true;
+    }
+
+    // Min/max (NaN-safe).
+    if (di.name == "fmin_s" || di.name == "fmax_s") {
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
+      emit_ld_x_u32_scalar(r(15), di.rs2, pc);
+      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
+      emit_line(scalar_prefix() + "setp.nan.f32 " + p(2) + ", " + f(0) + ", " + f(0) + ";");
+      emit_line(scalar_prefix() + "setp.nan.f32 " + p(3) + ", " + f(1) + ", " + f(1) + ";");
+      emit_line(scalar_prefix() + std::string(di.name == "fmax_s" ? "max" : "min") + ".f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line(scalar_prefix() + "selp.b32 " + f(2) + ", " + f(1) + ", " + f(2) + ", " + p(2) + ";"); // if a is NaN => b
+      emit_line(scalar_prefix() + "selp.b32 " + f(2) + ", " + f(0) + ", " + f(2) + ", " + p(3) + ";"); // if b is NaN => a
+      emit_line(scalar_prefix() + "mov.b32 " + r(16) + ", " + f(2) + ";");
+      emit_st_x_u32_scalar(di.rd, r(16), pc);
+      return true;
+    }
+
+    // Comparisons: exact 0/1 integer result.
+    if (di.name == "feq_s" || di.name == "flt_s" || di.name == "fle_s") {
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
+      emit_ld_x_u32_scalar(r(15), di.rs2, pc);
+      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
+      if (di.name == "feq_s") emit_line(scalar_prefix() + "setp.eq.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      else if (di.name == "flt_s") emit_line(scalar_prefix() + "setp.lt.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      else emit_line(scalar_prefix() + "setp.le.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
+      emit_line(scalar_prefix() + "selp.u32 " + r(16) + ", 1, 0, " + p(1) + ";");
+      emit_st_x_u32_scalar(di.rd, r(16), pc);
+      return true;
+    }
+
+    // Conversions.
+    if (di.name == "fcvt_s_w" || di.name == "fcvt_s_wu") {
+      const std::string rm = ptx_rm_f32(di.fp_rm, pc);
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
+      emit_line(scalar_prefix() + "cvt" + rm + ".f32." + (di.name == "fcvt_s_w" ? "s32 " : "u32 ") + f(0) + ", " + r(14) + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + r(15) + ", " + f(0) + ";");
+      emit_st_x_u32_scalar(di.rd, r(15), pc);
+      return true;
+    }
+    if (di.name == "fcvt_w_s" || di.name == "fcvt_wu_s") {
+      const std::string rm = ptx_rm_cvt_i32(di.fp_rm, pc);
+      emit_ld_x_u32_scalar(r(14), di.rs1, pc); // f32 bits
+      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
+      emit_line(scalar_prefix() + "cvt" + rm + "." + (di.name == "fcvt_w_s" ? "s32" : "u32") + ".f32 " + r(15) + ", " + f(0) + ";");
+      emit_st_x_u32_scalar(di.rd, r(15), pc);
+      return true;
+    }
+
+    if (di.name == "fclass_s") {
+      emit_scalar_fclass_s(di, pc);
+      return true;
+    }
+
+    return false;
+  }
+
   void emit_one_inst(const sbt::cfg::BundleInst &bi) {
     const sbt::DecodedInst &di = bi.inst;
     const uint32_t pc = di.pc;
@@ -823,7 +1087,7 @@ struct EmitCtx final {
     }
 
     // No-ops under structured translation.
-    if (di.name == "setrpc" || di.name == "join" || di.name == "vsetvli" || di.name == "fmv_s" || di.name == "fmv_d") {
+    if (di.name == "setrpc" || di.name == "join" || di.name == "vsetvli") {
       return;
     }
 
@@ -1043,6 +1307,12 @@ struct EmitCtx final {
         emit_st_x_u32_scalar(di.rd, r(17), pc);
         return;
       }
+      if (di.name == "flw") {
+        // Zfinx model: flw loads f32 bits into an X reg.
+        emit_addr_map_and_ld_u32_scalar(r(17), r(15), pc);
+        emit_st_x_u32_scalar(di.rd, r(17), pc);
+        return;
+      }
       if (di.name == "lb") {
         emit_addr_map_and_ld_u8_zext_u32_scalar(r(17), r(15), pc);
         emit_line(scalar_prefix() + "shl.b32 " + r(17) + ", " + r(17) + ", 24;");
@@ -1080,6 +1350,11 @@ struct EmitCtx final {
         emit_addr_map_and_st_u32_scalar(r(16), r(15), pc);
         return;
       }
+      if (di.name == "fsw") {
+        // Zfinx model: fsw stores f32 bits from an X reg.
+        emit_addr_map_and_st_u32_scalar(r(16), r(15), pc);
+        return;
+      }
       if (di.name == "sb") {
         emit_line(scalar_prefix() + "cvt.u8.u32 " + u8(1) + ", " + r(15) + ";");
         emit_addr_map_and_st_u8_scalar(r(16), u8(1), pc);
@@ -1092,6 +1367,9 @@ struct EmitCtx final {
       }
       throw EmitError("unsupported.inst", func_name, pc, di.name);
     }
+
+    // Scalar FP ops (Zfinx: f32 bits carried in X regs).
+    if (try_emit_scalar_fp(di)) return;
 
     // Scalar ALU ops (uniform) - minimal subset used by Rodinia.
     if (di.name == "addi" && di.imm_kind == sbt::ImmKind::I12) {
@@ -2380,19 +2658,8 @@ struct EmitCtx final {
 
   void emit_func_prologue() {
     // Pass-through params computed in the caller and required for address mapping / CSR reads.
-    emit_raw(".func " + ptx_name + "(\n");
-    emit_raw("    .param .u64 __sbt_arg_elf_base,\n");
-    emit_raw("    .param .u64 __sbt_arg_heap_base,\n");
-    emit_raw("    .param .u64 __sbt_arg_wctx_ptr,\n");
-    emit_raw("    .param .u64 __sbt_arg_lds_ptr,\n");
-    emit_raw("    .param .u32 __sbt_arg_knl_vaddr,\n");
-    emit_raw("    .param .u32 __sbt_arg_pds_base_vaddr,\n");
-    emit_raw("    .param .u32 __sbt_arg_pds_size_per_thread,\n");
-    emit_raw("    .param .u32 __sbt_arg_warp_id,\n");
-    emit_raw("    .param .u32 __sbt_arg_warps_per_block");
-    if (mod.need_vctx) emit_raw(",\n    .param .u64 __sbt_arg_vctx_base");
-    emit_raw("\n");
-    emit_raw(")\n{\n");
+    emit_helper_func_signature(out, ptx_name, mod.need_vctx);
+    emit_raw("\n{\n");
 
     emit_line(".reg .b32 %r<32>;");
     emit_line(".reg .b64 %rd<32>;");
@@ -2455,6 +2722,12 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
   ModuleInfo mod;
   mod.ptx_name_by_addr = &ptx_name_by_addr;
   mod.need_vctx = !funcs.empty();
+
+  // Declare helper call prototypes first so ptxas can resolve forward calls.
+  for (const auto &f : funcs) {
+    emit_helper_func_signature(out, f.ptx_name, mod.need_vctx);
+    out << ";\n\n";
+  }
 
   // Emit `.func`s first.
   for (const auto &f : funcs) {

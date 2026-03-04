@@ -1,0 +1,118 @@
+#include "sbt/ptx_emit.hpp"
+
+#include <cstdint>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace {
+
+void require(bool ok, const std::string &msg) {
+  if (!ok) throw std::runtime_error("assert: " + msg);
+}
+
+sbt::cfg::BundleInst make_endprg(uint32_t pc) {
+  sbt::cfg::BundleInst bi;
+  bi.pc = pc;
+  bi.inst_pc = pc;
+  bi.len = 4;
+  bi.inst.pc = pc;
+  bi.inst.name = "endprg";
+  return bi;
+}
+
+sbt::cfg::BundleInst make_call(uint32_t pc, uint32_t target) {
+  sbt::cfg::BundleInst bi;
+  bi.pc = pc;
+  bi.inst_pc = pc;
+  bi.len = 4;
+  bi.inst.pc = pc;
+  bi.inst.name = "jal";
+  bi.inst.rd_class = sbt::RegClass::X;
+  bi.inst.rd = 1;
+  bi.inst.imm_kind = sbt::ImmKind::J21;
+  bi.inst.imm = static_cast<int32_t>(target - pc);
+  return bi;
+}
+
+sbt::cfg::FunctionCfg make_cfg(uint32_t start, std::vector<sbt::cfg::BundleInst> insts) {
+  sbt::cfg::FunctionCfg cfg;
+  cfg.start = start;
+  cfg.end = insts.empty() ? (start + 4u) : (insts.back().inst_pc + 4u);
+  cfg.insts = std::move(insts);
+
+  sbt::cfg::BasicBlock bb;
+  bb.start = start;
+  bb.inst_indices.reserve(cfg.insts.size());
+  for (size_t i = 0; i < cfg.insts.size(); ++i) {
+    const auto pc = cfg.insts[i].pc;
+    bb.inst_indices.push_back(i);
+    cfg.inst_index_by_pc.emplace(pc, i);
+    cfg.inst_pc_to_block.emplace(pc, start);
+  }
+  cfg.blocks.push_back(std::move(bb));
+  cfg.block_index_by_start.emplace(start, 0);
+  return cfg;
+}
+
+size_t count_substr(const std::string &text, const std::string &needle) {
+  if (needle.empty()) return 0;
+  size_t count = 0;
+  size_t pos = 0;
+  while (true) {
+    pos = text.find(needle, pos);
+    if (pos == std::string::npos) break;
+    ++count;
+    pos += needle.size();
+  }
+  return count;
+}
+
+} // namespace
+
+int main() {
+  constexpr uint32_t kEntryPc = 0x80001000u;
+  constexpr uint32_t kHelperAPc = 0x80001100u;
+  constexpr uint32_t kHelperBPc = 0x80001200u;
+
+  const auto entry_cfg = make_cfg(kEntryPc, {make_endprg(kEntryPc)});
+  const auto helper_a_cfg = make_cfg(kHelperAPc, {make_call(kHelperAPc, kHelperBPc), make_endprg(kHelperAPc + 4u)});
+  const auto helper_b_cfg = make_cfg(kHelperBPc, {make_endprg(kHelperBPc)});
+
+  std::vector<sbt::ptx::FuncToEmit> funcs;
+  funcs.push_back(sbt::ptx::FuncToEmit{"helper_a", "__sbt_fn_A", helper_a_cfg});
+  funcs.push_back(sbt::ptx::FuncToEmit{"helper_b", "__sbt_fn_B", helper_b_cfg});
+
+  std::unordered_map<uint32_t, std::string> sym_by_addr;
+  sym_by_addr.emplace(kEntryPc, "kernel");
+  sym_by_addr.emplace(kHelperAPc, "helper_a");
+  sym_by_addr.emplace(kHelperBPc, "helper_b");
+
+  std::unordered_map<uint32_t, std::string> ptx_name_by_addr;
+  ptx_name_by_addr.emplace(kHelperAPc, "__sbt_fn_A");
+  ptx_name_by_addr.emplace(kHelperBPc, "__sbt_fn_B");
+
+  sbt::ptx::Options opt;
+  opt.include_comments = false;
+
+  const auto res = sbt::ptx::emit_module(entry_cfg, sym_by_addr, "kernel", funcs, ptx_name_by_addr, opt);
+  const std::string &ptx = res.ptx;
+
+  const size_t call_pos = ptx.find("call.uni __sbt_fn_B");
+  require(call_pos != std::string::npos, "helper_a should call helper_b");
+
+  const size_t first_b_func = ptx.find(".func __sbt_fn_B(");
+  require(first_b_func != std::string::npos, "missing helper_b declaration/definition");
+  require(first_b_func < call_pos, "helper_b prototype must appear before forward call");
+
+  require(count_substr(ptx, ".func __sbt_fn_B(") == 2, "helper_b should have prototype + definition");
+  require(ptx.find("    .param .u64 __sbt_arg_vctx_base\n);\n\n.func __sbt_fn_A(") != std::string::npos,
+          "prototype signature should include vctx parameter");
+  require(ptx.find("    .param .u64 __sbt_arg_vctx_base\n)\n{\n") != std::string::npos,
+          "definition signature should include vctx parameter");
+
+  std::cout << "ok ptx helper call prototype\n";
+  return 0;
+}
