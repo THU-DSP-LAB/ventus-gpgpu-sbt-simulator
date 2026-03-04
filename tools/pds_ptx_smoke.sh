@@ -45,13 +45,15 @@ cubin="$OUT_DIR/${picked_fn}.cubin"
 
 "$SBT_PTX" "$picked_elf" --func "$picked_fn" --require-known --out "$ptx" >/dev/null
 
-if rg -q "__sbt_pds" "$ptx"; then
-  echo "ERROR: unexpected __sbt_pds local backing in generated PTX: $ptx" >&2
+if rg -q "\\.local .*__sbt_pds" "$ptx"; then
+  echo "ERROR: unexpected .local __sbt_pds backing in generated PTX: $ptx" >&2
   exit 3
 fi
 
 rg -q "\\.param \\.u32 pds_base_vaddr," "$ptx"
-rg -q "\\.param \\.u32 pds_size_per_thread" "$ptx"
+rg -q "\\.param \\.u32 pds_size_per_thread," "$ptx"
+rg -q "\\.param \\.u32 pds_bitmap_base_vaddr," "$ptx"
+rg -q "\\.param \\.u32 pds_pool_num_blocks" "$ptx"
 
 "$PTXAS" -arch="$ARCH" "$ptx" -o "$cubin" >/dev/null
 echo "ok PDS smoke: $picked_fn (ARCH=$ARCH)"

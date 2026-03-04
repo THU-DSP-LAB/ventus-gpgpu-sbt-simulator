@@ -66,8 +66,9 @@
     - 标量副作用执行策略：支持 leader-only 或 all-lanes（由 `Options::scalar_exec_leader_only` 与 `GPU_SBT_SCALAR_LEADER_ONLY` 控制）。
     - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（shared / ELF backing / heap backing），对应 `Options::{shared_base_vaddr,elf_base_vaddr,heap_base_vaddr}`。
     - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
-      - `.entry` 参数包含 `pds_base_vaddr/pds_size_per_thread`；
-      - 按软件栈公式计算 `CSR_PDS`（warp base）；
+      - `.entry` 参数包含 `pds_base_vaddr/pds_size_per_thread/pds_bitmap_base_vaddr/pds_pool_num_blocks`；
+      - prologue 以 block 级原子方式从 bitmap 申请 PDS block，写入 shared；
+      - `CSR_PDS = wg_pds_base + warp_id_in_block * (32 * pds_size_per_thread)`；
       - 再通过统一的数值地址映射 helper 落到 `.global` 访问。
   - 调用（call）：
     - 一小部分 builtin 仍在 emitter 内按名字内联（OpenCL id/query + 少量 helper）。
@@ -158,5 +159,5 @@
 - **指令覆盖**：目标集合为 `VentusInst_basic.txt`（减去 `data/inst_exceptions.txt`）；在 `--require-known` 下遇到 unknown/unsupported 仍 fail-fast。
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
 - **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
-- **ABI/元数据**：当前 `.entry` 参数为 `(elf_base, heap_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread)`，并在 prologue 初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
-- **PDS（private）**：`vlw.v/vsw.v` 通过 `pds_base_vaddr/pds_size_per_thread` + 软件栈公式计算 `CSR_PDS`，再用数值地址映射落到 `.global` 访问。
+- **ABI/元数据**：当前 `.entry` 参数为 `(elf_base, heap_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`，并在 prologue 初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
+- **PDS（private）**：入口 prologue 由 `thread_linear_id==0` 原子申请/写回 `wg_pds_base`，kernel 退出前释放；`vlw.v/vsw.v` 与 `CSR_PDS` 都基于该 `wg_pds_base` 计算，不再按 full-grid block 线性编号寻址。

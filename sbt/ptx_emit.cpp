@@ -122,6 +122,8 @@ struct EmitCtx final {
   // %rd3: wctx_ptr (shared)
   // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
   // %rd6: per-thread v-reg context base (local) for cross-`.func` calls
+  // %r26: pds_bitmap_base_vaddr (u32 Ventus numeric address)
+  // %r27: pds_pool_num_blocks (u32)
   // %r28: pds_base_vaddr (u32 Ventus numeric address)
   // %r29: pds_size_per_thread (u32 bytes)
 
@@ -147,6 +149,140 @@ struct EmitCtx final {
   }
 
   void emit_warp_sync() { emit_line("bar.warp.sync " + r(1) + ";"); }
+
+  void emit_compute_csr_pds_u32(const std::string &dst_r, bool scalar) {
+    const std::string pre = scalar ? scalar_prefix() : "";
+    emit_line(pre + "ld.shared.u32 " + r(24) + ", [__sbt_pds_wg_base];");
+    emit_line(pre + "shl.b32 " + r(25) + ", " + r(29) + ", 5;");
+    emit_line(pre + "mul.lo.u32 " + r(23) + ", " + r(10) + ", " + r(25) + ";");
+    emit_line(pre + "add.u32 " + dst_r + ", " + r(24) + ", " + r(23) + ";");
+  }
+
+  void emit_entry_pds_pool_acquire(uint32_t pc_for_err) {
+    const std::string L_thread0_done = new_label("pds_acquire_t0_done");
+    const std::string L_skip_thread0 = new_label("pds_acquire_skip_t0");
+    const std::string L_scan_word = new_label("pds_scan_word");
+    const std::string L_try_word = new_label("pds_try_word");
+    const std::string L_alloc_success = new_label("pds_alloc_success");
+    const std::string L_scan_restart = new_label("pds_scan_restart");
+
+    emit_line("setp.eq.u32 " + p(6) + ", " + r(9) + ", 0;");
+    emit_line("@!" + p(6) + " bra " + L_skip_thread0 + ";");
+    emit_line("st.shared.u32 [__sbt_pds_exit_count], 0;");
+
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(29) + ", 0;");
+    emit_line("@" + p(7) + " st.shared.u32 [__sbt_pds_block_idx], 0;");
+    emit_line("@" + p(7) + " st.shared.u32 [__sbt_pds_wg_base], " + r(28) + ";");
+    emit_line("@" + p(7) + " bra " + L_thread0_done + ";");
+
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(27) + ", 0;");
+    emit_line("@" + p(7) + " trap;");
+    emit_line("setp.lt.u32 " + p(7) + ", " + r(26) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("@" + p(7) + " trap;");
+
+    emit_line("add.u32 " + r(23) + ", " + r(27) + ", 31;");
+    emit_line("shr.u32 " + r(23) + ", " + r(23) + ", 5;"); // bitmap word count
+    emit_line("mov.u32 " + r(21) + ", 0;"); // word index
+
+    emit_label(L_scan_word);
+    emit_line("setp.ge.u32 " + p(7) + ", " + r(21) + ", " + r(23) + ";");
+    emit_line("@" + p(7) + " bra " + L_scan_restart + ";");
+
+    emit_line("shl.b32 " + r(22) + ", " + r(21) + ", 2;");
+    emit_line("add.u32 " + r(24) + ", " + r(26) + ", " + r(22) + ";"); // bitmap word numeric addr
+    emit_line("add.u32 " + r(25) + ", " + r(24) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(18) + ", " + r(25) + ";");
+    emit_line("add.u64 " + rd(18) + ", " + rd(1) + ", " + rd(18) + ";");
+    emit_line("ld.global.u32 " + r(25) + ", [" + rd(18) + "];");
+    emit_line("not.b32 " + r(22) + ", " + r(25) + ";"); // free bits
+
+    // Mask out out-of-range bits in the last bitmap word.
+    emit_line("mul.lo.u32 " + r(24) + ", " + r(21) + ", 32;");
+    emit_line("sub.u32 " + r(24) + ", " + r(27) + ", " + r(24) + ";"); // remaining blocks in this word
+    emit_line("setp.ge.u32 " + p(7) + ", " + r(24) + ", 32;");
+    emit_line("@" + p(7) + " mov.u32 " + r(20) + ", 0xffffffff;");
+    emit_line("@!" + p(7) + " mov.u32 " + r(20) + ", 1;");
+    emit_line("@!" + p(7) + " shl.b32 " + r(20) + ", " + r(20) + ", " + r(24) + ";");
+    emit_line("@!" + p(7) + " add.u32 " + r(20) + ", " + r(20) + ", -1;");
+    emit_line("and.b32 " + r(22) + ", " + r(22) + ", " + r(20) + ";");
+
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(22) + ", 0;");
+    emit_line("@" + p(7) + " add.u32 " + r(21) + ", " + r(21) + ", 1;");
+    emit_line("@" + p(7) + " bra " + L_scan_word + ";");
+
+    emit_label(L_try_word);
+    emit_line("bfind.u32 " + r(20) + ", " + r(22) + ";");
+    emit_line("mov.u32 " + r(19) + ", 1;");
+    emit_line("shl.b32 " + r(19) + ", " + r(19) + ", " + r(20) + ";");
+    emit_line("atom.global.or.b32 " + r(18) + ", [" + rd(18) + "], " + r(19) + ";");
+    emit_line("and.b32 " + r(17) + ", " + r(18) + ", " + r(19) + ";");
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(17) + ", 0;");
+    emit_line("@" + p(7) + " bra " + L_alloc_success + ";");
+    emit_line("xor.b32 " + r(22) + ", " + r(22) + ", " + r(19) + ";");
+    emit_line("setp.ne.u32 " + p(8) + ", " + r(22) + ", 0;");
+    emit_line("@" + p(8) + " bra " + L_try_word + ";");
+    emit_line("add.u32 " + r(21) + ", " + r(21) + ", 1;");
+    emit_line("bra " + L_scan_word + ";");
+
+    emit_label(L_scan_restart);
+    emit_line("mov.u32 " + r(21) + ", 0;");
+    emit_line("bra " + L_scan_word + ";");
+
+    emit_label(L_alloc_success);
+    emit_line("mad.lo.u32 " + r(18) + ", " + r(21) + ", 32, " + r(20) + ";"); // block index
+    emit_line("st.shared.u32 [__sbt_pds_block_idx], " + r(18) + ";");
+    emit_line("shl.b32 " + r(17) + ", " + r(29) + ", 5;"); // bytes per wf
+    emit_line("mul.lo.u32 " + r(16) + ", " + r(12) + ", " + r(17) + ";"); // bytes per wg
+    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(18) + ";");
+    emit_line("cvt.u64.u32 " + rd(17) + ", " + r(16) + ";");
+    emit_line("mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+    emit_line("cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
+    emit_line("add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+    emit_line("cvt.u32.u64 " + r(16) + ", " + rd(16) + ";");
+    emit_line("st.shared.u32 [__sbt_pds_wg_base], " + r(16) + ";");
+
+    emit_label(L_thread0_done);
+    emit_label(L_skip_thread0);
+    emit_line("bar.sync 0;");
+    (void)pc_for_err;
+  }
+
+  void emit_entry_pds_pool_release(uint32_t pc_for_err) {
+    const std::string L_release_done = new_label("pds_release_done");
+
+    // Divergence-safe release:
+    // Every exiting thread does one atomic increment in shared memory.
+    // Only the last exiting thread releases the bitmap slot.
+    emit_line("mov.u32 " + r(21) + ", %ntid.x;");
+    emit_line("mov.u32 " + r(22) + ", %ntid.y;");
+    emit_line("mov.u32 " + r(23) + ", %ntid.z;");
+    emit_line("mul.lo.u32 " + r(21) + ", " + r(21) + ", " + r(22) + ";");
+    emit_line("mul.lo.u32 " + r(21) + ", " + r(21) + ", " + r(23) + ";"); // block thread count
+    emit_line("atom.shared.add.u32 " + r(17) + ", [__sbt_pds_exit_count], 1;");
+    emit_line("add.u32 " + r(17) + ", " + r(17) + ", 1;");
+    emit_line("setp.ne.u32 " + p(8) + ", " + r(17) + ", " + r(21) + ";");
+    emit_line("@" + p(8) + " bra " + L_release_done + ";");
+
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(29) + ", 0;");
+    emit_line("@" + p(7) + " bra " + L_release_done + ";");
+
+    emit_line("ld.shared.u32 " + r(18) + ", [__sbt_pds_block_idx];");
+    emit_line("shr.u32 " + r(21) + ", " + r(18) + ", 5;");
+    emit_line("and.b32 " + r(20) + ", " + r(18) + ", 31;");
+    emit_line("mov.u32 " + r(19) + ", 1;");
+    emit_line("shl.b32 " + r(19) + ", " + r(19) + ", " + r(20) + ";");
+    emit_line("not.b32 " + r(19) + ", " + r(19) + ";");
+
+    emit_line("shl.b32 " + r(22) + ", " + r(21) + ", 2;");
+    emit_line("add.u32 " + r(24) + ", " + r(26) + ", " + r(22) + ";");
+    emit_line("add.u32 " + r(25) + ", " + r(24) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + rd(18) + ", " + r(25) + ";");
+    emit_line("add.u64 " + rd(18) + ", " + rd(1) + ", " + rd(18) + ";");
+    emit_line("atom.global.and.b32 " + r(17) + ", [" + rd(18) + "], " + r(19) + ";");
+
+    emit_label(L_release_done);
+    (void)pc_for_err;
+  }
 
   void emit_vctx_store_all(uint32_t pc_for_err) {
     require(mod.need_vctx, EmitError("invalid.vctx", func_name, pc_for_err, "need_vctx=false"));
@@ -692,6 +828,9 @@ struct EmitCtx final {
     }
 
     if (di.name == "endprg" || is_ret(di)) {
+      if (is_entry) {
+        emit_entry_pds_pool_release(pc);
+      }
       if (!is_entry && mod.need_vctx) {
         emit_line("// spill v-regfile back to vctx for return");
         emit_vctx_store_all(pc);
@@ -878,31 +1017,7 @@ struct EmitCtx final {
         // In this backend, numeric shared addresses start at `shared_base_vaddr`.
         emit_line(scalar_prefix() + "mov.u32 " + r(14) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
       } else if (csr == 0x807u) { // CSR_PDS
-        // CSR_PDS: per-warp private memory base (numeric address).
-        //
-        // blk_linear = ctaid.x + nctaid.x * (ctaid.y + nctaid.y * ctaid.z)
-        // warp_linear = blk_linear*warps_per_block + warp_id_in_block
-        // CSR_PDS = pds_base_vaddr + warp_linear * (32 * pds_size_per_thread)
-        emit_line(scalar_prefix() + "mov.u32 " + r(15) + ", %ctaid.x;");
-        emit_line(scalar_prefix() + "mov.u32 " + r(16) + ", %ctaid.y;");
-        emit_line(scalar_prefix() + "mov.u32 " + r(17) + ", %ctaid.z;");
-        emit_line(scalar_prefix() + "mov.u32 " + r(18) + ", %nctaid.x;");
-        emit_line(scalar_prefix() + "mov.u32 " + r(19) + ", %nctaid.y;");
-        emit_line(scalar_prefix() + "mul.lo.u32 " + r(20) + ", " + r(19) + ", " + r(17) + ";");
-        emit_line(scalar_prefix() + "add.u32 " + r(20) + ", " + r(20) + ", " + r(16) + ";");
-        emit_line(scalar_prefix() + "mul.lo.u32 " + r(20) + ", " + r(18) + ", " + r(20) + ";");
-        emit_line(scalar_prefix() + "add.u32 " + r(20) + ", " + r(20) + ", " + r(15) + ";"); // blk_linear
-
-        emit_line(scalar_prefix() + "mul.lo.u32 " + r(21) + ", " + r(20) + ", " + r(12) + ";");
-        emit_line(scalar_prefix() + "add.u32 " + r(21) + ", " + r(21) + ", " + r(10) + ";"); // warp_linear
-
-        emit_line(scalar_prefix() + "shl.b32 " + r(22) + ", " + r(29) + ", 5;"); // bytes_per_warp
-        emit_line(scalar_prefix() + "cvt.u64.u32 " + rd(16) + ", " + r(21) + ";");
-        emit_line(scalar_prefix() + "cvt.u64.u32 " + rd(17) + ", " + r(22) + ";");
-        emit_line(scalar_prefix() + "mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
-        emit_line(scalar_prefix() + "cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
-        emit_line(scalar_prefix() + "add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
-        emit_line(scalar_prefix() + "cvt.u32.u64 " + r(14) + ", " + rd(16) + ";");
+        emit_compute_csr_pds_u32(r(14), /*scalar=*/true);
       } else if (csr == 0x808u) { // CSR_GDX
         emit_line(scalar_prefix() + "mov.u32 " + r(14) + ", %ctaid.x;");
       } else if (csr == 0x809u) { // CSR_GDY
@@ -1226,33 +1341,7 @@ struct EmitCtx final {
       emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
       emit_line("shl.b32 " + r(16) + ", " + r(0) + ", 2;");
       emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
-
-      // Compute CSR_PDS (warp base) using software-stack formula.
-      // blk_linear = ctaid.x + nctaid.x * (ctaid.y + nctaid.y * ctaid.z)
-      emit_line("mov.u32 " + r(16) + ", %ctaid.x;");
-      emit_line("mov.u32 " + r(17) + ", %ctaid.y;");
-      emit_line("mov.u32 " + r(18) + ", %ctaid.z;");
-      emit_line("mov.u32 " + r(19) + ", %nctaid.x;");
-      emit_line("mov.u32 " + r(20) + ", %nctaid.y;");
-      emit_line("mul.lo.u32 " + r(21) + ", " + r(20) + ", " + r(18) + ";");
-      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(17) + ";");
-      emit_line("mul.lo.u32 " + r(21) + ", " + r(19) + ", " + r(21) + ";");
-      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(16) + ";"); // blk_linear
-
-      // warp_linear = blk_linear*warps_per_block + warp_id_in_block
-      emit_line("mul.lo.u32 " + r(22) + ", " + r(21) + ", " + r(12) + ";");
-      emit_line("add.u32 " + r(22) + ", " + r(22) + ", " + r(10) + ";");
-
-      // bytes_per_warp = 32*pds_size_per_thread
-      emit_line("shl.b32 " + r(23) + ", " + r(29) + ", 5;");
-
-      // warp_base = pds_base_vaddr + warp_linear*bytes_per_warp
-      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(22) + ";");
-      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(23) + ";");
-      emit_line("mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
-      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
-      emit_line("add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
-      emit_line("cvt.u32.u64 " + r(24) + ", " + rd(16) + ";"); // CSR_PDS (u32)
+      emit_compute_csr_pds_u32(r(24), /*scalar=*/false);
 
       // addr = CSR_PDS + offset
       emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
@@ -1267,26 +1356,7 @@ struct EmitCtx final {
       emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
       emit_line("shl.b32 " + r(16) + ", " + r(0) + ", 2;");
       emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
-
-      emit_line("mov.u32 " + r(16) + ", %ctaid.x;");
-      emit_line("mov.u32 " + r(17) + ", %ctaid.y;");
-      emit_line("mov.u32 " + r(18) + ", %ctaid.z;");
-      emit_line("mov.u32 " + r(19) + ", %nctaid.x;");
-      emit_line("mov.u32 " + r(20) + ", %nctaid.y;");
-      emit_line("mul.lo.u32 " + r(21) + ", " + r(20) + ", " + r(18) + ";");
-      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(17) + ";");
-      emit_line("mul.lo.u32 " + r(21) + ", " + r(19) + ", " + r(21) + ";");
-      emit_line("add.u32 " + r(21) + ", " + r(21) + ", " + r(16) + ";"); // blk_linear
-
-      emit_line("mul.lo.u32 " + r(22) + ", " + r(21) + ", " + r(12) + ";");
-      emit_line("add.u32 " + r(22) + ", " + r(22) + ", " + r(10) + ";");
-      emit_line("shl.b32 " + r(23) + ", " + r(29) + ", 5;");
-      emit_line("cvt.u64.u32 " + rd(16) + ", " + r(22) + ";");
-      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(23) + ";");
-      emit_line("mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
-      emit_line("cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
-      emit_line("add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
-      emit_line("cvt.u32.u64 " + r(24) + ", " + rd(16) + ";"); // CSR_PDS
+      emit_compute_csr_pds_u32(r(24), /*scalar=*/false);
 
       emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
       emit_addr_map_and_st_u32(r(14), v(di.rs2), pc);
@@ -2188,12 +2258,16 @@ struct EmitCtx final {
     //  - knl_vaddr: Ventus numeric address of metadata buffer (u32)
     //  - pds_base_vaddr: Ventus numeric address of the global PDS buffer base (u32)
     //  - pds_size_per_thread: bytes of private memory per thread (u32)
+    //  - pds_bitmap_base_vaddr: Ventus numeric address of PDS allocation bitmap (u32)
+    //  - pds_pool_num_blocks: number of reusable WG blocks in PDS pool (u32)
     emit_raw(".visible .entry " + ptx_name + "(\n");
     emit_raw("    .param .u64 elf_base,\n");
     emit_raw("    .param .u64 heap_base,\n");
     emit_raw("    .param .u32 knl_vaddr,\n");
     emit_raw("    .param .u32 pds_base_vaddr,\n");
-    emit_raw("    .param .u32 pds_size_per_thread\n");
+    emit_raw("    .param .u32 pds_size_per_thread,\n");
+    emit_raw("    .param .u32 pds_bitmap_base_vaddr,\n");
+    emit_raw("    .param .u32 pds_pool_num_blocks\n");
     emit_raw(")\n{\n");
 
     emit_line(".reg .b32 %r<32>;");
@@ -2220,6 +2294,8 @@ struct EmitCtx final {
     emit_line("ld.param.u32 " + r(30) + ", [knl_vaddr];");
     emit_line("ld.param.u32 " + r(28) + ", [pds_base_vaddr];");
     emit_line("ld.param.u32 " + r(29) + ", [pds_size_per_thread];");
+    emit_line("ld.param.u32 " + r(26) + ", [pds_bitmap_base_vaddr];");
+    emit_line("ld.param.u32 " + r(27) + ", [pds_pool_num_blocks];");
 
     // lane id (0..31)
     emit_line("mov.u32 " + r(0) + ", %laneid;");
@@ -2269,6 +2345,7 @@ struct EmitCtx final {
     emit_line("setp.ne.u32 " + p(2) + ", " + r(29) + ", 0;");
     emit_line("and.pred " + p(1) + ", " + p(1) + ", " + p(2) + ";");
     emit_line("@" + p(1) + " trap;");
+    emit_entry_pds_pool_acquire(cfg.start);
 
     // Match `_start` ABI: tp (x4) starts at 0 and is used as a spill-stack cursor.
     emit_line("@" + p(0) + " mov.u32 " + r(15) + ", 0;");
@@ -2370,7 +2447,10 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
   out << ".version 7.0\n";
   out << ".target sm_" << opt.sm << "\n";
   out << ".address_size 64\n\n";
-  out << ".extern .shared .align 16 .b8 __sbt_shmem[];\n\n";
+  out << ".extern .shared .align 16 .b8 __sbt_shmem[];\n";
+  out << ".shared .align 4 .u32 __sbt_pds_block_idx;\n";
+  out << ".shared .align 4 .u32 __sbt_pds_wg_base;\n";
+  out << ".shared .align 4 .u32 __sbt_pds_exit_count;\n\n";
 
   ModuleInfo mod;
   mod.ptx_name_by_addr = &ptx_name_by_addr;
