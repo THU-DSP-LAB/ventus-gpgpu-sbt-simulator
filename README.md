@@ -17,6 +17,20 @@
 - `VentusInst_basic.xlsx`：Ventus 指令表原始来源
 - `VentusInst_basic.txt`：当前阶段提取后的文本版本（便于审阅与脚本处理）
 
+## 标量浮点（RV32F, Zfinx 模型）支持（当前）
+- 模型：标量浮点值以 **f32 raw bits 存在 X 寄存器**（无独立 F 寄存器文件）。
+- 已纳入 `VentusInst_basic.txt` 并支持 decode + PTX lowering（mnemonic 规范化：`.` -> `_`）：
+  - `flw/fsw`
+  - `fadd_s/fsub_s/fmul_s/fdiv_s/fsqrt_s`
+  - `fmadd_s/fmsub_s/fnmsub_s/fnmadd_s`
+  - `fsgnj_s/fsgnjn_s/fsgnjx_s`
+  - `fmin_s/fmax_s`
+  - `feq_s/flt_s/fle_s`
+  - `fclass_s`
+  - `fcvt_w_s/fcvt_wu_s/fcvt_s_w/fcvt_s_wu`
+  - `fmv_w_x/fmv_x_w`
+- rounding mode：`rm=DYN` 当前按 RNE 处理（CSR.frm 未建模）；`rm=RMM/Reserved` 直接 fail-fast 报错。
+
 ## 仓库分层（当前）
 - 核心实现：`sbt/`、`tools/`、`data/`、`testcases/ocl_compare/`
 - 长期文档：`doc/`

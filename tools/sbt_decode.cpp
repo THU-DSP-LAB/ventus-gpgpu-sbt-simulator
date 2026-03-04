@@ -105,10 +105,10 @@ static bool ends_with(std::string_view s, std::string_view suf) {
 }
 
 static bool is_scalar_load(std::string_view name) {
-  return name == "lb" || name == "lh" || name == "lw" || name == "lbu" || name == "lhu";
+  return name == "lb" || name == "lh" || name == "lw" || name == "lbu" || name == "lhu" || name == "flw";
 }
 
-static bool is_scalar_store(std::string_view name) { return name == "sb" || name == "sh" || name == "sw"; }
+static bool is_scalar_store(std::string_view name) { return name == "sb" || name == "sh" || name == "sw" || name == "fsw"; }
 
 static bool is_vector_load(std::string_view name) { return name == "vlw12_v" || name == "vlbu12_v" || name == "vlw_v"; }
 

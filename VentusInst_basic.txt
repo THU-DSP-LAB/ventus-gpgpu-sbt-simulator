@@ -73,6 +73,32 @@ M	div
 M	divu	
 M	rem	
 M	remu	
+F	fmadd.s
+F	fmsub.s
+F	fnmsub.s
+F	fnmadd.s
+F	fadd.s
+F	fsub.s
+F	fmul.s
+F	fdiv.s
+F	fsqrt.s
+F	fsgnj.s
+F	fsgnjn.s
+F	fsgnjx.s
+F	fmin.s
+F	fmax.s
+F	fcvt.w.s
+F	fcvt.wu.s
+F	feq.s
+F	flt.s
+F	fle.s
+F	fclass.s
+F	fcvt.s.w
+F	fcvt.s.wu
+F	flw
+F	fsw
+F	fmv.w.x
+F	fmv.x.w
 V	vadd.vv vd, vs2, vs1, vm	vd[i] = vs2[i] + vs1[i]
 V	vfadd.vv vd, vs2, vs1, vm	vd[i] = vs2[i] + vs1[i]
 V	vadd.vi vd, vs2, imm, vm	vd[i] = vs2[i] + imm
