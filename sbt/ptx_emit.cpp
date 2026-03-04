@@ -90,6 +90,21 @@ EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::st
 
 namespace {
 
+static void emit_helper_func_signature(std::ostringstream &out, const std::string &ptx_name, bool need_vctx) {
+  out << ".func " << ptx_name << "(\n";
+  out << "    .param .u64 __sbt_arg_elf_base,\n";
+  out << "    .param .u64 __sbt_arg_heap_base,\n";
+  out << "    .param .u64 __sbt_arg_wctx_ptr,\n";
+  out << "    .param .u64 __sbt_arg_lds_ptr,\n";
+  out << "    .param .u32 __sbt_arg_knl_vaddr,\n";
+  out << "    .param .u32 __sbt_arg_pds_base_vaddr,\n";
+  out << "    .param .u32 __sbt_arg_pds_size_per_thread,\n";
+  out << "    .param .u32 __sbt_arg_warp_id,\n";
+  out << "    .param .u32 __sbt_arg_warps_per_block";
+  if (need_vctx) out << ",\n    .param .u64 __sbt_arg_vctx_base";
+  out << "\n)";
+}
+
 struct ModuleInfo final {
   bool need_vctx = false;
   const std::unordered_map<uint32_t, std::string> *ptx_name_by_addr = nullptr;
@@ -2566,19 +2581,8 @@ struct EmitCtx final {
 
   void emit_func_prologue() {
     // Pass-through params computed in the caller and required for address mapping / CSR reads.
-    emit_raw(".func " + ptx_name + "(\n");
-    emit_raw("    .param .u64 __sbt_arg_elf_base,\n");
-    emit_raw("    .param .u64 __sbt_arg_heap_base,\n");
-    emit_raw("    .param .u64 __sbt_arg_wctx_ptr,\n");
-    emit_raw("    .param .u64 __sbt_arg_lds_ptr,\n");
-    emit_raw("    .param .u32 __sbt_arg_knl_vaddr,\n");
-    emit_raw("    .param .u32 __sbt_arg_pds_base_vaddr,\n");
-    emit_raw("    .param .u32 __sbt_arg_pds_size_per_thread,\n");
-    emit_raw("    .param .u32 __sbt_arg_warp_id,\n");
-    emit_raw("    .param .u32 __sbt_arg_warps_per_block");
-    if (mod.need_vctx) emit_raw(",\n    .param .u64 __sbt_arg_vctx_base");
-    emit_raw("\n");
-    emit_raw(")\n{\n");
+    emit_helper_func_signature(out, ptx_name, mod.need_vctx);
+    emit_raw("\n{\n");
 
     emit_line(".reg .b32 %r<32>;");
     emit_line(".reg .b64 %rd<32>;");
@@ -2638,6 +2642,12 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
   ModuleInfo mod;
   mod.ptx_name_by_addr = &ptx_name_by_addr;
   mod.need_vctx = !funcs.empty();
+
+  // Declare helper call prototypes first so ptxas can resolve forward calls.
+  for (const auto &f : funcs) {
+    emit_helper_func_signature(out, f.ptx_name, mod.need_vctx);
+    out << ";\n\n";
+  }
 
   // Emit `.func`s first.
   for (const auto &f : funcs) {

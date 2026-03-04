@@ -8,6 +8,7 @@
 - `sbt_ptx.cpp`：Ventus ELF -> PTX CLI（产物 `build/sbt_ptx`）
 - `gen_spike_encoding_subset.cpp`：根据 `data/spike_want.txt` 生成 Spike 子集头
 - `regext_bundle_test.cpp`：`regext/regexti` bundling 回归测试
+- `ptx_emit_call_prototype_test.cpp`：PTX helper 前向调用 prototype 回归测试
 - `regress.sh`：统一回归入口（聚合 smoke/gate/端到端；默认临时工作目录执行并自动清理，可用参数覆盖）
 - `rodinia_ptx_smoke.sh`：Rodinia compile-first smoke（PTX + ptxas）
 - `pds_ptx_smoke.sh`：PDS 参数与 PTX 映射 smoke

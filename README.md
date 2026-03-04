@@ -107,6 +107,9 @@ tools/regress.sh --preset quick --keep-workdir
 # ptxas 可编译性验证
 ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
+# 多函数 direct call 原型声明回归（前向调用）
+./build/ptx_emit_call_prototype_test
+
 # Rodinia compile-first smoke（11 kernels）
 ARCH=sm_75 tools/rodinia_ptx_smoke.sh
 

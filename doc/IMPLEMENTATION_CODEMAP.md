@@ -73,6 +73,7 @@
   - 调用（call）：
     - 一小部分 builtin 仍在 emitter 内按名字内联（OpenCL id/query + 少量 helper）。
     - 其它 direct call（`jal ra, imm`）会翻译为 PTX `call.uni`，并要求被调函数也被翻译为 `.func`（由 `tools/sbt_ptx.cpp` 的 call graph 闭包收集保证）。
+    - `emit_module` 会先在模块头为所有 helper `.func` 发射 prototype，再发射函数体，避免前向调用触发 `requires call prototype` / `Unknown symbol`。
     - 非 `ret` 形态 `jalr` 仍属于 unsupported（原型期 fail-fast）。
 
 ### 1.2 `tools/`：CLI 与脚本（bring-up/回归）
@@ -89,6 +90,7 @@
   - PTX 输出：默认 `build/ptx/<bench>.<stem>.<func>.ptx`（路径规则偏 Rodinia 目录布局）。
   - 缓存：`<out>.meta` 记录输入 ELF/自身 exe 的时间戳与参数（pattern 子集已固化在二进制中），命中则直接复用已有 PTX。
   - 环境变量（行为开关/调试）：见 `doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md` 与 `tools/sbt_ptx.cpp`。
+  - 回归测试：`build/ptx_emit_call_prototype_test` 覆盖“helper 前向调用 + prototype 先声明”约束。
 
 - `tools/rodinia_ptx_smoke.sh`
   - 固定列表：Rodinia 11 个 kernel（compile-first），生成 PTX 并用 `ptxas` 编译。
