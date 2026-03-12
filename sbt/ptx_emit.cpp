@@ -1227,8 +1227,10 @@ struct EmitCtx final {
       else if (di.name == "bgeu") emit_line("setp.ge.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
       else throw EmitError("unsupported.inst", func_name, pc, di.name);
 
-      emit_line("@" + p(1) + " bra " + bb_t + ";");
-      emit_line("bra " + bb_f + ";");
+      // Ventus scalar branches are warp-uniform: x-reg state is shared per warp,
+      // so all active lanes observe the same predicate and must stay converged.
+      emit_line("@" + p(1) + " bra.uni " + bb_t + ";");
+      emit_line("bra.uni " + bb_f + ";");
       return;
     }
 

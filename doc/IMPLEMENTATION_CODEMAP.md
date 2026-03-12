@@ -64,6 +64,7 @@
     - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
     - 标量（x-reg）状态：存放在 per-warp shared 的 `WarpCtx`（当前实现的具体布局见 `doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md`）。
     - 标量副作用执行策略：支持 leader-only 或 all-lanes（由 `Options::scalar_exec_leader_only` 与 `GPU_SBT_SCALAR_LEADER_ONLY` 控制）。
+    - 标量条件分支（`beq/bne/blt/bge/bltu/bgeu`）：按 warp-uniform 语义翻译为 PTX `bra.uni`；前提是 x-reg 始终来自 per-warp shared `WarpCtx`，因此当前 active lanes 看到相同的比较结果。
     - 标量浮点（RV32F, Zfinx 模型）：f32 以 raw bits 存在 X 寄存器；支持 `flw/fsw`、`fadd_s` 等标量 F 指令子集；`rm=DYN` 按 RNE 处理（CSR.frm 未建模），`rm=RMM/Reserved` fail-fast。
     - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（shared / ELF backing / heap backing），对应 `Options::{shared_base_vaddr,elf_base_vaddr,heap_base_vaddr}`。
     - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：

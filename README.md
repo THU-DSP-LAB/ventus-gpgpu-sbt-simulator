@@ -107,6 +107,10 @@ tools/regress.sh --preset quick --keep-workdir
 # ptxas 可编译性验证
 ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
+# 说明：Ventus 标量条件分支（beq/bne/blt/bge/bltu/bgeu）
+# 在 PTX lowering 中按 warp-uniform 语义使用 `bra.uni`；
+# 可分歧控制流仍由 `vbranch + setrpc/join` 路径处理。
+
 # 多函数 direct call 原型声明回归（前向调用）
 ./build/ptx_emit_call_prototype_test
 
