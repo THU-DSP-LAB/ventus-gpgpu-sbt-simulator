@@ -10,4 +10,5 @@
 - `02_host_device_abi_integrate`：早期与 `ventus-env` driver 集成实验
 - `03_sbt_feasibility`：SBT 可行性分析与草稿
 - `04_instruction_decode`：早期解码设计记录
+- `05_ptx_direct_call_param_abi`：围绕 direct call 的 `vctx` vs `.param value ABI` 微基准实验
 - `others`：外围调研记录
