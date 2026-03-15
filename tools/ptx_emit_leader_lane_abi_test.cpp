@@ -9,10 +9,10 @@
 
 /*
 背景
-- `sbt/ptx_emit.cpp` 正在从 shared `WarpCtx` + `.local vctx` 迁移到 leader-lane scalar state + value ABI。
+- `sbt/ptx_emit.cpp` 正在从 leader-owned scalar state 迁移到 replicated active-lane scalar state。
 
 需求/作用
-- 固化新主线最关键的可观察 PTX 合同，避免 helper ABI、scalar branch broadcast、structured divergence 同步点回退。
+- 固化 replicated scalar-state 主线最关键的可观察 PTX 合同，避免 helper ABI、fixed-lane scalarization、lazy leader 选择与 divergence 协议回退。
 
 用法
 - 构建后直接运行：`./build/ptx_emit_leader_lane_abi_test`
@@ -20,9 +20,11 @@
 实现原理/处理步骤
 - 手工构造小型 `FunctionCfg`，调用 `sbt::ptx::emit_module()` 生成 PTX。
 - 对输出做字符串断言，检查：
-- helper prototype / definition 是否切到新的 mutable/machine/runtime blob ABI；
-- scalar `beq` 是否在 `bra.uni` 前使用 leader broadcast；
-- `vbranch/join` 路径是否出现 full-`x` 广播与 join 前驱 shim。
+- helper prototype / definition 是否使用 replicated scalar-state 下的 mutable/machine/runtime blob ABI；
+- scalar `beq` 是否直接读取 replicated `xreg`，而不是做 leader broadcast；
+- `vbranch/join` 是否移除 full-`x` 广播与 join 前驱 shim；
+- `vmv.x.s` 是否保留固定 lane 语义并显式复制回 replicated `xreg`；
+- 分歧路径中的 leader-only store 是否按需懒选择 leader，而不是在路径入口统一切换。
 */
 
 namespace {
@@ -108,6 +110,37 @@ sbt::cfg::BundleInst make_call(uint32_t pc, uint32_t target) {
   bi.inst.rd = 1;
   bi.inst.imm_kind = sbt::ImmKind::J21;
   bi.inst.imm = static_cast<int32_t>(target - pc);
+  return bi;
+}
+
+sbt::cfg::BundleInst make_addi(uint32_t pc, int rd, int rs1, int imm) {
+  auto bi = make_inst(pc, "addi");
+  bi.inst.rd_class = sbt::RegClass::X;
+  bi.inst.rd = rd;
+  bi.inst.rs1_class = sbt::RegClass::X;
+  bi.inst.rs1 = rs1;
+  bi.inst.imm_kind = sbt::ImmKind::I12;
+  bi.inst.imm = imm;
+  return bi;
+}
+
+sbt::cfg::BundleInst make_scalar_store(uint32_t pc, const std::string &name, int rs1, int rs2, int imm) {
+  auto bi = make_inst(pc, name);
+  bi.inst.rs1_class = sbt::RegClass::X;
+  bi.inst.rs1 = rs1;
+  bi.inst.rs2_class = sbt::RegClass::X;
+  bi.inst.rs2 = rs2;
+  bi.inst.imm_kind = sbt::ImmKind::S12;
+  bi.inst.imm = imm;
+  return bi;
+}
+
+sbt::cfg::BundleInst make_vmv_x_s(uint32_t pc, int rd, int rs2) {
+  auto bi = make_inst(pc, "vmv_x_s");
+  bi.inst.rd_class = sbt::RegClass::X;
+  bi.inst.rd = rd;
+  bi.inst.rs2_class = sbt::RegClass::V;
+  bi.inst.rs2 = rs2;
   return bi;
 }
 
@@ -321,6 +354,151 @@ sbt::cfg::FunctionCfg make_regext_vbranch_direct_join_cfg(uint32_t start) {
   return cfg;
 }
 
+sbt::cfg::FunctionCfg make_vmv_x_s_cfg(uint32_t start) {
+  sbt::cfg::FunctionCfg cfg;
+  cfg.start = start;
+  cfg.end = start + 12u;
+  cfg.insts = {
+      make_vmv_x_s(start, 5, 3),
+      make_addi(start + 4u, 6, 5, 1),
+      make_endprg(start + 8u),
+  };
+  for (size_t i = 0; i < cfg.insts.size(); ++i) {
+    const auto pc = cfg.insts[i].pc;
+    cfg.inst_index_by_pc.emplace(pc, i);
+    cfg.inst_pc_to_block.emplace(pc, start);
+  }
+  append_block(cfg, start, {0, 1, 2}, {});
+  return cfg;
+}
+
+sbt::cfg::FunctionCfg make_vbranch_store_cfg(uint32_t start) {
+  const uint32_t branch_pc = start + 8u;
+  const uint32_t then_pc = start + 20u;
+  const uint32_t join_pc = start + 24u;
+
+  sbt::cfg::FunctionCfg cfg;
+  cfg.start = start;
+  cfg.end = start + 28u;
+  cfg.insts = {
+      make_auipc(start, 1),
+      make_setrpc(start + 4u, 1, join_pc),
+      make_vbranch(branch_pc, "vbeq", 1, 2, then_pc),
+      make_scalar_store(start + 12u, "sw", 10, 11, 0),
+      make_jump(start + 20u, join_pc),
+      make_inst(join_pc, "join"),
+      make_endprg(join_pc + 4u),
+  };
+  for (size_t i = 0; i < cfg.insts.size(); ++i) {
+    const auto pc = cfg.insts[i].pc;
+    cfg.inst_index_by_pc.emplace(pc, i);
+  }
+  cfg.inst_pc_to_block.emplace(start, start);
+  cfg.inst_pc_to_block.emplace(start + 4u, start);
+  cfg.inst_pc_to_block.emplace(branch_pc, branch_pc);
+  cfg.inst_pc_to_block.emplace(start + 12u, branch_pc);
+  cfg.inst_pc_to_block.emplace(then_pc, then_pc);
+  cfg.inst_pc_to_block.emplace(join_pc, join_pc);
+  cfg.inst_pc_to_block.emplace(join_pc + 4u, join_pc);
+
+  append_block(cfg, start, {0, 1}, {
+      sbt::cfg::Edge{start, branch_pc, sbt::cfg::EdgeKind::Fallthrough},
+  });
+  append_block(cfg, branch_pc, {2, 3}, {
+      sbt::cfg::Edge{branch_pc, then_pc, sbt::cfg::EdgeKind::Branch},
+      sbt::cfg::Edge{branch_pc, join_pc, sbt::cfg::EdgeKind::Fallthrough},
+  });
+  append_block(cfg, then_pc, {4}, {
+      sbt::cfg::Edge{then_pc, join_pc, sbt::cfg::EdgeKind::Jump},
+  });
+  append_block(cfg, join_pc, {5, 6}, {});
+  return cfg;
+}
+
+sbt::cfg::FunctionCfg make_vbranch_store_call_cfg(uint32_t start, uint32_t target) {
+  const uint32_t branch_pc = start + 8u;
+  const uint32_t then_pc = start + 20u;
+  const uint32_t join_pc = start + 24u;
+
+  sbt::cfg::FunctionCfg cfg;
+  cfg.start = start;
+  cfg.end = start + 32u;
+  cfg.insts = {
+      make_auipc(start, 1),
+      make_setrpc(start + 4u, 1, join_pc),
+      make_vbranch(branch_pc, "vbeq", 1, 2, then_pc),
+      make_scalar_store(start + 12u, "sw", 10, 11, 0),
+      make_jump(start + 20u, join_pc),
+      make_call(join_pc, target),
+      make_endprg(join_pc + 4u),
+  };
+  for (size_t i = 0; i < cfg.insts.size(); ++i) {
+    const auto pc = cfg.insts[i].pc;
+    cfg.inst_index_by_pc.emplace(pc, i);
+  }
+  cfg.inst_pc_to_block.emplace(start, start);
+  cfg.inst_pc_to_block.emplace(start + 4u, start);
+  cfg.inst_pc_to_block.emplace(branch_pc, branch_pc);
+  cfg.inst_pc_to_block.emplace(start + 12u, branch_pc);
+  cfg.inst_pc_to_block.emplace(then_pc, then_pc);
+  cfg.inst_pc_to_block.emplace(join_pc, join_pc);
+  cfg.inst_pc_to_block.emplace(join_pc + 4u, join_pc);
+
+  append_block(cfg, start, {0, 1}, {
+      sbt::cfg::Edge{start, branch_pc, sbt::cfg::EdgeKind::Fallthrough},
+  });
+  append_block(cfg, branch_pc, {2, 3}, {
+      sbt::cfg::Edge{branch_pc, then_pc, sbt::cfg::EdgeKind::Branch},
+      sbt::cfg::Edge{branch_pc, join_pc, sbt::cfg::EdgeKind::Fallthrough},
+  });
+  append_block(cfg, then_pc, {4}, {
+      sbt::cfg::Edge{then_pc, join_pc, sbt::cfg::EdgeKind::Jump},
+  });
+  append_block(cfg, join_pc, {5, 6}, {});
+  return cfg;
+}
+
+sbt::cfg::FunctionCfg make_helper_vbranch_store_ret_cfg(uint32_t start) {
+  const uint32_t branch_pc = start + 8u;
+  const uint32_t then_pc = start + 20u;
+  const uint32_t join_pc = start + 24u;
+
+  sbt::cfg::FunctionCfg cfg;
+  cfg.start = start;
+  cfg.end = start + 32u;
+  cfg.insts = {
+      make_auipc(start, 1),
+      make_setrpc(start + 4u, 1, join_pc),
+      make_vbranch(branch_pc, "vbeq", 1, 2, then_pc),
+      make_scalar_store(start + 12u, "sw", 10, 11, 0),
+      make_jump(start + 20u, join_pc),
+      make_endprg(join_pc),
+  };
+  for (size_t i = 0; i < cfg.insts.size(); ++i) {
+    const auto pc = cfg.insts[i].pc;
+    cfg.inst_index_by_pc.emplace(pc, i);
+  }
+  cfg.inst_pc_to_block.emplace(start, start);
+  cfg.inst_pc_to_block.emplace(start + 4u, start);
+  cfg.inst_pc_to_block.emplace(branch_pc, branch_pc);
+  cfg.inst_pc_to_block.emplace(start + 12u, branch_pc);
+  cfg.inst_pc_to_block.emplace(then_pc, then_pc);
+  cfg.inst_pc_to_block.emplace(join_pc, join_pc);
+
+  append_block(cfg, start, {0, 1}, {
+      sbt::cfg::Edge{start, branch_pc, sbt::cfg::EdgeKind::Fallthrough},
+  });
+  append_block(cfg, branch_pc, {2, 3}, {
+      sbt::cfg::Edge{branch_pc, then_pc, sbt::cfg::EdgeKind::Branch},
+      sbt::cfg::Edge{branch_pc, join_pc, sbt::cfg::EdgeKind::Fallthrough},
+  });
+  append_block(cfg, then_pc, {4}, {
+      sbt::cfg::Edge{then_pc, join_pc, sbt::cfg::EdgeKind::Jump},
+  });
+  append_block(cfg, join_pc, {5}, {});
+  return cfg;
+}
+
 size_t count_substr(const std::string &text, const std::string &needle) {
   if (needle.empty()) return 0;
   size_t count = 0;
@@ -334,6 +512,14 @@ size_t count_substr(const std::string &text, const std::string &needle) {
   return count;
 }
 
+std::string extract_ptx_body(const std::string &ptx, const std::string &header) {
+  const size_t start = ptx.rfind(header);
+  require(start != std::string::npos, "missing PTX header: " + header);
+  const size_t body_end = ptx.find("\n}\n\n", start);
+  require(body_end != std::string::npos, "missing PTX body end for: " + header);
+  return ptx.substr(start, body_end - start);
+}
+
 } // namespace
 
 int main() {
@@ -345,6 +531,11 @@ int main() {
   constexpr uint32_t kDirectJoinPc = 0x80001500u;
   constexpr uint32_t kRegextDirectJoinPc = 0x80001600u;
   constexpr uint32_t kRegextScalarBranchPc = 0x80001700u;
+  constexpr uint32_t kVmvXSBasicPc = 0x80001800u;
+  constexpr uint32_t kVbranchStorePc = 0x80001900u;
+  constexpr uint32_t kVbranchStoreCallPc = 0x80001a00u;
+  constexpr uint32_t kJoinCallTargetPc = 0x80001b00u;
+  constexpr uint32_t kHelperStoreRetPc = 0x80001c00u;
 
   const auto entry_cfg = make_helper_call_cfg(kEntryPc, kHelperAPc);
   const auto helper_a_cfg = make_helper_call_cfg(kHelperAPc, kHelperBPc);
@@ -353,6 +544,11 @@ int main() {
   const auto direct_join_cfg = make_vbranch_direct_join_cfg(kDirectJoinPc);
   const auto regext_direct_join_cfg = make_regext_vbranch_direct_join_cfg(kRegextDirectJoinPc);
   const auto regext_scalar_branch_cfg = make_regext_scalar_branch_cfg(kRegextScalarBranchPc);
+  const auto vmv_x_s_cfg = make_vmv_x_s_cfg(kVmvXSBasicPc);
+  const auto vbranch_store_cfg = make_vbranch_store_cfg(kVbranchStorePc);
+  const auto vbranch_store_call_cfg = make_vbranch_store_call_cfg(kVbranchStoreCallPc, kJoinCallTargetPc);
+  const auto join_call_target_cfg = make_helper_call_cfg(kJoinCallTargetPc, kHelperBPc);
+  const auto helper_store_ret_cfg = make_helper_vbranch_store_ret_cfg(kHelperStoreRetPc);
 
   std::vector<sbt::ptx::FuncToEmit> funcs;
   funcs.push_back(sbt::ptx::FuncToEmit{"helper_a", "__sbt_fn_A", helper_a_cfg});
@@ -384,6 +580,31 @@ int main() {
   const auto regext_scalar_branch_res =
       sbt::ptx::emit_module(regext_scalar_branch_cfg, {{kRegextScalarBranchPc, "regext_scalar_branch"}}, "regext_scalar_branch", {}, {}, opt);
   const std::string &regext_scalar_branch_ptx = regext_scalar_branch_res.ptx;
+  const auto vmv_x_s_res = sbt::ptx::emit_module(vmv_x_s_cfg, {{kVmvXSBasicPc, "vmv_x_s"}}, "vmv_x_s", {}, {}, opt);
+  const std::string &vmv_x_s_ptx = vmv_x_s_res.ptx;
+  const auto vbranch_store_res = sbt::ptx::emit_module(vbranch_store_cfg, {{kVbranchStorePc, "vbranch_store"}}, "vbranch_store", {}, {}, opt);
+  const std::string &vbranch_store_ptx = vbranch_store_res.ptx;
+  const auto vbranch_store_call_res = sbt::ptx::emit_module(
+      vbranch_store_call_cfg,
+      {{kVbranchStoreCallPc, "vbranch_store_call"}, {kJoinCallTargetPc, "join_call_target"}, {kHelperBPc, "helper_b"}},
+      "vbranch_store_call",
+      {sbt::ptx::FuncToEmit{"join_call_target", "__sbt_fn_join_call_target", join_call_target_cfg},
+       sbt::ptx::FuncToEmit{"helper_b", "__sbt_fn_B", helper_b_cfg}},
+      {{kJoinCallTargetPc, "__sbt_fn_join_call_target"}, {kHelperBPc, "__sbt_fn_B"}},
+      opt);
+  const std::string &vbranch_store_call_ptx = vbranch_store_call_res.ptx;
+  const auto helper_store_ret_res = sbt::ptx::emit_module(
+      make_helper_call_cfg(kEntryPc, kHelperStoreRetPc),
+      {{kEntryPc, "kernel"}, {kHelperStoreRetPc, "helper_store_ret"}},
+      "kernel",
+      {sbt::ptx::FuncToEmit{"helper_store_ret", "__sbt_fn_helper_store_ret", helper_store_ret_cfg}},
+      {{kHelperStoreRetPc, "__sbt_fn_helper_store_ret"}},
+      opt);
+  const std::string &helper_store_ret_ptx = helper_store_ret_res.ptx;
+  const std::string vbranch_store_call_entry_body =
+      extract_ptx_body(vbranch_store_call_ptx, ".visible .entry vbranch_store_call(");
+  const std::string helper_store_ret_body =
+      extract_ptx_body(helper_store_ret_ptx, ") __sbt_fn_helper_store_ret(");
 
   require(ptx.find(".param .align 4 .b8 __sbt_mutable_state_in[") != std::string::npos,
           "helper definition should use mutable-state input blob");
@@ -396,30 +617,47 @@ int main() {
   require(ptx.find("call.uni (__sbt_call_mutable_out") != std::string::npos,
           "direct call should return mutable-state blob explicitly");
 
-  require(ptx.find("shfl.sync.idx.b32 %r14") != std::string::npos,
-          "scalar branch should broadcast leader scalar operands before bra.uni");
+  require(ptx.find("shfl.sync.idx.b32 %r14") == std::string::npos,
+          "scalar branch should not broadcast replicated scalar operands before bra.uni");
+  require(ptx.find("mov.u32 %r14, %x5;") != std::string::npos,
+          "scalar branch should read replicated scalar operands directly from xreg state");
   require(ptx.find("bra.uni BB_80001308;") != std::string::npos,
           "scalar branch should remain bra.uni-based");
 
-  require(ptx.find("shfl.sync.idx.b32 %x1, %x1, %r2, 0x1f, %r1;") != std::string::npos,
-          "structured divergence should broadcast full x-state from current leader");
-  require(ptx.find("_sbt_join_edge_") != std::string::npos,
-          "join predecessor edges should use explicit shim labels");
-  require(direct_join_ptx.find("bfind.u32 %r2, %r1;\n  setp.eq.u32 %p0, %r0, %r2;\n  bra BB_80001514;") == std::string::npos,
-          "vbranch direct-to-join path must not skip join-edge reconverge via path-entry leader reset");
-  require(count_substr(direct_join_ptx, "_sbt_join_edge_") >= 4,
-          "vbranch direct-to-join shape should create reconverge shims for both join predecessors");
-  require(regext_direct_join_ptx.find("_sbt_join_edge_") != std::string::npos,
-          "regext-bundled vbranch should still resolve join-edge shims");
-  require(regext_direct_join_ptx.find("bra _sbt_join_edge_") != std::string::npos,
-          "regext-bundled vbranch should branch via synthesized edge labels");
+  require(ptx.find("shfl.sync.idx.b32 %x1, %x1, %r2, 0x1f, %r1;") == std::string::npos,
+          "structured divergence should not broadcast the full x-state payload");
+  require(ptx.find("_sbt_join_edge_") == std::string::npos,
+          "structured divergence should not synthesize join-edge scalar-state shims");
+  require(direct_join_ptx.find("_sbt_join_edge_") == std::string::npos,
+          "vbranch direct-to-join path should branch directly to reconverged blocks");
+  require(direct_join_ptx.find("bra BB_80001514;") != std::string::npos,
+          "vbranch direct-to-join path should still branch to the join block");
+  require(regext_direct_join_ptx.find("_sbt_join_edge_") == std::string::npos,
+          "regext-bundled vbranch should not need synthesized join-edge labels");
+  require(regext_direct_join_ptx.find("bra BB_80001614;") != std::string::npos,
+          "regext-bundled vbranch should still resolve direct branch targets");
   require(regext_scalar_branch_ptx.find("bra.uni BB_8000170c;") != std::string::npos,
           "regext-bundled scalar branch should still resolve branch target block labels");
   require(regext_scalar_branch_ptx.find("bra.uni BB_80001708;") != std::string::npos,
           "regext-bundled scalar branch should still resolve fallthrough block labels");
-  require(count_substr(ptx, "bfind.u32 %r2, %r1;") < 6,
-          "new emitter should not materialize legacy leader preamble on every block");
+  require(vmv_x_s_ptx.find("shfl.sync.idx.b32 %x5, %x5, 0, 0x1f, %r1;") != std::string::npos,
+          "vmv.x.s should re-replicate the extracted scalar value from architectural lane 0");
+  require(vmv_x_s_ptx.find("trap;") != std::string::npos,
+          "vmv.x.s should reject unsupported runtime shapes when the fixed source lane is inactive");
+  require(vmv_x_s_ptx.find("mov.u32 %r14, %x5;") != std::string::npos,
+          "later scalar consumers should read the re-replicated vmv.x.s result directly");
 
-  std::cout << "ok ptx leader-lane abi\n";
+  require(vbranch_store_ptx.find("_sbt_path_entry_") == std::string::npos,
+          "divergent all-lane paths should not synthesize path-entry leader handoff labels");
+  require(vbranch_store_ptx.find("_sbt_join_edge_") == std::string::npos,
+          "divergent store paths should not rely on join-edge scalar-state payload labels");
+  require(count_substr(vbranch_store_ptx, "bfind.u32 %r2, %r1;") == 2,
+          "leader should be selected lazily only for the actual leader-only store");
+  require(count_substr(vbranch_store_call_entry_body, "bfind.u32 %r2, %r1;") == 3,
+          "reconverged direct call after divergent store should re-unify leader metadata before marshaling mutable state");
+  require(count_substr(helper_store_ret_body, "bfind.u32 %r2, %r1;") == 2,
+          "helper ret after divergent store should re-unify leader metadata before exporting mutable state");
+
+  std::cout << "ok ptx replicated scalar state\n";
   return 0;
 }

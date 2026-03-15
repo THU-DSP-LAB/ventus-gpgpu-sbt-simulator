@@ -2,6 +2,8 @@
 
 ## 1. 背景
 
+> 注：本文分析的是 replicated scalar-state 变更之前的 leader-lane 主线；当前实现已不再把它当作默认 lowering 语义。
+
 `91bebb5` 引入了当前 leader-lane scalar state / value ABI / divergence shim 主线，用于修复上一阶段 SBT 方案中的 PTX 控制流回归。
 
 该 change 在语义层面解决了若干 correctness 问题，但在落地后，需要重新评估两个问题：

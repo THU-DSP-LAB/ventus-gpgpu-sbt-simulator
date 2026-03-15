@@ -10,6 +10,8 @@
 
 本文档的目标不是重新展开所有历史讨论细节，而是把当前项目已接受的方案、边界和实施顺序收敛为一份稳定、可长期引用的说明。后续 OpenSpec 变更与实现应以本文作为 problems 1 / 3 / 4 的持久 canonical reference。
 
+> 注：问题 1 的当前默认实现已经从更早的 shared / leader-owned 标量路径推进到 replicated active-lane scalar state。本文中若出现旧路径表述，均用于解释膨胀来源与演进背景；当前实现细节请以 `doc/IMPLEMENTATION_CODEMAP.md` 和 `openspec/specs/replicated-scalar-state/spec.md` 为准。
+
 ## 1. 当前目标
 
 当前阶段的重点不是继续做“更多指令先跑通”，而是提升 **Ventus ELF -> PTX lowering 质量**：
@@ -209,11 +211,11 @@ problem 2: address specialization
 
 ### 8.2 历史设计/参考文档
 
-以下文档仍保留，但其角色是**历史设计或背景参考**，不是当前主入口：
+以下文档已经归档，但其角色仍是**历史设计或背景参考**，不是当前主入口：
 
-- `doc/PTX_LEADER_CTX_REUSE_DESIGN.md`
-- `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`
-- `doc/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
+- `doc/archive/PTX_LEADER_CTX_REUSE_DESIGN.md`
+- `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`
+- `doc/archive/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
 
 它们可以在以下场景按需阅读：
 
@@ -223,9 +225,9 @@ problem 2: address specialization
 
 ## 9. 归档约束
 
-当新的主提案和后续实现/导航真正稳定后：
+当前已执行的归档约束：
 
-- 被本文完全取代的 problem 1 / 3 / 4 相关旧 PTX 设计稿应移入 `doc/archive/`
+- 被本文完全取代的 problem 1 / 3 / 4 相关旧 PTX 设计稿已移入 `doc/archive/`
 - `doc/PTX_LOWERING_REDUCTION_PLAN.md` 保持在 `doc/`
 
 保留 `doc/PTX_LOWERING_REDUCTION_PLAN.md` 的原因是：

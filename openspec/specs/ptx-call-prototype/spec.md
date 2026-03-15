@@ -14,19 +14,23 @@ When emitting a multi-function PTX module, the emitter SHALL declare a call prot
 - **WHEN** the PTX module is consumed by CUDA JIT (`cuModuleLoadDataEx`/ptxas)
 - **THEN** the module is accepted without `requires call prototype` or `Unknown symbol` errors for `A`
 
-### Requirement: Prototype signature must match emitted helper definition
-Each declared helper prototype MUST use the exact same parameter list and types as the corresponding emitted helper `.func` definition.
+### Requirement: Prototype signature must match emitted helper definition under the new value ABI
+Each declared helper prototype MUST use the exact same parameter list and types as the corresponding emitted helper `.func` definition after the direct-call value ABI is adopted.
 
-#### Scenario: Call argument list remains ABI-compatible
-- **GIVEN** helper calls pass through `elf_base`, `heap_base`, `wctx_ptr`, `lds_ptr`, `knl_vaddr`, `pds_base_vaddr`, `pds_size_per_thread`, `warp_id`, `warps_per_block`
-- **AND GIVEN** vector-context mode additionally passes `vctx_base`
-- **WHEN** PTX is emitted and assembled
-- **THEN** each call target prototype and definition share identical signature shape
+For the new helper ABI, the prototype/definition signature MUST track the current value-ABI state layering rather than the legacy fixed argument list built around `wctx_ptr`, `lds_ptr`, and optional `vctx_base`.
 
-### Requirement: Multi-function PTX emission no longer depends on definition order for call resolution
-The multi-function PTX emission flow SHALL remain functionally equivalent for call lowering, while call target resolution is made order-independent through explicit prototypes.
+#### Scenario: Helper prototype follows the new value ABI shape
+- **GIVEN** a translated module emits helper `.func` definitions using the new value ABI layering for mutable call state, read-only machine context, and runtime environment
+- **WHEN** the PTX module emits forward-call helper prototypes
+- **THEN** each helper prototype and helper definition share the same new ABI signature shape
+- **AND THEN** prototype emission does not continue to require the legacy `elf_base ... vctx_base` parameter list
 
-#### Scenario: Existing call lowering still works after prototype addition
-- **GIVEN** a module with direct calls to emitted helper functions
-- **WHEN** the module is emitted with prototype declarations
-- **THEN** call instructions still target the same helper symbol names and runtime behavior is unchanged
+### Requirement: Prototype-based forward-call validity SHALL remain after ABI migration
+The move from the legacy helper ABI to the new value ABI MUST NOT reintroduce forward-call ordering dependence.
+
+#### Scenario: Forward helper call still assembles after ABI migration
+- **GIVEN** helper `A` is called before its definition appears in the emitted PTX text
+- **AND GIVEN** helper `A` now uses the new value ABI parameter layout
+- **WHEN** the PTX module is assembled or JIT-loaded
+- **THEN** the module is accepted without prototype-related call resolution errors
+- **AND THEN** the helper call targets the new ABI-compatible prototype rather than a stale legacy one

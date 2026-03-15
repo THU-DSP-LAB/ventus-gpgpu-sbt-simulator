@@ -4,12 +4,12 @@
 
 - `doc/IMPLEMENTATION_CODEMAP.md`
 - `doc/PTX_LOWERING_REDUCTION_PLAN.md`
-- `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`
+- `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`
 - `sbt/ptx_emit.cpp`
 
 即可依据本文理解并实施新的方案。
 
-本文讨论的是 **PTX emitter 中 owner / active-mask / owner predicate 的管理方式**。它与 `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md` 中的 direct-call `value_blob` ABI 设计强耦合：若后者的 `x-reg canonical = leader PTX regs` 与 structured divergence 协议发生变化，本文也必须同步调整。
+本文讨论的是 **PTX emitter 中 owner / active-mask / owner predicate 的管理方式**。它与 `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md` 中的 direct-call `value_blob` ABI 设计强耦合：若后者的 `x-reg canonical = leader PTX regs` 与 structured divergence 协议发生变化，本文也必须同步调整。
 
 ## 1. 设计目标
 
@@ -110,7 +110,7 @@ basic block 仍然保留，但只作为：
 
 `owner_lane` 表示当前 `x-state` 的 canonical owner 身份。
 
-它的来源与维护不由问题 3 单独决定，而是依赖 `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md` 已冻结的约束：
+它的来源与维护不由问题 3 单独决定，而是依赖 `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md` 已冻结的约束：
 
 - direct call 边界通过 `Mutable CallState` 显式传递 `leader_lane`
 - structured divergence 中允许 path-local owner
@@ -349,7 +349,7 @@ basic block 仍然保留，但在本方案里：
 
 ## 9. 与 `value_blob` 设计的兼容关系
 
-本文方案与 `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md` 的兼容点如下：
+本文方案与 `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md` 的兼容点如下：
 
 1. `owner_lane` 与其 `leader_lane` 字段一一对应；
 2. `active mask` 不入 blob，而是按 use 点 `activemask` 读取；
@@ -374,7 +374,7 @@ basic block 仍然保留，但在本方案里：
 
 这些内容由：
 
-- `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`
+- `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`
 - 以及后续具体实现设计
 
 共同定义。

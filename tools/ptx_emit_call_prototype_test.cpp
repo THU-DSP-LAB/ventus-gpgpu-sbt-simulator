@@ -120,6 +120,10 @@ int main() {
           "mutable-state ABI must not predicate st.param");
   require(ptx.find("@%p0 ld.param.u32") == std::string::npos,
           "mutable-state ABI must not predicate ld.param");
+  require(ptx.find("shfl.sync.idx.b32 %r31, %x1, %r2, 0x1f, %r1;") == std::string::npos,
+          "replicated scalar-state call ABI must not broadcast xreg payload from the leader");
+  require(ptx.find("@%p0 mov.u32 %x1") == std::string::npos,
+          "replicated scalar-state call setup should not leave x1 in leader-only form");
 
   std::cout << "ok ptx helper call prototype\n";
   return 0;

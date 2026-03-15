@@ -26,10 +26,6 @@ struct Options final {
   // Bytes reserved for Ventus local/shared segment in dynamic shared memory.
   uint32_t lds_bytes = 32u * 1024u;
 
-  // Execute scalar (x-reg) instructions only on the active-lane leader and store x-reg state once per warp.
-  // This matches the "per-warp scalar regfile in shared" model and avoids redundant shared traffic.
-  bool scalar_exec_leader_only = true;
-
   bool include_comments = true;
 };
 

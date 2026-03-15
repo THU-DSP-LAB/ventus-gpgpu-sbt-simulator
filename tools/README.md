@@ -9,7 +9,7 @@
 - `gen_spike_encoding_subset.cpp`：根据 `data/spike_want.txt` 生成 Spike 子集头
 - `regext_bundle_test.cpp`：`regext/regexti` bundling 回归测试
 - `ptx_emit_call_prototype_test.cpp`：PTX helper 前向调用 prototype 回归测试
-- `ptx_emit_leader_lane_abi_test.cpp`：leader-lane scalar state / value ABI / divergence shim 回归测试
+- `ptx_emit_leader_lane_abi_test.cpp`：replicated scalar-state / value ABI / divergence 回归测试（文件名沿用历史命名）
 - `regress.sh`：统一回归入口（聚合 smoke/gate/端到端；默认临时工作目录执行并自动清理，可用参数覆盖）
   - 端到端阶段会强制使用当前树的 `build/sbt_ptx` 作为 `GPU_SBT_PTX`
 - `rodinia_ptx_smoke.sh`：Rodinia compile-first smoke（PTX + ptxas）

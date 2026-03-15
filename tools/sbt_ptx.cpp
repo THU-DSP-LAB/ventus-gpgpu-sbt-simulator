@@ -221,7 +221,6 @@ struct CacheKey final {
   bool require_known = false;
   bool bundle_regext = true;
   bool include_comments = true;
-  bool scalar_leader_only = false;
   std::string exe_abs;
   long long exe_time = 0;
 };
@@ -241,7 +240,6 @@ static std::string render_cache_meta(const CacheKey &k) {
   o << "require_known=" << (k.require_known ? 1 : 0) << "\n";
   o << "bundle_regext=" << (k.bundle_regext ? 1 : 0) << "\n";
   o << "include_comments=" << (k.include_comments ? 1 : 0) << "\n";
-  o << "scalar_leader_only=" << (k.scalar_leader_only ? 1 : 0) << "\n";
   o << "exe_abs=" << k.exe_abs << "\n";
   o << "exe_time=" << k.exe_time << "\n";
   return o.str();
@@ -290,7 +288,7 @@ static bool cache_meta_matches(const CacheKey &k, const std::string &meta) {
 
   return eqs("elf_abs", k.elf_abs) && eql("elf_time", k.elf_time) && eqs("func", k.func) && eqs("out_abs", k.out_abs.string()) && eqi("sm", k.sm) &&
          eqi("require_known", k.require_known ? 1 : 0) && eqi("bundle_regext", k.bundle_regext ? 1 : 0) && eqi("include_comments", k.include_comments ? 1 : 0) &&
-         eqi("scalar_leader_only", k.scalar_leader_only ? 1 : 0) && eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
+         eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
 }
 
 } // namespace
@@ -361,7 +359,6 @@ int main(int argc, char **argv) {
     key.require_known = require_known;
     key.bundle_regext = bundle_regext;
     key.include_comments = include_comments;
-    key.scalar_leader_only = env_bool("GPU_SBT_SCALAR_LEADER_ONLY", /*default_value=*/true);
     if (auto exe = self_exe_path()) {
       key.exe_abs = fs::absolute(*exe).string();
       key.exe_time = file_time_token(*exe);
@@ -396,7 +393,6 @@ int main(int argc, char **argv) {
               j << ",\"func\":\"" << json_escape(key.func) << "\"";
               j << ",\"out\":\"" << json_escape(key.out_abs.string()) << "\"";
               j << ",\"sm\":" << key.sm;
-              j << ",\"scalar_leader_only\":" << (key.scalar_leader_only ? "true" : "false");
               j << ",\"cache_hit\":true";
               j << ",\"t_total_ms\":" << t_total_ms;
               j << "}";
@@ -460,7 +456,6 @@ int main(int argc, char **argv) {
     sbt::ptx::Options popt;
     popt.sm = sm;
     popt.include_comments = include_comments;
-    popt.scalar_exec_leader_only = env_bool("GPU_SBT_SCALAR_LEADER_ONLY", /*default_value=*/true);
 
     auto build_cfg_for = [&](const FuncRange &fr, const std::string &name) -> sbt::cfg::FunctionCfg {
       if (fr.start < text.vaddr || fr.end > text_end || fr.end <= fr.start) {
@@ -665,7 +660,6 @@ int main(int argc, char **argv) {
       j << ",\"func\":\"" << json_escape(key.func) << "\"";
       j << ",\"out\":\"" << json_escape(key.out_abs.string()) << "\"";
       j << ",\"sm\":" << key.sm;
-      j << ",\"scalar_leader_only\":" << (key.scalar_leader_only ? "true" : "false");
       j << ",\"cache_hit\":false";
       j << ",\"t_total_ms\":" << t_total_ms;
       j << ",\"t_work_ms\":" << t_work_ms;

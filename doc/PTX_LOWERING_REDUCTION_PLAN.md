@@ -4,6 +4,8 @@
 
 注意：本文讨论的是 **PTX lowering 质量**，不是 `sbt_ptx` 自身的运行时开销。后者属于“翻译器执行性能”，不在本文主目标内。
 
+> 注：problems 1 / 3 / 4 的当前实现已经切换到 replicated active-lane scalar state。本文中涉及“leader-only canonical scalar state / full-`x` broadcast”的段落，主要作为历史膨胀来源与优化演进背景保留；当前仍活跃且未被主提案取代的重点是 problem 2（地址空间专门化）。
+
 ## 1. 背景需求
 
 当前仓库已经完成：
@@ -21,8 +23,10 @@
 约束与边界：
 
 - 不引入 silent fallback，不靠“跑起来就行”的降级路径隐藏问题；
-- 仍以当前原型期语义为准，尤其是标量 leader-only 语义、数值地址空间映射、PDS 语义与 direct call 支持范围；
+- 仍以当前原型期语义为准；其中标量主线已切到 replicated active-lane scalar state，数值地址空间映射、PDS 语义与 direct call 支持范围保持不变；
 - 优化优先顺序以“减少 PTX 指令条数”和“避免明显冗余模板”为主，不以微小 peephole 为主。
+
+> 注：本文件的若干问题分解与“leader-only / shared regfile”表述描述的是历史膨胀来源与演进路径，不再等同于当前 `sbt/ptx_emit.cpp` 的默认实现口径。当前主线语义请以 `doc/IMPLEMENTATION_CODEMAP.md` 与 OpenSpec change `ptx-replicated-scalar-state` 为准。
 
 ## 2. 当前最主要的 4 个膨胀源
 
@@ -87,7 +91,7 @@ bar.warp.sync %r1;
 - 大幅减少 `st.shared.u32`
 - 大幅减少 `bar.warp.sync`
 
-这是当前最核心、收益最大的 PTX 缩减方向。完整可实施设计与 direct call / structured divergence 的耦合约束，见 `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`。
+这是当前最核心、收益最大的 PTX 缩减方向。完整可实施设计与 direct call / structured divergence 的耦合约束，见 `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`。
 
 ### 2.2 问题 2：标量/向量访存大量走通用数值地址映射模板
 
@@ -193,7 +197,7 @@ setp.eq.u32 %p0, %r0, %r2;
 - 需要 owner-only 执行的 lowering，在 use 点现算 owner predicate
 - 当前已知的标量条件分支 `beq/bne/blt/bge/bltu/bgeu` 使用 `bra.uni`，不属于 owner-predicate use
 
-完整可实施设计见：`doc/PTX_LEADER_CTX_REUSE_DESIGN.md`
+完整可实施设计见：`doc/archive/PTX_LEADER_CTX_REUSE_DESIGN.md`
 
 ##### 进阶版
 

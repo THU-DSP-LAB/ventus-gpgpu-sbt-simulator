@@ -62,12 +62,12 @@
   - 关键语义约定（当前主线）：
     - `setrpc/join/vsetvli`：结构化翻译下视为 no-op（主要用于 Stage2 verify）。
     - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
-    - 标量（x-reg）canonical state：驻留在当前 `leader_lane` 持有的 PTX scalar regs（`%x<256>`），不再以 per-warp shared `WarpCtx.x[]` 作为主线真值。
-    - 持久 leader metadata：只保留 `leader_lane`；`activemask` 与 leader predicate 在 use point 派生。
-    - 标量副作用执行策略：当前主线仍是 leader-only；`Options::scalar_exec_leader_only=false` 仅保留兼容入口，不再是主要验证路径。
-    - 标量条件分支（`beq/bne/blt/bge/bltu/bgeu`）：保持 `bra.uni`，但会先经由 `shfl.sync.idx` 从 leader lane 广播比较操作数。
-    - all-lane scalar consumer：统一经由 leader-to-all-lane broadcast helper 消费 `x-reg`，覆盖 `vmv_v_x/vmv_s_x/vfmv_v_f`、`vmerge_vxm/vfmerge_vfm`、`vadd_vx` 及同类 `vx` 路径。
-    - structured divergence：`vbranch` 前先做 full-`x` broadcast，路径入口通过 edge shim 建立 path-local leader，`join` 前驱边通过 edge shim 做 full-`x` reconverge，`join` 块入口重新选择 leader。
+    - 标量（x-reg）live state：采用 replicated active-lane 表示，任何仍然 live 的 `x-reg` / scalar CSR 在当前 active lanes 上都应保持相等。
+    - leader 只在真正需要 single-lane 语义时按需选择：当前主线把 scalar store 等 externally side-effecting 指令降到 leader-only；普通 scalar ALU / branch / CSR read / load 直接 all-lane 执行。
+    - 标量条件分支（`beq/bne/blt/bge/bltu/bgeu`）：保持 `bra.uni`，但直接读取 replicated `%x` 比较，不再做 leader-to-all-lane broadcast。
+    - fixed-lane-sensitive：`vmv.x.s` 保留 architectural lane 0 语义；若 lane 0 不在当前 active mask 中则显式 `trap`，否则把 lane 0 结果 `shfl.sync` 复制回目标 `%x`。
+    - all-lane scalar consumer：直接从 replicated `%x` 取值，覆盖 `vmv_v_x/vmv_s_x/vfmv_v_f`、`vmerge_vxm/vfmerge_vfm`、`vadd_vx` 及同类 `vx` 路径。
+    - structured divergence：`vbranch/join` 不再把整份 `x-reg` 文件作为控制流 payload；路径入口与 join 前驱不再插入 full-`x` shim，只有真正的 leader-only scalar side effect 才会在 use point 懒选择 leader。
     - 标量浮点（RV32F, Zfinx 模型）：f32 以 raw bits 存在 X 寄存器；支持 `flw/fsw`、`fadd_s` 等标量 F 指令子集；`rm=DYN` 按 RNE 处理（CSR.frm 未建模），`rm=RMM/Reserved` fail-fast。
     - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（shared / ELF backing / heap backing），对应 `Options::{shared_base_vaddr,elf_base_vaddr,heap_base_vaddr}`。
     - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
@@ -79,7 +79,7 @@
     - 一小部分 builtin 仍在 emitter 内按名字内联（OpenCL id/query + 少量 helper）。
     - 其它 direct call（`jal ra, imm`）会翻译为 PTX `call.uni`，并要求被调函数也被翻译为 `.func`（由 `tools/sbt_ptx.cpp` 的 call graph 闭包收集保证）。
     - helper ABI 已切换到 `mutable_state_blob in/out + machine_ctx_blob in + runtime_env_blob in` 三层 value ABI；`vctx` 不再是主线参数。
-    - mutable call state 当前显式携带 `leader_lane`、完整 logical `x-reg`、完整 logical `v-reg`；helper 入口会先恢复 `leader_lane` 与 canonical scalar state，再执行任何 Ventus 标量路径。
+    - mutable call state 当前显式携带 `leader_lane`、完整 logical `x-reg`、完整 logical `v-reg`；helper 入口会恢复 runtime/machine/mutable blobs，但 call marshal 不再为了 `x-reg` payload 额外做 leader broadcast。
     - `emit_module` 会先在模块头为所有 helper `.func` 发射 prototype，再发射函数体，避免前向调用触发 `requires call prototype` / `Unknown symbol`。
     - 非 `ret` 形态 `jalr` 仍属于 unsupported（原型期 fail-fast）。
 
@@ -99,7 +99,7 @@
   - 环境变量（行为开关/调试）：见 `doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md` 与 `tools/sbt_ptx.cpp`。
   - 回归测试：
     - `build/ptx_emit_call_prototype_test`：覆盖“helper 前向调用 + prototype 先声明 + 新 value ABI prototype/definition 同步”。
-    - `build/ptx_emit_leader_lane_abi_test`：覆盖 leader-lane scalar state、scalar branch broadcast、direct-call value ABI、`vbranch/join` shim。
+    - `build/ptx_emit_leader_lane_abi_test`：覆盖 replicated scalar-state、fixed-lane `vmv.x.s`、direct-call value ABI、lazy leader selection 与 `vbranch/join` 无 full-`x` shim 的主线合同（target 名称沿用历史命名）。
 
 - `tools/rodinia_ptx_smoke.sh`
   - 固定列表：Rodinia 11 个 kernel（compile-first），生成 PTX 并用 `ptxas` 编译。

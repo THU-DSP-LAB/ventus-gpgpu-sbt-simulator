@@ -108,15 +108,17 @@ tools/regress.sh --preset quick --keep-workdir
 # ptxas 可编译性验证
 ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
-# 说明：当前 PTX lowering 主线采用 leader-lane scalar state：
-# - 函数体内 canonical x-reg 驻留在 leader lane 的 PTX scalar regs；
-# - 标量条件分支在 `bra.uni` 前先做 leader-to-all-lane broadcast；
-# - 可分歧控制流仍由 `vbranch + setrpc/join` 路径处理，且在路径入口 / join 前驱边插入显式 leader/state 协议。
+# 说明：当前 PTX lowering 主线采用 replicated active-lane scalar state：
+# - live `x-reg` / scalar CSR 状态在当前 active lanes 上保持复制且相等；
+# - 标量条件分支继续使用 `bra.uni`，但直接读取 replicated `%x`，不再做 leader broadcast；
+# - 普通 scalar load 走 all-lane，scalar store 按需从当前 active mask 懒选择 leader；
+# - `vmv.x.s` 保留固定 lane 0 语义，并把结果显式复制回 replicated `%x`；
+# - `vbranch/join` 不再把整份 `%x` 当作控制流 payload，也不再插入 full-`x` join shim。
 
 # 多函数 direct call 原型声明回归（前向调用）
 ./build/ptx_emit_call_prototype_test
 
-# leader-lane scalar state / value ABI / divergence shim 回归
+# replicated scalar-state / value ABI / divergence 回归（target 名称暂沿用历史命名）
 ./build/ptx_emit_leader_lane_abi_test
 
 # Rodinia compile-first smoke（11 kernels）
@@ -186,7 +188,7 @@ python3 tools/ventus_regression_profile.py --clean
 - PTX lowering 指令缩减计划（仍保留为活跃专项文档，主要因为问题 2 尚未被主提案取代）：`doc/PTX_LOWERING_REDUCTION_PLAN.md`
 - Ventus LLVM 对 `vbranch` / `join` 下 SGPR/VGPR 有效性的源码分析参考：`doc/ventus-divergence-sgpr-analysis.md`
 - PTX call 边界冷状态是否会被 `ptxas` 消去的实验背景：`lab/06_ptx_call_boundary_dead_state/README.md`
-- 历史 PTX 设计/讨论参考：`doc/PTX_LEADER_CTX_REUSE_DESIGN.md`、`doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`、`doc/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
+- 历史 PTX 设计/讨论参考：`doc/archive/PTX_LEADER_CTX_REUSE_DESIGN.md`、`doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`、`doc/archive/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
 - 工具清单与分层：`tools/README.md`
 - 历史阶段快照：`doc/archive/`
 - `lab/` 与 `testcases/simple/` 均为历史归档，不再作为当前实现与回归基线

@@ -188,7 +188,7 @@ setp.eq.u32 %p0, %r0, %r2;
 - 凡实际消费 `%p0/%r1/%r2` 的 lowering 才属于 use
 - 当前已知的标量条件分支 `beq/bne/blt/bge/bltu/bgeu` 使用 `bra.uni`，不属于 `leader ctx use`
 
-完整可实施设计见：`doc/PTX_LEADER_CTX_REUSE_DESIGN.md`
+完整可实施设计见：`doc/archive/PTX_LEADER_CTX_REUSE_DESIGN.md`
 
 ##### 进阶版
 

@@ -16,7 +16,7 @@
 相关背景材料：
 - 缩减动机与问题定义：`doc/PTX_LOWERING_REDUCTION_PLAN.md`
 - 源码现状与调用链：`doc/IMPLEMENTATION_CODEMAP.md`
-- 讨论纪要：`doc/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
+- 讨论纪要：`doc/archive/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
 - 外部实验报告：`../sbtsim_lab/lab/05_ptx_direct_call_param_abi/EXPERIMENT_REPORT.md`
 
 ## 1. 目标
