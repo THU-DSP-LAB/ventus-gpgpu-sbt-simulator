@@ -11,4 +11,5 @@
 - `03_sbt_feasibility`：SBT 可行性分析与草稿
 - `04_instruction_decode`：早期解码设计记录
 - `05_ptx_direct_call_param_abi`：围绕 direct call 的 `vctx` vs `.param value ABI` 微基准实验
+- `06_ptx_call_boundary_dead_state`：围绕 call-boundary dead state 是否会被 `ptxas` 消去的实验背景与目标草案
 - `others`：外围调研记录

@@ -13,6 +13,8 @@
 
 - `doc/README.md`：本索引。
 - `doc/IMPROVEMENT_PROPOSALS.md`：当前实现的主要问题清单与“向通用化演进”的改进方案（不改代码，仅建议）。
+- `doc/PTX_XREG_QUALITY_REGRESSION_REPORT_2026-03-15.md`：`91bebb5` 相对 `3da36d6` 的 PTX / `ptxas` 质量回退评估，聚焦当前 `xreg` 主线问题。
+- `lab/06_ptx_call_boundary_dead_state/README.md`：围绕“仅在 PTX call 边界出现的冷状态是否会被 `ptxas` 消去”的实验背景与目标。
 
 历史阶段交接/实测快照已归档在 `doc/archive/`（用于回溯当时的“as-built”结论与日志路径）。
 
