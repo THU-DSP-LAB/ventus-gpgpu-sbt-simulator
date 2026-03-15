@@ -174,6 +174,10 @@ python3 tools/ventus_regression_profile.py --clean
 
 ## 文档与归档
 - 实现文档索引：`doc/README.md`
+- 当前 PTX lowering 主提案：`doc/PTX_LOWERING_MAIN_PROPOSAL.md`
+- PTX lowering 指令缩减计划（仍保留为活跃专项文档，主要因为问题 2 尚未被主提案取代）：`doc/PTX_LOWERING_REDUCTION_PLAN.md`
+- Ventus LLVM 对 `vbranch` / `join` 下 SGPR/VGPR 有效性的源码分析参考：`doc/ventus-divergence-sgpr-analysis.md`
+- 历史 PTX 设计/讨论参考：`doc/PTX_LEADER_CTX_REUSE_DESIGN.md`、`doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`、`doc/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
 - 工具清单与分层：`tools/README.md`
 - 历史阶段快照：`doc/archive/`
 - `lab/` 与 `testcases/simple/` 均为历史归档，不再作为当前实现与回归基线
