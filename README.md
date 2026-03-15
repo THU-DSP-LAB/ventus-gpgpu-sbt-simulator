@@ -77,6 +77,7 @@ tools/regress.sh --preset quick --keep-workdir
 ```
 
 `tools/regress.sh` 默认会切换到临时目录执行，并在退出后自动删除该目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。
+端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。
 
 ## 阶段 1/2：解码与 CFG 验证
 ```bash
@@ -107,12 +108,16 @@ tools/regress.sh --preset quick --keep-workdir
 # ptxas 可编译性验证
 ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
-# 说明：Ventus 标量条件分支（beq/bne/blt/bge/bltu/bgeu）
-# 在 PTX lowering 中按 warp-uniform 语义使用 `bra.uni`；
-# 可分歧控制流仍由 `vbranch + setrpc/join` 路径处理。
+# 说明：当前 PTX lowering 主线采用 leader-lane scalar state：
+# - 函数体内 canonical x-reg 驻留在 leader lane 的 PTX scalar regs；
+# - 标量条件分支在 `bra.uni` 前先做 leader-to-all-lane broadcast；
+# - 可分歧控制流仍由 `vbranch + setrpc/join` 路径处理，且在路径入口 / join 前驱边插入显式 leader/state 协议。
 
 # 多函数 direct call 原型声明回归（前向调用）
 ./build/ptx_emit_call_prototype_test
+
+# leader-lane scalar state / value ABI / divergence shim 回归
+./build/ptx_emit_leader_lane_abi_test
 
 # Rodinia compile-first smoke（11 kernels）
 ARCH=sm_75 tools/rodinia_ptx_smoke.sh
@@ -145,6 +150,8 @@ cd ../rodinia/opencl/bfs
 ./run
 ```
 
+说明：若要让端到端运行验证当前工作树中的翻译器实现，应显式导出 `GPU_SBT_PTX=$PWD/build/sbt_ptx`；`tools/regress.sh` 与 `tools/ventus_regression_profile.py` 在检测到该二进制存在时会自动这样做。
+
 ## 阶段 5：指令覆盖 gate + Spike-vs-PTX 微测例
 ```bash
 source ../env.sh
@@ -171,6 +178,7 @@ source ../env.sh
 export VENTUS_BACKEND=ptx
 python3 tools/ventus_regression_profile.py --clean
 ```
+该脚本会优先使用当前仓库的 `build/sbt_ptx`；如需覆盖，可自行设置 `GPU_SBT_PTX=/path/to/sbt_ptx`。
 
 ## 文档与归档
 - 实现文档索引：`doc/README.md`

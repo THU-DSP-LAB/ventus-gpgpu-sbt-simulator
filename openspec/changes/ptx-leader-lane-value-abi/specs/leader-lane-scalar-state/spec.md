@@ -77,24 +77,12 @@ This capability SHALL assume the accepted compiler contract for the current inpu
 - values that remain scalar (`x-reg` semantic) across `join` are already warp-uniform, and
 - values that need lane-varying semantics across `join` are not kept as scalar live-out `x-reg` state
 
-If translation later detects an input that violates this assumption, the implementation MAY fail fast instead of silently degrading.
+This change does NOT require the implementation to prove that post-`join` scalar uses satisfy that contract.
+
+The contract remains primarily a compiler-side assumption for the current input domain. Implementations MAY add best-effort diagnostics for obviously unsupported shapes, but those diagnostics are optional and MUST NOT be treated as a complete legality proof.
 
 #### Scenario: Live scalar value after join is expected to be uniform
 - **GIVEN** a scalar value is read after a structured `join`
 - **WHEN** that value remains represented as Ventus scalar state
 - **THEN** the implementation is allowed to assume the value is already uniform across reconverged lanes
 - **AND THEN** it does not need to perform a lane-wise semantic merge at the `join`
-
-### Requirement: Translation SHALL fail fast when join-side scalar legality cannot be justified
-If the implementation cannot conservatively justify the legality of leader/scalar-state placement around a structured `join`, it MUST fail fast instead of silently emitting PTX that assumes the current uniformity contract or predecessor placement is valid.
-
-This includes at least cases where the implementation cannot conservatively determine:
-- which predecessor edges require join-side scalar-state reconvergence
-- whether a post-`join` scalar use still satisfies the accepted uniformity contract
-- where shared-join or nested-join protocol actions must be inserted to preserve one current leader and one current scalar state
-
-#### Scenario: Unsupported join-side scalar shape is rejected explicitly
-- **GIVEN** a translated function contains a structured divergence shape whose join-side scalar-state legality cannot be conservatively established
-- **WHEN** the emitter reaches the point where it would otherwise assume a valid reconverged scalar state
-- **THEN** translation stops with an explicit failure
-- **AND THEN** the implementation does not silently fall back to emitting PTX under an unjustified scalar-state assumption

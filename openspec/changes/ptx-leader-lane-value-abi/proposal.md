@@ -16,7 +16,7 @@
 进一步审查后，又确认了两个必须纳入正式 change 的高风险边界：
 
 - `all-lane scalar consumer` 不能只靠“实现时记得修”来覆盖；必须形成一份从当前 emitter 反推出的 use-site 闭表，并要求这些路径统一经由显式 broadcast helper 消费标量值
-- `join` 不做 `x-state` 语义 merge 的前提虽然成立，但必须把 shared-join / nested-join 形态与 fail-fast 边界一起写清，不能只停留在“依赖 uniformity contract”的抽象表述
+- `join` 不做 `x-state` 语义 merge 的前提虽然成立，但必须把 shared-join / nested-join 形态与结构协议 fail-fast 边界一起写清；post-`join` 标量 uniformity 仍主要依赖编译器 contract，而不是在本 change 中补静态证明
 
 因此，需要一个新的、可独立阅读和实施的 OpenSpec change，把 leader-lane 标量 canonical state、direct-call value ABI、leader/use-point derivation、以及标量分支广播修补统一纳入一份自洽方案。该 change 后续产生的 specs/design 应成为实施本改进的主入口，而不是继续依赖旧的 PTX 设计文档拼接背景。
 
@@ -30,7 +30,7 @@
 - 定义 structured divergence 下的 leader 迁移协议，既覆盖 `vbranch` 入口时的 branch-entry `x-state` 交接，也覆盖 `join` 前驱边尾部的路径状态一致化
 - 保留 leader-only 标量执行作为第一版主线，对所有 all-lane 消费标量值的 lowering 明确采用 leader-to-all-lane 广播；其中标量条件分支必须在 `bra.uni` 前完成源操作数广播
 - 把当前 emitter 中的 all-lane scalar consumer 做成显式 inventory，并要求这些路径统一走 broadcast 入口，而不是继续直接读取“本地已一致”的标量值
-- 把 shared-join / nested-join 场景下的 leader / scalar-state 协议、以及无法证明 uniformity / predecessor 放置正确性时的 fail-fast 规则，写成规范性要求
+- 把 shared-join / nested-join 场景下的 leader / scalar-state 协议、以及 predecessor 放置无法可靠确定时的 fail-fast 规则，写成规范性要求
 - 在 OpenSpec artifacts 中完整写清当前选择的语义边界、第一版物理实现选择、为何暂不引入 all-lane 标量执行，以及哪些点是未来可以替换的实现策略
 
 本 change 不包含地址空间专门化问题；普通 `lw/sw/lb/lh/...` 的地址分类优化不在本次范围内。

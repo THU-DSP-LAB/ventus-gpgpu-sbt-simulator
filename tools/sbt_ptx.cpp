@@ -404,7 +404,7 @@ int main(int argc, char **argv) {
             }
             // Keep stdout compatible with existing driver usage.
             std::cout << "已生成 PTX: " << out_path << "\n";
-            std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(wctx) + warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
+            std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
             return 0;
           }
         }
@@ -675,7 +675,7 @@ int main(int argc, char **argv) {
     }
 
     std::cout << "已生成 PTX: " << out_path << "\n";
-    std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(wctx) + warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
+    std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
     return 0;
   } catch (const sbt::ptx::EmitError &e) {
     std::cerr << "PTX 生成失败: " << e.what() << "\n";

@@ -310,8 +310,9 @@ run_microtest_gate() {
 
 run_e2e_profile() {
   need_cmd python3
+  [[ -x "${BUILD_DIR}/sbt_ptx" ]] || die "missing current-tree sbt_ptx: ${BUILD_DIR}/sbt_ptx"
   run_step "end-to-end (tools/ventus_regression_profile.py)" \
-    python3 "${ROOT_DIR}/tools/ventus_regression_profile.py" \
+    env GPU_SBT_PTX="${BUILD_DIR}/sbt_ptx" python3 "${ROOT_DIR}/tools/ventus_regression_profile.py" \
       --ventus-root "${ROOT_DIR}/.." \
       --clean \
       --timeout-scale "${TIMEOUT_SCALE}"
@@ -319,6 +320,7 @@ run_e2e_profile() {
 
 run_e2e_ventus_env() {
   need_cmd python3
+  [[ -x "${BUILD_DIR}/sbt_ptx" ]] || die "missing current-tree sbt_ptx: ${BUILD_DIR}/sbt_ptx"
   local args=()
   if [[ -n "${JOBS}" ]]; then
     args+=("--jobs" "${JOBS}")
@@ -331,7 +333,7 @@ run_e2e_ventus_env() {
   # ventus-env runner uses -t for timeout scale
   (
     cd "${ventus_root}"
-    VENTUS_BACKEND="${VENTUS_BACKEND:-ptx}" python3 regression-test.py -t "${TIMEOUT_SCALE}" "${args[@]}"
+    GPU_SBT_PTX="${BUILD_DIR}/sbt_ptx" VENTUS_BACKEND="${VENTUS_BACKEND:-ptx}" python3 regression-test.py -t "${TIMEOUT_SCALE}" "${args[@]}"
   )
 }
 

@@ -100,18 +100,26 @@ int main() {
   const auto res = sbt::ptx::emit_module(entry_cfg, sym_by_addr, "kernel", funcs, ptx_name_by_addr, opt);
   const std::string &ptx = res.ptx;
 
-  const size_t call_pos = ptx.find("call.uni __sbt_fn_B");
+  const size_t call_pos = ptx.find(", __sbt_fn_B, (");
   require(call_pos != std::string::npos, "helper_a should call helper_b");
 
-  const size_t first_b_func = ptx.find(".func __sbt_fn_B(");
+  const size_t first_b_func = ptx.find(") __sbt_fn_B(");
   require(first_b_func != std::string::npos, "missing helper_b declaration/definition");
   require(first_b_func < call_pos, "helper_b prototype must appear before forward call");
 
-  require(count_substr(ptx, ".func __sbt_fn_B(") == 2, "helper_b should have prototype + definition");
-  require(ptx.find("    .param .u64 __sbt_arg_vctx_base\n);\n\n.func __sbt_fn_A(") != std::string::npos,
-          "prototype signature should include vctx parameter");
-  require(ptx.find("    .param .u64 __sbt_arg_vctx_base\n)\n{\n") != std::string::npos,
-          "definition signature should include vctx parameter");
+  require(count_substr(ptx, ") __sbt_fn_B(") == 2, "helper_b should have prototype + definition");
+  require(ptx.find("    .param .align 4 .b8 __sbt_mutable_state_in[") != std::string::npos,
+          "prototype signature should include mutable-state input blob");
+  require(ptx.find("    .param .align 4 .b8 __sbt_machine_ctx_in[") != std::string::npos,
+          "prototype signature should include machine-context blob");
+  require(ptx.find("    .param .align 8 .b8 __sbt_runtime_env_in[") != std::string::npos,
+          "prototype signature should include runtime-env blob");
+  require(ptx.find("    .param .u64 __sbt_arg_vctx_base") == std::string::npos,
+          "legacy vctx parameter should be removed");
+  require(ptx.find("@%p0 st.param.u32") == std::string::npos,
+          "mutable-state ABI must not predicate st.param");
+  require(ptx.find("@%p0 ld.param.u32") == std::string::npos,
+          "mutable-state ABI must not predicate ld.param");
 
   std::cout << "ok ptx helper call prototype\n";
   return 0;

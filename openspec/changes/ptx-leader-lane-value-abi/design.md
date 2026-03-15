@@ -28,7 +28,7 @@
 - 让 structured divergence 的 leader / scalar-state 迁移协议闭合，覆盖 `vbranch` 入口、路径内部、`join` 前驱边与 `join` 后当前 leader 选择
 - 保持 leader-only 标量执行作为第一版主线；对 all-lane 消费标量值的 lowering，显式使用 leader-to-all-lane 广播
 - 把 all-lane scalar consumer 做成显式 inventory，并要求这些路径统一经由 broadcast helper，而不是分散地各自推断
-- 把 shared-join / nested-join 的边界与 fail-fast 条件写成显式 gate，而不是只靠实现阶段口头遵守
+- 把 shared-join / nested-join 的边界与结构协议 fail-fast 条件写成显式 gate，而不是只靠实现阶段口头遵守
 - 明确区分“语义约束”和“第一版保守物理实现”，避免后续优化被误解成改语义
 
 **Non-Goals:**
@@ -83,7 +83,7 @@
 - 若某个值跨过 `join` 后仍以 `x-reg` 语义存活，则它应当已经是 warp-uniform
 - 需要跨 `join` 携带 lane-varying 语义的值，不继续作为标量 live-out `x-reg` 状态存在
 
-第一版允许对违反该契约的输入 fail-fast，而不是引入静默降级。
+本 change 依赖该契约，但当前选择不实现“证明某个 post-`join` 标量 use 合法/不合法”的静态分析或 fail-fast。若未来需要覆盖更宽输入域，应由编译器侧或后续 change 重新定义这部分责任边界。
 
 **Alternatives considered:**
 - 继续以 shared `WarpCtx` 作为 canonical `x-reg` backing：拒绝。它是当前 PTX 膨胀的直接来源。
@@ -141,13 +141,12 @@ structured divergence 的规范性语义要求只有两条：
 
 换句话说，本设计虽然不做 lane-wise `x-state merge`，但也不允许把 shared-join / nested-join 情况简化成“每个 join 只会命中一次”的普通 if/else 心智模型。
 
-此外，第一版虽然接受 uniformity contract，但不能只把它当成注释性前提。实现必须把下面这些情况视为 fail-fast gate：
+此外，第一版虽然接受 uniformity contract，但当前只把“结构协议能否成立”作为 fail-fast gate，而不把 “post-`join` 标量 use 是否满足 uniformity contract” 作为必须实现的静态证明目标。实现必须把下面这些情况视为 fail-fast gate：
 
-- 无法证明某个跨 `join` 继续作为 `x-reg` 读取的值满足当前 uniformity contract
 - 无法可靠识别某个 structured `join` 的前驱边集合与插入位置
 - shared-join / nested-join 形态下，无法确定 predecessor-edge 协议与 `join` 后 leader 重选的放置点
 
-第一版不要求做完美静态分析；但不能在这些边界不清时继续生成“看起来能跑”的 PTX。
+换句话说，当前 change 明确放弃实现 join-side scalar legality 的完备或半完备静态证明；这部分仍主要依赖编译器 contract，而不是在 emitter 里补一套近似证明。
 
 **Alternatives considered:**
 - 只定义 `join` 前驱边协议，不定义 `vbranch` 入口 handoff：拒绝。这样当原 leader 不在某条路径中时，路径一开始就没有合法 scalar state。

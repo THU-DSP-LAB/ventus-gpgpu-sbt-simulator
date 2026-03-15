@@ -7,6 +7,7 @@
 #include <optional>
 #include <sstream>
 #include <string_view>
+#include <unordered_set>
 
 namespace sbt::ptx {
 namespace {
@@ -26,8 +27,28 @@ static std::string rd(int i) { return "%rd" + std::to_string(i); }
 static std::string p(int i) { return "%p" + std::to_string(i); }
 static std::string f(int i) { return "%f" + std::to_string(i); }
 static std::string v(int i) { return "%v" + std::to_string(i); }
+static std::string x(int i) { return "%x" + std::to_string(i); }
 static std::string u8(int i) { return "%ub" + std::to_string(i); }
 static std::string u16(int i) { return "%uh" + std::to_string(i); }
+
+static constexpr uint32_t kNumXRegs = 256u;
+static constexpr uint32_t kNumVRegs = 256u;
+static constexpr uint32_t kBlobWordBytes = 4u;
+static constexpr uint32_t kRuntimeEnvBytes = 16u;
+static constexpr uint32_t kMachineCtxBytes = 20u;
+static constexpr uint32_t kMutableLeaderOffset = 0u;
+static constexpr uint32_t kMutableXOffset = kMutableLeaderOffset + kBlobWordBytes;
+static constexpr uint32_t kMutableVOffset = kMutableXOffset + kNumXRegs * kBlobWordBytes;
+static constexpr uint32_t kMutableStateBytes = kMutableVOffset + kNumVRegs * kBlobWordBytes;
+static constexpr uint32_t kRuntimeElfOffset = 0u;
+static constexpr uint32_t kRuntimeHeapOffset = 8u;
+static constexpr uint32_t kMachineKnlOffset = 0u;
+static constexpr uint32_t kMachinePdsBaseOffset = 4u;
+static constexpr uint32_t kMachinePdsSizeOffset = 8u;
+static constexpr uint32_t kMachineWarpIdOffset = 12u;
+static constexpr uint32_t kMachineWarpsPerBlockOffset = 16u;
+
+static uint64_t edge_key(uint32_t src, uint32_t dst) { return (static_cast<uint64_t>(src) << 32) | static_cast<uint64_t>(dst); }
 
 static bool is_scalar_branch(std::string_view name) {
   return name == "beq" || name == "bne" || name == "blt" || name == "bge" || name == "bltu" || name == "bgeu";
@@ -90,23 +111,17 @@ EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::st
 
 namespace {
 
-static void emit_helper_func_signature(std::ostringstream &out, const std::string &ptx_name, bool need_vctx) {
-  out << ".func " << ptx_name << "(\n";
-  out << "    .param .u64 __sbt_arg_elf_base,\n";
-  out << "    .param .u64 __sbt_arg_heap_base,\n";
-  out << "    .param .u64 __sbt_arg_wctx_ptr,\n";
-  out << "    .param .u64 __sbt_arg_lds_ptr,\n";
-  out << "    .param .u32 __sbt_arg_knl_vaddr,\n";
-  out << "    .param .u32 __sbt_arg_pds_base_vaddr,\n";
-  out << "    .param .u32 __sbt_arg_pds_size_per_thread,\n";
-  out << "    .param .u32 __sbt_arg_warp_id,\n";
-  out << "    .param .u32 __sbt_arg_warps_per_block";
-  if (need_vctx) out << ",\n    .param .u64 __sbt_arg_vctx_base";
-  out << "\n)";
+static void emit_helper_func_signature(std::ostringstream &out, const std::string &ptx_name) {
+  out << ".func (\n";
+  out << "    .param .align 4 .b8 __sbt_mutable_state_out[" << kMutableStateBytes << "]\n";
+  out << ") " << ptx_name << "(\n";
+  out << "    .param .align 4 .b8 __sbt_mutable_state_in[" << kMutableStateBytes << "],\n";
+  out << "    .param .align 4 .b8 __sbt_machine_ctx_in[" << kMachineCtxBytes << "],\n";
+  out << "    .param .align 8 .b8 __sbt_runtime_env_in[" << kRuntimeEnvBytes << "]\n";
+  out << ")";
 }
 
 struct ModuleInfo final {
-  bool need_vctx = false;
   const std::unordered_map<uint32_t, std::string> *ptx_name_by_addr = nullptr;
 };
 
@@ -122,6 +137,10 @@ struct EmitCtx final {
   std::ostringstream out;
   int tmp_label_id = 0;
   bool emitted_fp_dyn_note = false;
+  bool control_protocol_ready = false;
+  std::unordered_set<uint32_t> join_blocks;
+  std::unordered_map<uint32_t, std::vector<std::string>> block_entry_labels;
+  std::unordered_map<uint64_t, std::string> edge_labels;
 
   EmitCtx(const sbt::cfg::FunctionCfg &cfg_, const std::unordered_map<uint32_t, std::string> &sym_by_addr_,
           const std::string &func_name_, const std::string &ptx_name_, const Options &opt_, const ModuleInfo &mod_, bool is_entry_)
@@ -129,15 +148,14 @@ struct EmitCtx final {
 
   // Register assignment conventions (must match PTX declarations).
   // %r0: laneid
-  // %r1: activemask
-  // %r2: leader lane index
+  // %r1: use-point activemask scratch
+  // %r2: persistent leader_lane
   // %p0: is_leader
   // %rd0: elf_base (global)
   // %rd1: heap_base (global)
   // %rd2: shmem_base (shared)
-  // %rd3: wctx_ptr (shared)
+  // %rd3: reserved (legacy wctx_ptr slot)
   // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
-  // %rd6: per-thread v-reg context base (local) for cross-`.func` calls
   // %r26: pds_bitmap_base_vaddr (u32 Ventus numeric address)
   // %r27: pds_pool_num_blocks (u32)
   // %r28: pds_base_vaddr (u32 Ventus numeric address)
@@ -153,18 +171,30 @@ struct EmitCtx final {
     return label_bb(it->second);
   }
 
+  uint32_t block_start_of_pc(uint32_t pc) const {
+    auto it = cfg.inst_pc_to_block.find(pc);
+    if (it == cfg.inst_pc_to_block.end()) throw EmitError("invalid.cfg", func_name, pc, "pc not mapped to block");
+    return it->second;
+  }
+
   void emit_line(const std::string &s) { out << "  " << s << "\n"; }
   void emit_raw(const std::string &s) { out << s; }
   void emit_label(const std::string &name) { out << name << ":\n"; }
 
-  void emit_block_preamble() {
-    // activemask + leader predicate (active-lane leader).
-    emit_line("activemask.b32 " + r(1) + ";");
+  void emit_read_activemask(const std::string &dst_r) { emit_line("activemask.b32 " + dst_r + ";"); }
+
+  void emit_refresh_leader_predicate() { emit_line("setp.eq.u32 " + p(0) + ", " + r(0) + ", " + r(2) + ";"); }
+
+  void emit_select_leader_from_active_mask() {
+    emit_read_activemask(r(1));
     emit_line("bfind.u32 " + r(2) + ", " + r(1) + ";");
-    emit_line("setp.eq.u32 " + p(0) + ", " + r(0) + ", " + r(2) + ";");
+    emit_refresh_leader_predicate();
   }
 
-  void emit_warp_sync() { emit_line("bar.warp.sync " + r(1) + ";"); }
+  void emit_warp_sync() {
+    emit_read_activemask(r(1));
+    emit_line("bar.warp.sync " + r(1) + ";");
+  }
 
   void emit_compute_csr_pds_u32(const std::string &dst_r, bool scalar) {
     const std::string pre = scalar ? scalar_prefix() : "";
@@ -300,29 +330,81 @@ struct EmitCtx final {
     (void)pc_for_err;
   }
 
-  void emit_vctx_store_all(uint32_t pc_for_err) {
-    require(mod.need_vctx, EmitError("invalid.vctx", func_name, pc_for_err, "need_vctx=false"));
-    for (int i = 0; i < 256; ++i) {
-      const uint32_t off = static_cast<uint32_t>(i) * 4u;
-      emit_line("st.local.u32 [" + rd(6) + "+" + std::to_string(off) + "], " + v(i) + ";");
+  void prepare_control_protocol() {
+    if (control_protocol_ready) return;
+    control_protocol_ready = true;
+    for (const auto &bb : cfg.blocks) {
+      if (bb.inst_indices.empty()) continue;
+      const auto &first = cfg.insts[bb.inst_indices.front()].inst;
+      for (size_t idx : bb.inst_indices) {
+        const auto &inst = cfg.insts[idx].inst;
+        if (inst.name == "join" && idx != bb.inst_indices.front()) {
+          throw EmitError("unsupported.join", func_name, inst.pc, "join must start a basic block");
+        }
+      }
+      if (first.name == "join") join_blocks.insert(bb.start);
+    }
+
+    for (const auto &bb : cfg.blocks) {
+      if (bb.inst_indices.empty()) continue;
+      const auto &last = cfg.insts[bb.inst_indices.back()];
+      if (is_vector_branch(last.inst.name) && last.inst.imm_kind == sbt::ImmKind::B13) {
+        const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(last.inst_pc) + static_cast<int64_t>(last.inst.imm));
+        const uint32_t fallthrough = last.inst_pc + 4u;
+        for (uint32_t dst : {block_start_of_pc(target), block_start_of_pc(fallthrough)}) {
+          if (join_blocks.contains(dst)) continue;
+          const uint64_t key = edge_key(bb.start, dst);
+          const std::string label = new_label("path_entry");
+          edge_labels.emplace(key, label);
+          block_entry_labels[dst].push_back(label);
+        }
+      }
+      for (const auto &edge : bb.succs) {
+        if (!join_blocks.contains(edge.dst)) continue;
+        const uint64_t key = edge_key(bb.start, edge.dst);
+        if (edge_labels.contains(key)) continue;
+        const std::string label = new_label("join_edge");
+        edge_labels.emplace(key, label);
+        block_entry_labels[edge.dst].push_back(label);
+      }
     }
   }
 
-  void emit_vctx_load_all(uint32_t pc_for_err) {
-    require(mod.need_vctx, EmitError("invalid.vctx", func_name, pc_for_err, "need_vctx=false"));
-    for (int i = 0; i < 256; ++i) {
-      const uint32_t off = static_cast<uint32_t>(i) * 4u;
-      emit_line("ld.local.u32 " + v(i) + ", [" + rd(6) + "+" + std::to_string(off) + "];");
+  void emit_boundary_labels_for_block(uint32_t block_start) {
+    const auto it = block_entry_labels.find(block_start);
+    if (it == block_entry_labels.end()) return;
+    for (const auto &label : it->second) {
+      emit_label(label);
+      if (label.find("_sbt_path_entry_") != std::string::npos) {
+        emit_select_leader_from_active_mask();
+      } else {
+        emit_broadcast_full_x_state();
+        emit_line("bra " + label_bb(block_start) + ";");
+      }
+      if (label.find("_sbt_path_entry_") != std::string::npos) {
+        emit_line("bra " + label_bb(block_start) + ";");
+      }
     }
+  }
+
+  std::string target_label_for_edge(uint32_t src_block, uint32_t dst_block) const {
+    const auto it = edge_labels.find(edge_key(src_block, dst_block));
+    if (it != edge_labels.end()) return it->second;
+    return label_bb(dst_block);
   }
 
   void emit_ld_x_u32_leader(const std::string &dst_r, int xreg, uint32_t pc_for_err) {
     if (xreg == 0) {
-      emit_line("@"+p(0)+" mov.u32 " + dst_r + ", 0;");
+      emit_line("@" + p(0) + " mov.u32 " + dst_r + ", 0;");
       return;
     }
     require(xreg >= 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<0"));
-    emit_line("@" + p(0) + " ld.shared.u32 " + dst_r + ", [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "];");
+    emit_line("@" + p(0) + " mov.u32 " + dst_r + ", " + x(xreg) + ";");
+  }
+
+  void emit_broadcast_from_leader(const std::string &dst_r, const std::string &src_r) {
+    emit_read_activemask(r(1));
+    emit_line("shfl.sync.idx.b32 " + dst_r + ", " + src_r + ", " + r(2) + ", 0x1f, " + r(1) + ";");
   }
 
   void emit_ld_x_u32_all(const std::string &dst_r, int xreg, uint32_t pc_for_err) {
@@ -331,24 +413,97 @@ struct EmitCtx final {
       return;
     }
     require(xreg >= 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<0"));
-    emit_line("ld.shared.u32 " + dst_r + ", [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "];");
+    emit_broadcast_from_leader(dst_r, x(xreg));
   }
 
   void emit_st_x_u32_leader(int xreg, const std::string &src_r, uint32_t pc_for_err) {
     if (xreg == 0) return; // x0 is hard-wired zero.
     require(xreg > 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<=0"));
-    emit_line("@" + p(0) + " st.shared.u32 [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "], " + src_r + ";");
+    emit_line("@" + p(0) + " mov.u32 " + x(xreg) + ", " + src_r + ";");
   }
 
   void emit_st_x_u32_all(int xreg, const std::string &src_r, uint32_t pc_for_err) {
     if (xreg == 0) return; // x0 is hard-wired zero.
     require(xreg > 0, EmitError("invalid.reg", func_name, pc_for_err, "xreg<=0"));
-    emit_line("st.shared.u32 [" + rd(3) + "+" + std::to_string(x_off(xreg)) + "], " + src_r + ";");
+    emit_line("mov.u32 " + x(xreg) + ", " + src_r + ";");
   }
 
   bool scalar_leader_only() const { return opt.scalar_exec_leader_only; }
 
   std::string scalar_prefix() const { return scalar_leader_only() ? ("@" + p(0) + " ") : ""; }
+
+  void emit_broadcast_full_x_state() {
+    emit_read_activemask(r(1));
+    for (uint32_t i = 1; i < kNumXRegs; ++i) {
+      emit_line("shfl.sync.idx.b32 " + x(static_cast<int>(i)) + ", " + x(static_cast<int>(i)) + ", " + r(2) + ", 0x1f, " + r(1) + ";");
+    }
+  }
+
+  void emit_store_param_u32(const std::string &base, uint32_t offset, const std::string &src_r, const std::string &prefix = "") {
+    emit_line(prefix + "st.param.u32 [" + base + "+" + std::to_string(offset) + "], " + src_r + ";");
+  }
+
+  void emit_store_param_u64(const std::string &base, uint32_t offset, const std::string &src_rd) {
+    emit_line("st.param.u64 [" + base + "+" + std::to_string(offset) + "], " + src_rd + ";");
+  }
+
+  void emit_load_param_u32(const std::string &dst_r, const std::string &base, uint32_t offset, const std::string &prefix = "") {
+    emit_line(prefix + "ld.param.u32 " + dst_r + ", [" + base + "+" + std::to_string(offset) + "];");
+  }
+
+  void emit_load_param_u64(const std::string &dst_rd, const std::string &base, uint32_t offset) {
+    emit_line("ld.param.u64 " + dst_rd + ", [" + base + "+" + std::to_string(offset) + "];");
+  }
+
+  void emit_store_mutable_state_blob(const std::string &blob_name) {
+    emit_store_param_u32(blob_name, kMutableLeaderOffset, r(2));
+    emit_line("mov.u32 " + r(31) + ", 0;");
+    emit_store_param_u32(blob_name, kMutableXOffset, r(31));
+    for (uint32_t i = 1; i < kNumXRegs; ++i) {
+      emit_broadcast_from_leader(r(31), x(static_cast<int>(i)));
+      emit_store_param_u32(blob_name, kMutableXOffset + i * kBlobWordBytes, r(31));
+    }
+    for (uint32_t i = 0; i < kNumVRegs; ++i) {
+      emit_store_param_u32(blob_name, kMutableVOffset + i * kBlobWordBytes, v(static_cast<int>(i)));
+    }
+  }
+
+  void emit_restore_mutable_state_blob(const std::string &blob_name) {
+    emit_load_param_u32(r(2), blob_name, kMutableLeaderOffset);
+    emit_refresh_leader_predicate();
+    for (uint32_t i = 1; i < kNumXRegs; ++i) {
+      emit_load_param_u32(x(static_cast<int>(i)), blob_name, kMutableXOffset + i * kBlobWordBytes);
+    }
+    for (uint32_t i = 0; i < kNumVRegs; ++i) {
+      emit_load_param_u32(v(static_cast<int>(i)), blob_name, kMutableVOffset + i * kBlobWordBytes);
+    }
+  }
+
+  void emit_store_runtime_env_blob(const std::string &blob_name) {
+    emit_store_param_u64(blob_name, kRuntimeElfOffset, rd(0));
+    emit_store_param_u64(blob_name, kRuntimeHeapOffset, rd(1));
+  }
+
+  void emit_store_machine_ctx_blob(const std::string &blob_name) {
+    emit_store_param_u32(blob_name, kMachineKnlOffset, r(30));
+    emit_store_param_u32(blob_name, kMachinePdsBaseOffset, r(28));
+    emit_store_param_u32(blob_name, kMachinePdsSizeOffset, r(29));
+    emit_store_param_u32(blob_name, kMachineWarpIdOffset, r(10));
+    emit_store_param_u32(blob_name, kMachineWarpsPerBlockOffset, r(12));
+  }
+
+  void emit_load_runtime_env_blob(const std::string &blob_name) {
+    emit_load_param_u64(rd(0), blob_name, kRuntimeElfOffset);
+    emit_load_param_u64(rd(1), blob_name, kRuntimeHeapOffset);
+  }
+
+  void emit_load_machine_ctx_blob(const std::string &blob_name) {
+    emit_load_param_u32(r(30), blob_name, kMachineKnlOffset);
+    emit_load_param_u32(r(28), blob_name, kMachinePdsBaseOffset);
+    emit_load_param_u32(r(29), blob_name, kMachinePdsSizeOffset);
+    emit_load_param_u32(r(10), blob_name, kMachineWarpIdOffset);
+    emit_load_param_u32(r(12), blob_name, kMachineWarpsPerBlockOffset);
+  }
 
   void maybe_note_fp_dyn_rm(uint32_t pc_for_err) {
     if (!opt.include_comments) return;
@@ -400,7 +555,6 @@ struct EmitCtx final {
   void emit_st_x_u32_scalar(int xreg, const std::string &src_r, uint32_t pc_for_err) {
     if (scalar_leader_only()) {
       emit_st_x_u32_leader(xreg, src_r, pc_for_err);
-      if (xreg != 0) emit_warp_sync();
     } else {
       emit_st_x_u32_all(xreg, src_r, pc_for_err);
     }
@@ -833,43 +987,21 @@ struct EmitCtx final {
   }
 
   void emit_direct_call(const std::string &callee_ptx) {
-    const std::string p_elf = new_label("call_elf");
-    const std::string p_heap = new_label("call_heap");
-    const std::string p_wctx = new_label("call_wctx");
-    const std::string p_lds = new_label("call_lds");
-    const std::string p_knl = new_label("call_knl");
-    const std::string p_pds_base = new_label("call_pds_base_vaddr");
-    const std::string p_pds_size = new_label("call_pds_size_per_thread");
-    const std::string p_wid = new_label("call_wid");
-    const std::string p_numw = new_label("call_numw");
-    const std::string p_vctx = new_label("call_vctx");
+    const std::string p_mut_in = "__sbt_call_mutable_in_" + std::to_string(tmp_label_id++);
+    const std::string p_mut_out = "__sbt_call_mutable_out_" + std::to_string(tmp_label_id++);
+    const std::string p_machine = "__sbt_call_machine_" + std::to_string(tmp_label_id++);
+    const std::string p_runtime = "__sbt_call_runtime_" + std::to_string(tmp_label_id++);
 
-    emit_line(".param .u64 " + p_elf + ";");
-    emit_line(".param .u64 " + p_heap + ";");
-    emit_line(".param .u64 " + p_wctx + ";");
-    emit_line(".param .u64 " + p_lds + ";");
-    emit_line(".param .u32 " + p_knl + ";");
-    emit_line(".param .u32 " + p_pds_base + ";");
-    emit_line(".param .u32 " + p_pds_size + ";");
-    emit_line(".param .u32 " + p_wid + ";");
-    emit_line(".param .u32 " + p_numw + ";");
-    if (mod.need_vctx) emit_line(".param .u64 " + p_vctx + ";");
+    emit_line(".param .align 4 .b8 " + p_mut_in + "[" + std::to_string(kMutableStateBytes) + "];");
+    emit_line(".param .align 4 .b8 " + p_mut_out + "[" + std::to_string(kMutableStateBytes) + "];");
+    emit_line(".param .align 4 .b8 " + p_machine + "[" + std::to_string(kMachineCtxBytes) + "];");
+    emit_line(".param .align 8 .b8 " + p_runtime + "[" + std::to_string(kRuntimeEnvBytes) + "];");
 
-    emit_line("st.param.u64 [" + p_elf + "], " + rd(0) + ";");
-    emit_line("st.param.u64 [" + p_heap + "], " + rd(1) + ";");
-    emit_line("st.param.u64 [" + p_wctx + "], " + rd(3) + ";");
-    emit_line("st.param.u64 [" + p_lds + "], " + rd(4) + ";");
-    emit_line("st.param.u32 [" + p_knl + "], " + r(30) + ";");
-    emit_line("st.param.u32 [" + p_pds_base + "], " + r(28) + ";");
-    emit_line("st.param.u32 [" + p_pds_size + "], " + r(29) + ";");
-    emit_line("st.param.u32 [" + p_wid + "], " + r(10) + ";");
-    emit_line("st.param.u32 [" + p_numw + "], " + r(12) + ";");
-    if (mod.need_vctx) emit_line("st.param.u64 [" + p_vctx + "], " + rd(6) + ";");
-
-    std::string args =
-        p_elf + ", " + p_heap + ", " + p_wctx + ", " + p_lds + ", " + p_knl + ", " + p_pds_base + ", " + p_pds_size + ", " + p_wid + ", " + p_numw;
-    if (mod.need_vctx) args += ", " + p_vctx;
-    emit_line("call.uni " + callee_ptx + ", (" + args + ");");
+    emit_store_mutable_state_blob(p_mut_in);
+    emit_store_machine_ctx_blob(p_machine);
+    emit_store_runtime_env_blob(p_runtime);
+    emit_line("call.uni (" + p_mut_out + "), " + callee_ptx + ", (" + p_mut_in + ", " + p_machine + ", " + p_runtime + ");");
+    emit_restore_mutable_state_blob(p_mut_out);
   }
 
   void emit_scalar_fclass_s(const sbt::DecodedInst &di, uint32_t pc_for_err) {
@@ -1081,6 +1213,8 @@ struct EmitCtx final {
   void emit_one_inst(const sbt::cfg::BundleInst &bi) {
     const sbt::DecodedInst &di = bi.inst;
     const uint32_t pc = di.pc;
+    const uint32_t bundle_pc = bi.pc;
+    const uint32_t inst_pc = bi.inst_pc;
 
     if (opt.include_comments) {
       emit_line("// " + hex_u32(bi.pc) + " " + di.name);
@@ -1095,10 +1229,7 @@ struct EmitCtx final {
       if (is_entry) {
         emit_entry_pds_pool_release(pc);
       }
-      if (!is_entry && mod.need_vctx) {
-        emit_line("// spill v-regfile back to vctx for return");
-        emit_vctx_store_all(pc);
-      }
+      if (!is_entry) emit_store_mutable_state_blob("__sbt_mutable_state_out");
       emit_line("ret;");
       return;
     }
@@ -1110,15 +1241,14 @@ struct EmitCtx final {
 
     // Calls: support a small inlined builtin set, plus direct calls to emitted `.func`s.
     if (is_call(di)) {
-      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(inst_pc) + static_cast<int64_t>(di.imm));
       auto it = sym_by_addr.find(target);
       require(it != sym_by_addr.end(), EmitError("unsupported.call", func_name, pc, "target=" + hex_u32(target)));
       const std::string &callee = it->second;
 
       // Write link register (uniform) for debugging parity; not used by inlined builtins.
-      emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + hex_u32(pc + 4) + ";");
+      emit_line("@" + p(0) + " mov.u32 " + r(14) + ", " + hex_u32(inst_pc + 4) + ";");
       emit_st_x_u32_leader(di.rd, r(14), pc);
-      emit_warp_sync();
 
       if (is_inlined_builtin_call_name(callee)) {
         if (callee == "_Z13get_global_idj") {
@@ -1187,34 +1317,26 @@ struct EmitCtx final {
       require(mod.ptx_name_by_addr != nullptr, EmitError("unsupported.call", func_name, pc, "callee=" + callee));
       auto jt = mod.ptx_name_by_addr->find(target);
       require(jt != mod.ptx_name_by_addr->end(), EmitError("unsupported.call", func_name, pc, "callee=" + callee));
-      if (mod.need_vctx) {
-        emit_line("// spill v-regfile to vctx for call");
-        emit_vctx_store_all(pc);
-      }
       emit_direct_call(jt->second);
-      if (mod.need_vctx) {
-        emit_line("// restore v-regfile from vctx after call");
-        emit_vctx_load_all(pc);
-      }
       return;
     }
 
     // Scalar jumps (unconditional).
     if (is_uncond_jump(di)) {
-      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
-      const std::string bb = bb_of_pc(target);
-      require(!bb.empty(), EmitError("invalid.cfg", func_name, pc, "jump target " + hex_u32(target)));
-      emit_line("bra " + bb + ";");
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(inst_pc) + static_cast<int64_t>(di.imm));
+      const uint32_t src_block = block_start_of_pc(bundle_pc);
+      const uint32_t dst_block = block_start_of_pc(target);
+      emit_line("bra " + target_label_for_edge(src_block, dst_block) + ";");
       return;
     }
 
     // Scalar conditional branches.
     if (is_scalar_branch(di.name) && di.imm_kind == sbt::ImmKind::B13) {
-      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
-      const uint32_t fallthrough = pc + 4;
-      const std::string bb_t = bb_of_pc(target);
-      const std::string bb_f = bb_of_pc(fallthrough);
-      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", func_name, pc, "branch target/fallthrough missing"));
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(inst_pc) + static_cast<int64_t>(di.imm));
+      const uint32_t fallthrough = inst_pc + 4;
+      const uint32_t src_block = block_start_of_pc(bundle_pc);
+      const uint32_t dst_t = block_start_of_pc(target);
+      const uint32_t dst_f = block_start_of_pc(fallthrough);
 
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_ld_x_u32_all(r(15), di.rs2, pc);
@@ -1227,26 +1349,25 @@ struct EmitCtx final {
       else if (di.name == "bgeu") emit_line("setp.ge.u32 " + p(1) + ", " + r(14) + ", " + r(15) + ";");
       else throw EmitError("unsupported.inst", func_name, pc, di.name);
 
-      // Ventus scalar branches are warp-uniform: x-reg state is shared per warp,
-      // so all active lanes observe the same predicate and must stay converged.
-      emit_line("@" + p(1) + " bra.uni " + bb_t + ";");
-      emit_line("bra.uni " + bb_f + ";");
+      emit_line("@" + p(1) + " bra.uni " + target_label_for_edge(src_block, dst_t) + ";");
+      emit_line("bra.uni " + target_label_for_edge(src_block, dst_f) + ";");
       return;
     }
 
     // Vector conditional branches.
     if (is_vector_branch(di.name) && di.imm_kind == sbt::ImmKind::B13) {
-      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(pc) + static_cast<int64_t>(di.imm));
-      const uint32_t fallthrough = pc + 4;
-      const std::string bb_t = bb_of_pc(target);
-      const std::string bb_f = bb_of_pc(fallthrough);
-      require(!bb_t.empty() && !bb_f.empty(), EmitError("invalid.cfg", func_name, pc, "vbranch target/fallthrough missing"));
+      const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(inst_pc) + static_cast<int64_t>(di.imm));
+      const uint32_t fallthrough = inst_pc + 4;
+      const uint32_t src_block = block_start_of_pc(bundle_pc);
+      const uint32_t dst_t = block_start_of_pc(target);
+      const uint32_t dst_f = block_start_of_pc(fallthrough);
 
       // NOTE: Ventus vbranch encodes operands in a swapped order vs scalar branches:
       // llvm-objdump / cyclesim logs print `vb* v<rs2>, v<rs1>, off`.
       // Treat `rs2` as the left operand and `rs1` as the right operand.
       const std::string a = v(di.rs2);
       const std::string b = v(di.rs1);
+      emit_broadcast_full_x_state();
 
       if (di.name == "vbeq") emit_line("setp.eq.u32 " + p(1) + ", " + a + ", " + b + ";");
       else if (di.name == "vbne") emit_line("setp.ne.u32 " + p(1) + ", " + a + ", " + b + ";");
@@ -1256,8 +1377,8 @@ struct EmitCtx final {
       else if (di.name == "vbgeu") emit_line("setp.ge.u32 " + p(1) + ", " + a + ", " + b + ";");
       else throw EmitError("unsupported.inst", func_name, pc, di.name);
 
-      emit_line("@" + p(1) + " bra " + bb_t + ";");
-      emit_line("bra " + bb_f + ";");
+      emit_line("@" + p(1) + " bra " + target_label_for_edge(src_block, dst_t) + ";");
+      emit_line("bra " + target_label_for_edge(src_block, dst_f) + ";");
       return;
     }
 
@@ -2556,15 +2677,8 @@ struct EmitCtx final {
     emit_line(".reg .f32 %f<16>;");
     emit_line(".reg .u8 %ub<4>;");
     emit_line(".reg .u16 %uh<4>;");
+    emit_line(".reg .b32 %x<256>;");
     emit_line(".reg .b32 %v<256>;");
-
-    if (mod.need_vctx) {
-      emit_line(".local .align 4 .b8 __sbt_vctx[1024];");
-      // `mov` yields a local-space address for local symbols; use it directly with `ld/st.local`.
-      emit_line("mov.u64 " + rd(6) + ", __sbt_vctx;");
-    } else {
-      emit_line("mov.u64 " + rd(6) + ", 0;");
-    }
 
     // Load params and compute global/shared base pointers.
     emit_line("ld.param.u64 " + rd(10) + ", [elf_base];");
@@ -2606,7 +2720,7 @@ struct EmitCtx final {
     // Using `cvta.to.shared` here can produce an address that tools/runtime treat as out-of-bounds.
     emit_line("mov.u64 " + rd(2) + ", __sbt_shmem;");
 
-    // wctx_ptr = shmem_base + warp_id * 1024
+    // Reserved legacy shared scalar backing slot (kept only to avoid register-map churn).
     emit_line("shl.b32 " + r(13) + ", " + r(10) + ", 10;");
     emit_line("cvt.u64.u32 " + rd(13) + ", " + r(13) + ";");
     emit_line("add.u64 " + rd(3) + ", " + rd(2) + ", " + rd(13) + ";");
@@ -2616,8 +2730,8 @@ struct EmitCtx final {
     emit_line("cvt.u64.u32 " + rd(14) + ", " + r(14) + ";");
     emit_line("add.u64 " + rd(4) + ", " + rd(2) + ", " + rd(14) + ";");
 
-    // Leader + init ABI-critical scalar regs (x2 stack, x10 argbase).
-    emit_block_preamble();
+    emit_line("mov.u64 " + rd(3) + ", 0;");
+    emit_select_leader_from_active_mask();
 
     // Fail fast if pds_base_vaddr is outside heap/global numeric address range.
     // Allow pds_size_per_thread==0 to bypass the check (some kernels may not allocate private memory).
@@ -2660,7 +2774,7 @@ struct EmitCtx final {
 
   void emit_func_prologue() {
     // Pass-through params computed in the caller and required for address mapping / CSR reads.
-    emit_helper_func_signature(out, ptx_name, mod.need_vctx);
+    emit_helper_func_signature(out, ptx_name);
     emit_raw("\n{\n");
 
     emit_line(".reg .b32 %r<32>;");
@@ -2669,37 +2783,52 @@ struct EmitCtx final {
     emit_line(".reg .f32 %f<16>;");
     emit_line(".reg .u8 %ub<4>;");
     emit_line(".reg .u16 %uh<4>;");
+    emit_line(".reg .b32 %x<256>;");
     emit_line(".reg .b32 %v<256>;");
 
-    emit_line("ld.param.u64 " + rd(0) + ", [__sbt_arg_elf_base];");
-    emit_line("ld.param.u64 " + rd(1) + ", [__sbt_arg_heap_base];");
-    emit_line("ld.param.u64 " + rd(3) + ", [__sbt_arg_wctx_ptr];");
-    emit_line("ld.param.u64 " + rd(4) + ", [__sbt_arg_lds_ptr];");
-    emit_line("ld.param.u32 " + r(30) + ", [__sbt_arg_knl_vaddr];");
-    emit_line("ld.param.u32 " + r(28) + ", [__sbt_arg_pds_base_vaddr];");
-    emit_line("ld.param.u32 " + r(29) + ", [__sbt_arg_pds_size_per_thread];");
-    emit_line("ld.param.u32 " + r(10) + ", [__sbt_arg_warp_id];");
-    emit_line("ld.param.u32 " + r(12) + ", [__sbt_arg_warps_per_block];");
-    if (mod.need_vctx) emit_line("ld.param.u64 " + rd(6) + ", [__sbt_arg_vctx_base];");
-
     emit_line("mov.u32 " + r(0) + ", %laneid;");
-    if (mod.need_vctx) {
-      emit_line("// load v-regfile from vctx at function entry");
-      emit_vctx_load_all(cfg.start);
+    emit_load_runtime_env_blob("__sbt_runtime_env_in");
+    emit_load_machine_ctx_blob("__sbt_machine_ctx_in");
+    emit_line("mov.u64 " + rd(2) + ", __sbt_shmem;");
+    emit_line("shl.b32 " + r(14) + ", " + r(12) + ", 10;");
+    emit_line("cvt.u64.u32 " + rd(14) + ", " + r(14) + ";");
+    emit_line("add.u64 " + rd(4) + ", " + rd(2) + ", " + rd(14) + ";");
+    emit_line("mov.u64 " + rd(3) + ", 0;");
+    emit_restore_mutable_state_blob("__sbt_mutable_state_in");
+  }
+
+  void emit_fallthrough_edge_if_needed(const sbt::cfg::BasicBlock &bb) {
+    if (bb.inst_indices.empty()) return;
+    std::optional<uint32_t> dst;
+    for (const auto &edge : bb.succs) {
+      if (edge.kind == sbt::cfg::EdgeKind::Fallthrough) {
+        dst = edge.dst;
+        break;
+      }
     }
+    if (!dst) return;
+
+    const auto &last = cfg.insts[bb.inst_indices.back()].inst;
+    if (is_uncond_jump(last)) return;
+    if (is_ret(last) || last.name == "endprg") return;
+    if (is_scalar_branch(last.name) || is_vector_branch(last.name)) return;
+    emit_line("bra " + target_label_for_edge(bb.start, *dst) + ";");
   }
 
   void emit_body() {
+    prepare_control_protocol();
     if (is_entry) emit_prologue();
     else emit_func_prologue();
 
     // Emit blocks in address order.
     for (const auto &bb : cfg.blocks) {
+      emit_boundary_labels_for_block(bb.start);
       out << label_bb(bb.start) << ":\n";
-      emit_block_preamble();
+      if (join_blocks.contains(bb.start)) emit_select_leader_from_active_mask();
       for (size_t idx : bb.inst_indices) {
         emit_one_inst(cfg.insts[idx]);
       }
+      emit_fallthrough_edge_if_needed(bb);
     }
 
     emit_raw("}\n\n");
@@ -2723,11 +2852,10 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
 
   ModuleInfo mod;
   mod.ptx_name_by_addr = &ptx_name_by_addr;
-  mod.need_vctx = !funcs.empty();
 
   // Declare helper call prototypes first so ptxas can resolve forward calls.
   for (const auto &f : funcs) {
-    emit_helper_func_signature(out, f.ptx_name, mod.need_vctx);
+    emit_helper_func_signature(out, f.ptx_name);
     out << ";\n\n";
   }
 

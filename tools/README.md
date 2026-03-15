@@ -9,7 +9,9 @@
 - `gen_spike_encoding_subset.cpp`：根据 `data/spike_want.txt` 生成 Spike 子集头
 - `regext_bundle_test.cpp`：`regext/regexti` bundling 回归测试
 - `ptx_emit_call_prototype_test.cpp`：PTX helper 前向调用 prototype 回归测试
+- `ptx_emit_leader_lane_abi_test.cpp`：leader-lane scalar state / value ABI / divergence shim 回归测试
 - `regress.sh`：统一回归入口（聚合 smoke/gate/端到端；默认临时工作目录执行并自动清理，可用参数覆盖）
+  - 端到端阶段会强制使用当前树的 `build/sbt_ptx` 作为 `GPU_SBT_PTX`
 - `rodinia_ptx_smoke.sh`：Rodinia compile-first smoke（PTX + ptxas）
 - `pds_ptx_smoke.sh`：PDS 参数与 PTX 映射 smoke
 - `microtest_coverage_gate.sh`：Spike-vs-PTX 微测例 + 覆盖 gate 入口
@@ -19,6 +21,7 @@
 - `ventus_ocl_compare.py`：Spike/PTX 对照执行与结果比对
 - `ventus_ocl_run.cpp`：OpenCL 微测例 runner（产物 `build/ventus_ocl_run`，可选）
 - `ventus_regression_profile.py`：端到端回归耗时统计
+  - 若未显式设置 `GPU_SBT_PTX`，检测到 `build/sbt_ptx` 时会自动绑定并打印所选路径
 - `ventus_pocl_fastpath.cpp`：PoCL 快路径 LD_PRELOAD（产物 `build/libventus_pocl_fastpath.so`）
 - `cuda_trace.cpp`：CUDA Driver API trace LD_PRELOAD（产物 `build/libcuda_trace.so`，可选）
 

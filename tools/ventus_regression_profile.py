@@ -116,6 +116,10 @@ def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
 def _ensure_ventus_env(env: dict[str, str], ventus_root: Path) -> dict[str, str]:
     """
     Make this script runnable without manually `source ventus-env/env.sh`.
@@ -142,6 +146,9 @@ def _ensure_ventus_env(env: dict[str, str], ventus_root: Path) -> dict[str, str]
 
     # Select the PTX backend unless the user explicitly overrides.
     env.setdefault("VENTUS_BACKEND", "ptx")
+    repo_sbt_ptx = _repo_root() / "build" / "sbt_ptx"
+    if "GPU_SBT_PTX" not in env and repo_sbt_ptx.is_file():
+        env["GPU_SBT_PTX"] = str(repo_sbt_ptx.resolve())
     return env
 
 
@@ -211,6 +218,8 @@ def main(argv: list[str]) -> int:
     if sbt_profile_log:
         env["GPU_SBT_PTX_PROFILE_LOG"] = str(sbt_profile_log.resolve())
     env = _ensure_ventus_env(env, ventus_root)
+    if env.get("GPU_SBT_PTX"):
+        print(f"[INFO] GPU_SBT_PTX={env['GPU_SBT_PTX']}")
 
     compiled: set[Path] = set()
     rows: list[dict] = []

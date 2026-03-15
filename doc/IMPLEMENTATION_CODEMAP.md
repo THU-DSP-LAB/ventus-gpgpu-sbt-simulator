@@ -59,12 +59,15 @@
 - `sbt/ptx_emit.{hpp,cpp}`
   - `emit_module(entry_cfg, sym_by_addr, entry_name, funcs, ptx_name_by_addr, opt)`：输出一个 PTX module，包含 1 个 `.entry <kernel>` + 若干 `.func <callee>`（用于 direct call）。
   - `emit_kernel(...)`：兼容接口（单函数 `.entry`，不含通用 call graph）。
-  - 关键语义约定（原型实现）：
+  - 关键语义约定（当前主线）：
     - `setrpc/join/vsetvli`：结构化翻译下视为 no-op（主要用于 Stage2 verify）。
     - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
-    - 标量（x-reg）状态：存放在 per-warp shared 的 `WarpCtx`（当前实现的具体布局见 `doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md`）。
-    - 标量副作用执行策略：支持 leader-only 或 all-lanes（由 `Options::scalar_exec_leader_only` 与 `GPU_SBT_SCALAR_LEADER_ONLY` 控制）。
-    - 标量条件分支（`beq/bne/blt/bge/bltu/bgeu`）：按 warp-uniform 语义翻译为 PTX `bra.uni`；前提是 x-reg 始终来自 per-warp shared `WarpCtx`，因此当前 active lanes 看到相同的比较结果。
+    - 标量（x-reg）canonical state：驻留在当前 `leader_lane` 持有的 PTX scalar regs（`%x<256>`），不再以 per-warp shared `WarpCtx.x[]` 作为主线真值。
+    - 持久 leader metadata：只保留 `leader_lane`；`activemask` 与 leader predicate 在 use point 派生。
+    - 标量副作用执行策略：当前主线仍是 leader-only；`Options::scalar_exec_leader_only=false` 仅保留兼容入口，不再是主要验证路径。
+    - 标量条件分支（`beq/bne/blt/bge/bltu/bgeu`）：保持 `bra.uni`，但会先经由 `shfl.sync.idx` 从 leader lane 广播比较操作数。
+    - all-lane scalar consumer：统一经由 leader-to-all-lane broadcast helper 消费 `x-reg`，覆盖 `vmv_v_x/vmv_s_x/vfmv_v_f`、`vmerge_vxm/vfmerge_vfm`、`vadd_vx` 及同类 `vx` 路径。
+    - structured divergence：`vbranch` 前先做 full-`x` broadcast，路径入口通过 edge shim 建立 path-local leader，`join` 前驱边通过 edge shim 做 full-`x` reconverge，`join` 块入口重新选择 leader。
     - 标量浮点（RV32F, Zfinx 模型）：f32 以 raw bits 存在 X 寄存器；支持 `flw/fsw`、`fadd_s` 等标量 F 指令子集；`rm=DYN` 按 RNE 处理（CSR.frm 未建模），`rm=RMM/Reserved` fail-fast。
     - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（shared / ELF backing / heap backing），对应 `Options::{shared_base_vaddr,elf_base_vaddr,heap_base_vaddr}`。
     - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
@@ -75,6 +78,8 @@
   - 调用（call）：
     - 一小部分 builtin 仍在 emitter 内按名字内联（OpenCL id/query + 少量 helper）。
     - 其它 direct call（`jal ra, imm`）会翻译为 PTX `call.uni`，并要求被调函数也被翻译为 `.func`（由 `tools/sbt_ptx.cpp` 的 call graph 闭包收集保证）。
+    - helper ABI 已切换到 `mutable_state_blob in/out + machine_ctx_blob in + runtime_env_blob in` 三层 value ABI；`vctx` 不再是主线参数。
+    - mutable call state 当前显式携带 `leader_lane`、完整 logical `x-reg`、完整 logical `v-reg`；helper 入口会先恢复 `leader_lane` 与 canonical scalar state，再执行任何 Ventus 标量路径。
     - `emit_module` 会先在模块头为所有 helper `.func` 发射 prototype，再发射函数体，避免前向调用触发 `requires call prototype` / `Unknown symbol`。
     - 非 `ret` 形态 `jalr` 仍属于 unsupported（原型期 fail-fast）。
 
@@ -92,7 +97,9 @@
   - PTX 输出：默认 `build/ptx/<bench>.<stem>.<func>.ptx`（路径规则偏 Rodinia 目录布局）。
   - 缓存：`<out>.meta` 记录输入 ELF/自身 exe 的时间戳与参数（pattern 子集已固化在二进制中），命中则直接复用已有 PTX。
   - 环境变量（行为开关/调试）：见 `doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md` 与 `tools/sbt_ptx.cpp`。
-  - 回归测试：`build/ptx_emit_call_prototype_test` 覆盖“helper 前向调用 + prototype 先声明”约束。
+  - 回归测试：
+    - `build/ptx_emit_call_prototype_test`：覆盖“helper 前向调用 + prototype 先声明 + 新 value ABI prototype/definition 同步”。
+    - `build/ptx_emit_leader_lane_abi_test`：覆盖 leader-lane scalar state、scalar branch broadcast、direct-call value ABI、`vbranch/join` shim。
 
 - `tools/rodinia_ptx_smoke.sh`
   - 固定列表：Rodinia 11 个 kernel（compile-first），生成 PTX 并用 `ptxas` 编译。
@@ -101,10 +108,12 @@
 - `tools/regress.sh`
   - 统一回归入口：按 preset 聚合调用 compile-first/PDS/want/microtest gate/端到端回归等脚本与可执行文件。
   - 默认切换到临时工作目录执行并在退出时清理，避免污染调用目录；可通过 `--in-place/--workdir/--keep-workdir` 覆盖。
+  - 端到端阶段会显式导出 `GPU_SBT_PTX=<repo>/build/sbt_ptx`，确保回归验证的是当前工作树刚构建出的翻译器，而不是 `install/bin` 中可能滞后的安装副本。
 
 - `tools/ventus_regression_profile.py`
   - 调 `make` + 跑 ventus-env 下的 PoCL/Rodinia/testcases（端到端），统计每个 testcase 的 compile/run/total wall time，并可收集 `sbt_ptx` profile jsonl。
   - 说明：依赖 `ventus-env` 目录存在，且测试列表是硬编码 `TestCase` 数组。
+  - 若调用者未显式设置 `GPU_SBT_PTX`，脚本会在检测到 `<repo>/build/sbt_ptx` 时自动绑定到该二进制，并打印所选路径。
 
 - `tools/update_spike_want.py`
   - 从 `VentusInst_basic.txt`（Custom/V 部分）+ Spike `encoding.h` 更新 `data/spike_want.txt`（用于 pattern 输入）。

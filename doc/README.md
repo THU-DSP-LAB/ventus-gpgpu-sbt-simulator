@@ -20,8 +20,8 @@
 
 以下文档仍保留在 `doc/`，用于问题背景、方案展开与历史讨论回溯；它们不是当前实现方向的首选入口：
 
-- `doc/PTX_LEADER_CTX_REUSE_DESIGN.md`：问题 3 的历史细化设计稿。
-- `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`：问题 1 / 4 相关的历史细化设计稿。
+- `doc/PTX_LEADER_CTX_REUSE_DESIGN.md`：问题 3 的历史细化设计稿；当前主线已改用 `leader_lane` 术语，不再以 `owner lane` 作为公共口径。
+- `doc/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`：问题 1 / 4 相关的历史细化设计稿；当前 `sbt/ptx_emit.cpp` 已采用其 `mutable/machine/runtime` 三层 blob ABI 主线。
 - `doc/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`：问题 4 的历史讨论纪要。
 
 ## 4. ISA/ABI 语义备忘
