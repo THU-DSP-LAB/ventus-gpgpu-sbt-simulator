@@ -26,6 +26,9 @@
 namespace {
 
 constexpr int kHotWords = 4;
+constexpr int kPct25 = 25;
+constexpr int kPct50 = 50;
+constexpr int kPct75 = 75;
 constexpr const char *kDefaultModuleDir = "build/generated_ptx";
 constexpr std::uint32_t kDefaultSeed = 7;
 constexpr int kDefaultThreads = 128;
@@ -34,7 +37,7 @@ struct Options {
   std::string module_dir = kDefaultModuleDir;
   std::string module_kind = "ptx";
   int state_words = 32;
-  std::string use_mode = "hot4";
+  std::string use_mode = "pct25";
   int helper_ops = 4;
   int threads = kDefaultThreads;
   std::uint32_t seed = kDefaultSeed;
@@ -84,7 +87,8 @@ bool is_valid_abi(std::string_view abi) {
 }
 
 bool is_valid_mode(std::string_view mode) {
-  return mode == "hot4" || mode == "hot4_dead" || mode == "full";
+  return mode == "pct25" || mode == "pct50" || mode == "pct75" || mode == "full" || mode == "hot4" ||
+         mode == "hot4_dead";
 }
 
 bool is_valid_module_kind(std::string_view module_kind) {
@@ -115,7 +119,7 @@ void print_usage(const char *argv0) {
   std::fprintf(
       stderr,
       "Usage: %s [--module-dir DIR] [--module-kind ptx|cubin] --state-words N\n"
-      "          --mode hot4|hot4_dead|full --helper-ops N [--threads N] [--seed U32]\n"
+      "          --mode pct25|pct50|pct75|full|hot4|hot4_dead --helper-ops N [--threads N] [--seed U32]\n"
       "          [--abi ABI ...]\n",
       argv0);
 }
@@ -217,8 +221,17 @@ std::uint32_t helper_op(std::uint32_t value, int state_index, int op_index) {
   return value * 3u + mad_add;
 }
 
+int percent_used_words(int state_words, int percent) {
+  const int numerator = state_words * percent + 99;
+  return numerator / 100;
+}
+
 int used_words(const Options &options) {
-  return options.use_mode == "full" ? options.state_words : kHotWords;
+  if (options.use_mode == "pct25") return percent_used_words(options.state_words, kPct25);
+  if (options.use_mode == "pct50") return percent_used_words(options.state_words, kPct50);
+  if (options.use_mode == "pct75") return percent_used_words(options.state_words, kPct75);
+  if (options.use_mode == "full") return options.state_words;
+  return options.state_words < kHotWords ? options.state_words : kHotWords;
 }
 
 int checksum_words(const Options &options) {
