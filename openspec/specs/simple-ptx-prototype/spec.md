@@ -1,5 +1,9 @@
 # simple-ptx-prototype
 
+> Status: `legacy`
+>
+> This spec is kept only as early prototype background. `testcases/simple/` is no longer the current implementation or regression baseline.
+
 ## Purpose
 Preserve the minimal runnable Ventus-to-PTX prototype requirements used for early one-warp semantic validation.
 

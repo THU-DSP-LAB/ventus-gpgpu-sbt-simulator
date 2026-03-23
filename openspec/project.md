@@ -21,6 +21,7 @@
 
 ### Code Style
 - 文档：Markdown；中文描述为主，PTX/SASS/SIMT/RVV 等术语保留英文缩写
+- OpenSpec artifact 语言：spec 可使用英文；项目内导航、说明与实现文档以中文为主；必要时在 spec 中补充简短中文状态说明
 - Shell 脚本：`set -euo pipefail`；输出写入明确的 `build/` 或 `out/` 目录；可重复运行
 - 若使用 Python（建议约定）：
   - 格式化/静态检查：`black` + `ruff`
@@ -29,6 +30,7 @@
   - 格式化：`clang-format`
   - 明确禁止 UB；优先使用可验证的位操作/解码方式
 - 变更与规格：涉及“新增能力/语义改变/架构变化”的工作，优先走 OpenSpec（见仓库根目录 `AGENTS.md`）
+- 文档状态必须显式区分：`current` / `active` / `historical` / `legacy`
 
 ### Architecture Patterns
 当前实现按“解码 → CFG/验证 → PTX lowering/emit”的流水线组织：
@@ -36,9 +38,17 @@
 - CFG + Verify：做 `setrpc/vbranch/join/barrier` 结构化校验并 fail-fast
 - PTX Lowering：将当前解码/CFG结果映射到 PTX（满足 `ptxas` 约束）
 关键语义划分（来自项目背景，详见 `README.md`）：
-- 标量路径：类似 warp-uniform（可参考 NVIDIA uniform datapath 的行为特征）
+- 标量路径：当前主线采用 replicated active-lane scalar state；live scalar state 在当前 active lanes 上保持相等
 - 向量路径：per-thread 操作（对应 SIMT 下的普通指令）
 - 分支/收敛：按 Ventus 的 SIMT stack 语义约束校验后再做结构化 lowering（`vbranch`/`setrpc`/`join`）
+- 调用：helper `.func` 使用 `mutable state + machine context + runtime env` 三层 value ABI，prototype 与 definition 必须保持一致
+- 文档分层：
+  - `README.md`：用户入口
+  - `doc/`：长期维护文档；其中 `doc/IMPLEMENTATION_CODEMAP.md` 是当前实现真相
+  - `openspec/specs/`：当前 contract
+  - `openspec/changes/`：具体 change 的 proposal/design/tasks 与阶段性材料
+  - `doc/archive/` / `openspec/changes/archive/` / `lab/`：历史背景
+  - 同一主题在 `doc/` 根目录只保留一个 active 入口，避免多份并列 active 文档竞争 current 口径
 
 ### Testing Strategy
 当前测试以“可对齐、可复现”为核心：
@@ -51,6 +61,7 @@
 - 分支命名：`feat/...`、`fix/...`、`docs/...`
 - 提交建议：Conventional Commits（`feat:`/`fix:`/`docs:`/`refactor:` 等），小步提交便于回滚与审阅
 - 规格驱动：需要“新增能力/重要语义调整/架构调整”时先写 OpenSpec change，再实现代码
+- docs-only 收敛若不改变 contract，可直接更新导航、状态说明与 project/config；但仍必须完成索引一致性校对
 
 ## Domain Context
 - Ventus ISA：标量部分接近 `RV32IMA_zicsr_zfinx`；向量部分基于 RVV 但语义有重解释（例如不使用 RVV mask、`v0` 为普通向量寄存器；分支/收敛使用自定义指令）
@@ -62,6 +73,7 @@
 - 指令表（`VentusInst_basic.xlsx`）含合并单元格：若做自动解析需要特别处理
 - PTX 必须满足 `ptxas` 约束（控制流、寄存器、地址空间等），默认以 `sm_75` 做 compile-first 验证
 - 当前仍允许小范围显式例外（如非 `ret` 形态 `jalr`），并保持 fail-fast 诊断
+- proposal/design 一旦被实现，必须同步更新状态说明，不能继续以未来时描述当前主线
 
 ## External Dependencies
 - CUDA Toolkit：`nvcc`、`ptxas`、`cuobjdump`、`nvdisasm`

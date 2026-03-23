@@ -26,7 +26,7 @@
 
 关联文档：
 
-- `../../doc/PTX_XREG_QUALITY_REGRESSION_REPORT_2026-03-15.md`
+- `../../doc/archive/PTX_XREG_QUALITY_REGRESSION_REPORT_2026-03-15.md`
 - `../../doc/ventus-divergence-sgpr-analysis.md`
 - `../05_ptx_direct_call_param_abi/README.md`
 

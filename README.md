@@ -3,19 +3,24 @@
 ## 项目概述
 本仓库实现 Ventus ELF 到 NVIDIA PTX 的原型级静态二进制翻译（SBT）流程，当前重点是：
 - `ELF(.riscv) -> decode -> CFG verify -> PTX emit`
-- compile-first（`ptxas` 可编译）与 Spike-vs-PTX 微测例对照
-- 与 `ventus-env` 的 PoCL/driver 端到端联调
+- 正确生成 PTX，正确在 nvidia gpu 硬件上运行，运行结果与 ventus spike 对照
+- 与 `ventus-env` 的 PoCL/driver 端到端集成运行
+
+当前 PTX lowering 主线已落地为：
+- replicated active-lane scalar state
+- direct-call `mutable_state/machine_ctx/runtime_env` 三层 value ABI
+- `vbranch/join` 不再依赖 full-`x` broadcast / join shim 维持标量状态协议
 
 注：本项目默认假定自身作为 [ventus-env](https://github.com/THU-DSP-LAB/ventus-env) 项目的子项目集成进 Ventus 软件栈，
 假定 `..` 上级目录即为 ventus-env 项目路径
 
-输入以 Ventus ELF 为准（当前阶段不使用 `.vmem`）：
+输入以 Ventus ELF 为准（不使用 `.vmem`）：
 - `../rodinia/opencl/*/*.riscv`
 - `../pocl/build/examples/*/*.riscv`
 
 ## ISA 资料
 - `VentusInst_basic.xlsx`：Ventus 指令表原始来源
-- `VentusInst_basic.txt`：当前阶段提取后的文本版本（便于审阅与脚本处理）
+- `VentusInst_basic.txt`：上表提取的文本版本，只包含当前阶段需支持的指令（便于审阅与脚本处理）
 
 ## 标量浮点（RV32F, Zfinx 模型）支持（当前）
 - 模型：标量浮点值以 **f32 raw bits 存在 X 寄存器**（无独立 F 寄存器文件）。
@@ -34,7 +39,7 @@
 ## 仓库分层（当前）
 - 核心实现：`sbt/`、`tools/`、`data/`、`testcases/ocl_compare/`
 - 长期文档：`doc/`
-- 规格/变更：`openspec/`
+- 规格/变更：`openspec/`（当前 contract、活跃 change、历史归档）
 - 归档实验：`lab/`（已归档，不作为当前实现入口）
 - 历史最小样例：`testcases/simple/`（已归档，不作为当前回归入口）
 
@@ -183,12 +188,15 @@ python3 tools/ventus_regression_profile.py --clean
 该脚本会优先使用当前仓库的 `build/sbt_ptx`；如需覆盖，可自行设置 `GPU_SBT_PTX=/path/to/sbt_ptx`。
 
 ## 文档与归档
+- 用户入口与命令用法：`README.md`
 - 实现文档索引：`doc/README.md`
-- 当前 PTX lowering 主提案：`doc/PTX_LOWERING_MAIN_PROPOSAL.md`
-- PTX lowering 指令缩减计划（仍保留为活跃专项文档，主要因为问题 2 尚未被主提案取代）：`doc/PTX_LOWERING_REDUCTION_PLAN.md`
+- 当前实现真相（as-built）：`doc/IMPLEMENTATION_CODEMAP.md`
+- OpenSpec 入口与状态分层：`openspec/README.md`
+- 当前仍活跃的 PTX 文档仅保留问题 2：`doc/ADDRESS_SPACE_SPECIALIZATION.md`
+- 当前 contract specs：`openspec/specs/replicated-scalar-state/spec.md`、`openspec/specs/ptx-call-prototype/spec.md`、`openspec/specs/inst-support/spec.md`、`openspec/specs/sbt-rodinia-bringup/spec.md`、`openspec/specs/build-time-spike-pattern-subset/spec.md`
 - Ventus LLVM 对 `vbranch` / `join` 下 SGPR/VGPR 有效性的源码分析参考：`doc/ventus-divergence-sgpr-analysis.md`
 - PTX call 边界冷状态是否会被 `ptxas` 消去的实验背景：`lab/06_ptx_call_boundary_dead_state/README.md`
-- 历史 PTX 设计/讨论参考：`doc/archive/PTX_LEADER_CTX_REUSE_DESIGN.md`、`doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`、`doc/archive/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
+- 历史 PTX 设计/讨论参考：`doc/archive/PTX_LOWERING_MAIN_PROPOSAL.md`、`doc/archive/PTX_LOWERING_REDUCTION_PLAN.md`、`doc/archive/PTX_XREG_QUALITY_REGRESSION_REPORT_2026-03-15.md`、`doc/archive/PTX_LEADER_CTX_REUSE_DESIGN.md`、`doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`、`doc/archive/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
 - 工具清单与分层：`tools/README.md`
 - 历史阶段快照：`doc/archive/`
-- `lab/` 与 `testcases/simple/` 均为历史归档，不再作为当前实现与回归基线
+- `lab/` 与 `testcases/simple/` 均为历史归档，不再作为当前实现与回归基线；`openspec/specs/simple-ptx-prototype/spec.md` 仅保留 legacy 背景用途

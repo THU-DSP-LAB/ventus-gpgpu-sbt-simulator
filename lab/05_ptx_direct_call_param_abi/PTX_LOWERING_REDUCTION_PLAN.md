@@ -345,5 +345,5 @@ caller %v<256>
 ## 4. 与现有文档的关系
 
 - `doc/IMPLEMENTATION_CODEMAP.md`：记录当前实现结构与真实调用链。
-- `doc/IMPROVEMENT_PROPOSALS.md`：聚焦更广义的“工程通用化”建议。
+- `doc/archive/IMPROVEMENT_PROPOSALS.md`：聚焦更广义的“工程通用化”建议。
 - 本文：只聚焦 **PTX lowering 本身如何缩短指令序列**，并把当前明确的 4 个主要膨胀源和后续方案计划固化下来。

@@ -1,5 +1,14 @@
 # PTX Lowering 指令缩减优化计划
 
+> 状态：`historical superseded planning note`
+>
+> 本文已从 `doc/` 迁入 `doc/archive/`。
+>
+> 迁移原因：
+> - 这份“四问题整体计划”已不再适合作为当前工作入口；
+> - problems 1 / 3 / 4 已由当前主线解决或实质性收敛；
+> - problem 2 仍未解决，但已改为单独文档 `doc/ADDRESS_SPACE_SPECIALIZATION.md` 跟踪。
+
 本文聚焦一个明确目标：**Ventus ELF 翻译到 PTX 之后，生成的 PTX 程序本身应尽量短小，每条 Ventus 指令应尽量用更少的 PTX 指令实现**。
 
 注意：本文讨论的是 **PTX lowering 质量**，不是 `sbt_ptx` 自身的运行时开销。后者属于“翻译器执行性能”，不在本文主目标内。
@@ -26,7 +35,7 @@
 - 仍以当前原型期语义为准；其中标量主线已切到 replicated active-lane scalar state，数值地址空间映射、PDS 语义与 direct call 支持范围保持不变；
 - 优化优先顺序以“减少 PTX 指令条数”和“避免明显冗余模板”为主，不以微小 peephole 为主。
 
-> 注：本文件的若干问题分解与“leader-only / shared regfile”表述描述的是历史膨胀来源与演进路径，不再等同于当前 `sbt/ptx_emit.cpp` 的默认实现口径。当前主线语义请以 `doc/IMPLEMENTATION_CODEMAP.md` 与 OpenSpec change `ptx-replicated-scalar-state` 为准。
+> 注：本文件的若干问题分解与“leader-only / shared regfile”表述描述的是历史膨胀来源与演进路径，不再等同于当前 `sbt/ptx_emit.cpp` 的默认实现口径。当前主线语义请以 `doc/IMPLEMENTATION_CODEMAP.md` 与 `openspec/specs/replicated-scalar-state/spec.md` 为准。
 
 ## 2. 当前最主要的 4 个膨胀源
 
@@ -352,5 +361,5 @@ caller %v<256>
 ## 4. 与现有文档的关系
 
 - `doc/IMPLEMENTATION_CODEMAP.md`：记录当前实现结构与真实调用链。
-- `doc/IMPROVEMENT_PROPOSALS.md`：聚焦更广义的“工程通用化”建议。
+- `doc/archive/IMPROVEMENT_PROPOSALS.md`：更广义的工程通用化建议快照。
 - 本文：只聚焦 **PTX lowering 本身如何缩短指令序列**，并把当前明确的 4 个主要膨胀源和后续方案计划固化下来。

@@ -1,9 +1,9 @@
 # PTX Owner-Lane Derivation 设计
 
-本文是 `doc/PTX_LOWERING_REDUCTION_PLAN.md` 中“问题 3：leader 上下文当前按基本块固定重建”的正式设计稿。目标读者是未参与过本项目的维护者；只要已阅读：
+本文是 `doc/archive/PTX_LOWERING_REDUCTION_PLAN.md` 中“问题 3：leader 上下文当前按基本块固定重建”的正式设计稿。目标读者是未参与过本项目的维护者；只要已阅读：
 
 - `doc/IMPLEMENTATION_CODEMAP.md`
-- `doc/PTX_LOWERING_REDUCTION_PLAN.md`
+- `doc/archive/PTX_LOWERING_REDUCTION_PLAN.md`
 - `doc/archive/PTX_DIRECT_CALL_VALUE_BLOB_ABI_DESIGN.md`
 - `sbt/ptx_emit.cpp`
 

@@ -1,12 +1,19 @@
 # 改进点与通用化演进建议（不改代码版）
 
-本文基于仓库当前实现（`sbt/` + `tools/`）与既有文档（`doc/archive/STATUS_SBT_PIPELINE_2026-02-22.md`、`doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md`、`doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`、`lab/03_sbt_feasibility/*`）整理：**只指出问题与给出改进方案**，不直接修改代码。
+> 状态：`historical mixed engineering backlog`
+>
+> 本文已从 `doc/` 迁入 `doc/archive/`。
+>
+> 它的角色是：对过去某一阶段的“工程化改进建议/通用化 backlog”做汇总快照。
+> 它不是当前实现真相，也不是当前 active 计划入口；若与当前代码口径冲突，请以 `doc/IMPLEMENTATION_CODEMAP.md` 与 `openspec/specs/*` 为准。
+
+本文基于仓库实现演进过程中的问题清单与既有文档（`doc/archive/STATUS_SBT_PIPELINE_2026-02-22.md`、`doc/archive/STATUS_SBT_PIPELINE_2026-02-19.md`、`doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`、`lab/03_sbt_feasibility/*`）整理：**只指出问题与给出改进方案**，不直接修改代码。
 
 ## 0. 你现在“已经拥有的东西”（利好）
 
 - 端到端链路已经真实跑通（PoCL/driver + SBT PTX JIT），并且把关键坑（如 vbranch 操作数顺序）固化为实现与交接文档。
 - Stage2（CFG verify）已实现一套“可解释的 fail-fast”机制：能定位 `vbranch/join/barrier/jalr` 的不满足条件点。
-- emitter 已覆盖一批 Rodinia bring-up 所需指令，并把 warp-uniform 标量语义落地为可运行方案（per-warp shared `WarpCtx`）。
+- emitter 已覆盖一批 Rodinia bring-up 所需指令，当前主线已收敛到 replicated active-lane scalar state + layered value ABI。
 
 这些意味着：后续的“通用化”不需要推倒重来，核心是把 **“样例驱动的硬编码/默认假设”** 收敛为 **可配置、可验证、可扩展** 的工程结构。
 

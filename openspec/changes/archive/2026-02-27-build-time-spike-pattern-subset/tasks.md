@@ -13,7 +13,7 @@
 - [x] 11. 文档同步：
 - [x] 11.1 [README.md](/work/ventus-env/sbtsim/README.md)：移除 `--encoding-h` 用法；新增构建期参数 `SBT_SPIKE_ENCODING_H` 说明
 - [x] 11.2 [doc/IMPLEMENTATION_CODEMAP.md](/work/ventus-env/sbtsim/doc/IMPLEMENTATION_CODEMAP.md)：更新“pattern 来源”描述为 build-time subset header
-- [x] 11.3 [doc/IMPROVEMENT_PROPOSALS.md](/work/ventus-env/sbtsim/doc/IMPROVEMENT_PROPOSALS.md)：同步修正 1.1 的“遗留问题”描述（不再是运行期解析）
+- [x] 11.3 [doc/archive/IMPROVEMENT_PROPOSALS.md](/work/ventus-env/sbtsim_doc/doc/archive/IMPROVEMENT_PROPOSALS.md)：同步修正 1.1 的“遗留问题”描述（不再是运行期解析）
 - [x] 12. 验证：
 - [x] 12.1 `cmake -S . -B build && cmake --build build -j` 通过（在 `SBT_SPIKE_ENCODING_H` 缺失时应明确失败）
 - [x] 12.2 `tools/regress.sh --preset quick --arch sm_75` 通过

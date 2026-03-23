@@ -1,5 +1,10 @@
 # PTX xreg 质量回退评估（2026-03-15）
 
+> 状态：`historical background`
+>
+> 本文只用于说明 replicated scalar-state 之前 leader-lane 主线的质量回退，不代表当前默认 lowering 语义。
+> problems 1 / 3 / 4 对应的旧主线已退出当前入口；problem 2 另见 `doc/ADDRESS_SPACE_SPECIALIZATION.md`。
+
 ## 1. 背景
 
 > 注：本文分析的是 replicated scalar-state 变更之前的 leader-lane 主线；当前实现已不再把它当作默认 lowering 语义。

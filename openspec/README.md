@@ -1,0 +1,41 @@
+# openspec/
+
+本目录用于维护两类内容：
+
+- `openspec/specs/`：当前仍然生效、应被当作 contract 阅读的能力规格
+- `openspec/changes/`：进行中的 change；完成后归档到 `openspec/changes/archive/`
+
+## 阅读顺序
+
+若你要理解当前仓库的 OpenSpec 口径，建议按这个顺序读：
+
+1. `openspec/project.md`
+2. `openspec/specs/replicated-scalar-state/spec.md`
+3. `openspec/specs/ptx-call-prototype/spec.md`
+4. 其它当前 specs
+
+## 状态分层
+
+- `current`：当前维护中的规格，默认位于 `openspec/specs/`
+- `active`：进行中的变更，位于 `openspec/changes/<name>/`
+- `historical`：已完成并归档的变更，位于 `openspec/changes/archive/`
+- `legacy`：保留背景价值但已不再是当前主线的规格；必须在文档开头显式标注
+
+## 当前 specs
+
+- `build-time-spike-pattern-subset`：构建期 Spike pattern 子集生成合同
+- `inst-support`：指令支持与语义验证合同
+- `ptx-call-prototype`：多函数 PTX helper prototype / value ABI 合同
+- `replicated-scalar-state`：当前 PTX lowering 主线合同
+- `sbt-rodinia-bringup`：Rodinia bring-up / fail-fast 边界
+
+## Legacy specs
+
+- `simple-ptx-prototype`：仅保留最早期最小样例背景，不再作为当前实现与回归基线
+
+## 维护约定
+
+- 新增或改变 current contract 时，优先新增/更新 change，再同步到 `openspec/specs/`
+- 纯文档收敛若不改变 contract，可直接更新 `project.md`、`config.yaml`、索引与状态说明
+- 任何已完成 change 都不应长期停留在 `openspec/changes/`；应同步 spec 或归档
+- `README.md`、`doc/README.md`、`openspec/README.md` 的导航必须保持一致

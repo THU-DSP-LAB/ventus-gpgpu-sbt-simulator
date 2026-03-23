@@ -1,5 +1,9 @@
 # ptx-call-prototype
 
+> Status: `current`
+>
+> Canonical current contract for multi-function PTX helper prototypes and value-ABI-compatible signatures.
+
 ## Purpose
 Define module-level PTX helper call prototype requirements so multi-function SBT PTX remains valid under forward-call ordering.
 

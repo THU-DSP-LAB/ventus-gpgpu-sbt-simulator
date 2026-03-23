@@ -1,20 +1,23 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Project: Ventus ELF -> PTX static binary translation prototype.
+  Current lowering path uses replicated active-lane scalar state plus layered value ABI for helper calls.
+  README.md is the user entry, doc/IMPLEMENTATION_CODEMAP.md is the as-built truth, and openspec/specs/ contains current contracts.
+  doc/ contains long-lived maintenance docs; change-specific proposal/design/tasks should live under openspec/changes/.
+  Historical material under doc/archive/, lab/, and archive changes must not be treated as current behavior unless explicitly stated.
+  User-facing repo docs are primarily Chinese; specs may be English but should keep status labeling clear.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - Distinguish clearly between current fact, target design, and historical background.
+    - Include a short "Documentation Impact" section naming README/doc/openspec files that must be updated.
+    - If the change supersedes an existing proposal/design note, state that explicitly.
+    - Avoid creating multiple parallel active doc entries for the same topic under doc/.
+  design:
+    - State whether the design describes current implemented behavior or a target behavior.
+    - Name the canonical specs/docs the design depends on.
+    - Avoid future-tense wording for behavior that is already implemented.
+  tasks:
+    - Include an explicit documentation sync task covering README.md, doc/README.md, and relevant openspec indexes/specs.
+    - Include a final consistency-check task verifying current/active/historical/legacy labels remain coherent.

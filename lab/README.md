@@ -1,5 +1,10 @@
 # lab/（归档）
 
+> 状态：`historical archived experiments`
+>
+> 本目录只保留历史探索记录与复盘材料。
+> 除非某份实验文档显式写明 current/active，否则不要把 `lab/` 内结论当作当前实现口径。
+
 本目录已整体归档，仅保留历史探索记录与复盘材料，不再作为当前实现、测试或回归入口。
 
 当前有效入口请使用仓库根目录 `README.md` 与 `doc/README.md`。

@@ -1,5 +1,9 @@
 # inst-support
 
+> Status: `current`
+>
+> Canonical current contract for instruction support scope and semantic validation strategy.
+
 ## Purpose
 Define the project's supported instruction set surface, how Spike `encoding.h` patterns are selected, and how instruction support is validated (Spike oracle vs PTX path).
 

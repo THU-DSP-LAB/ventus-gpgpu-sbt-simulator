@@ -1,5 +1,9 @@
 # build-time-spike-pattern-subset
 
+> Status: `current`
+>
+> Canonical current contract for build-time Spike pattern subset generation.
+
 ## Purpose
 Define how the Spike instruction pattern subset (from Spike `encoding.h` + `data/spike_want.txt`) is generated at build time and embedded into `sbt_decode`/`sbt_ptx` so runtime behavior is hermetic and reproducible.
 
@@ -54,4 +58,3 @@ If any want id from `data/spike_want.txt` is not found as a `DECLARE_INSN` in th
 - **GIVEN** `data/spike_want.txt` contains an id not present in `encoding.h` `DECLARE_INSN(...)`
 - **WHEN** the subset header is generated at build time
 - **THEN** generation fails with a clear error naming the missing id
-

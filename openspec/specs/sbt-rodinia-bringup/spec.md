@@ -1,5 +1,9 @@
 # sbt-rodinia-bringup
 
+> Status: `current`
+>
+> Canonical current bring-up / fail-fast contract for Rodinia Ventus ELF translation.
+
 ## Purpose
 Define the prototype requirements for translating Rodinia Ventus ELF kernels through the SBT pipeline (`decode -> CFG verify -> PTX emit`) with explicit fail-fast behavior.
 

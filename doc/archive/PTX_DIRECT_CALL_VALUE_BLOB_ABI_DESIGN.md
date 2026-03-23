@@ -4,7 +4,7 @@
 
 目标读者是刚接触本项目的维护者。假定读者已经阅读：
 - `doc/IMPLEMENTATION_CODEMAP.md`
-- `doc/PTX_LOWERING_REDUCTION_PLAN.md`
+- `doc/archive/PTX_LOWERING_REDUCTION_PLAN.md`
 - `sbt/ptx_emit.cpp`
 
 在此基础上，读者应当能够仅凭本文理解：
@@ -14,7 +14,7 @@
 - 以及实现时哪些边界是固定设计，哪些仍是可调物理布局。
 
 相关背景材料：
-- 缩减动机与问题定义：`doc/PTX_LOWERING_REDUCTION_PLAN.md`
+- 缩减动机与问题定义：`doc/archive/PTX_LOWERING_REDUCTION_PLAN.md`
 - 源码现状与调用链：`doc/IMPLEMENTATION_CODEMAP.md`
 - 讨论纪要：`doc/archive/TEMP_PTX_DIRECT_CALL_PARAM_ABI_BRAINSTORM.md`
 - 外部实验报告：`../sbtsim_lab/lab/05_ptx_direct_call_param_abi/EXPERIMENT_REPORT.md`

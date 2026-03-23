@@ -1,5 +1,9 @@
 # replicated-scalar-state
 
+> Status: `current`
+>
+> Canonical current PTX lowering contract for scalar-state, structured divergence, and direct-call preservation behavior.
+
 ## Purpose
 Define the current PTX lowering contract for replicated active-lane scalar state, including scalar instruction classification, structured divergence behavior, direct-call state preservation, and the project assumptions behind all-lane scalar loads.
 
