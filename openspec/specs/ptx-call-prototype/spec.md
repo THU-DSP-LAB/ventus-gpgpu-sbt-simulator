@@ -21,13 +21,14 @@ When emitting a multi-function PTX module, the emitter SHALL declare a call prot
 ### Requirement: Prototype signature must match emitted helper definition under the new value ABI
 Each declared helper prototype MUST use the exact same parameter list and types as the corresponding emitted helper `.func` definition after the direct-call value ABI is adopted.
 
-For the new helper ABI, the prototype/definition signature MUST track the current value-ABI state layering rather than the legacy fixed argument list built around `wctx_ptr`, `lds_ptr`, and optional `vctx_base`.
+For the new helper ABI, the prototype/definition signature MUST track the current value-ABI state layering, including a runtime environment shape that carries one logical `global_base` backing pointer rather than separate ELF and heap backing pointers.
 
 #### Scenario: Helper prototype follows the new value ABI shape
 - **GIVEN** a translated module emits helper `.func` definitions using the new value ABI layering for mutable call state, read-only machine context, and runtime environment
+- **AND GIVEN** the current runtime environment carries one `global_base` backing pointer for ordinary non-shared memory
 - **WHEN** the PTX module emits forward-call helper prototypes
 - **THEN** each helper prototype and helper definition share the same new ABI signature shape
-- **AND THEN** prototype emission does not continue to require the legacy `elf_base ... vctx_base` parameter list
+- **AND THEN** prototype emission does not continue to require separate `elf_base` and `heap_base` runtime-environment fields
 
 ### Requirement: Prototype-based forward-call validity SHALL remain after ABI migration
 The move from the legacy helper ABI to the new value ABI MUST NOT reintroduce forward-call ordering dependence.

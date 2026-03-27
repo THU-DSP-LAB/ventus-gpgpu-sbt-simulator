@@ -12,6 +12,10 @@
 - 目标：把 Ventus 工具链产生的 RISC‑V `ELF32`（主要是 `ventus-env/rodinia/opencl/*/*.riscv`）按函数符号切片，做 SBT：`ELF → decode → CFG build → CFG verify → emit PTX`。
 - 原型策略：fail-fast（遇到 unknown/unsupported/CFG verify 不通过直接退出），不做 software SIMT stack 兜底。
 - 端到端运行（阶段 4）发生在 `ventus-env/driver/driver/ptx_device`，本仓库提供 `sbt_ptx` 作为“翻译器可执行文件”被 driver 调用（参见 `doc/archive/HANDOFF_PHASE4_PTX_DEVICE_SBT_JIT.md`）。
+- 当前 PTX driver contract 采用一个逻辑 `Global` 数值窗口；driver 侧以 CUDA VMM 预留整段 Global VA，并按需映射 ELF/PT_LOAD、runtime allocation、metadata 与 PDS 相关页。
+- VMM 映射粒度仍受 CUDA allocation granularity 约束，但 runtime bump allocator 只按请求大小（16B 对齐）推进 `next_vaddr`；若 heap-window ELF `PT_LOAD` 与 runtime allocation 落在同一页，driver 以页级共享 claim 维持兼容，而不是把该页判成冲突。
+- `next_vaddr` 只反映配置的 runtime heap window 使用情况；位于该 window 之外的 Global ELF segment 不会污染 runtime allocation cursor。PDS bitmap 扩容时若旧 bitmap 不是栈顶分配，driver 会直接切换到新的内部 bitmap，而不是把这类时序视为错误。
+- 当前页回收策略偏向减少 launch 间抖动：当某页引用计数降到 0 时，driver 只把它标记为空闲缓存页，不会立刻 `cuMemUnmap/cuMemRelease`；这些空页仅在 `vt_dev_close()` 时统一释放，地址有效性仍通过活跃引用而不是“是否还留在页缓存表”判断。
 
 ## 1. 仓库目录与模块职责
 
@@ -74,7 +78,7 @@
     - all-lane scalar consumer：直接从 replicated `%x` 取值，覆盖 `vmv_v_x/vmv_s_x/vfmv_v_f`、`vmerge_vxm/vfmerge_vfm`、`vadd_vx` 及同类 `vx` 路径。
     - structured divergence：`vbranch/join` 不再把整份 `x-reg` 文件作为控制流 payload；路径入口与 join 前驱不再插入 full-`x` shim，只有真正的 leader-only scalar side effect 才会在 use point 懒选择 leader。
     - 标量浮点（RV32F, Zfinx 模型）：f32 以 raw bits 存在 X 寄存器；支持 `flw/fsw`、`fadd_s` 等标量 F 指令子集；`rm=DYN` 按 RNE 处理（CSR.frm 未建模），`rm=RMM/Reserved` fail-fast。
-    - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（shared / ELF backing / heap backing），对应 `Options::{shared_base_vaddr,elf_base_vaddr,heap_base_vaddr}`。
+    - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（`Shared + Global` current contract），对应 `Options::{shared_base_vaddr,global_base_vaddr}`；低于 shared window 的地址显式 `trap`。
     - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
       - `.entry` 参数包含 `pds_base_vaddr/pds_size_per_thread/pds_bitmap_base_vaddr/pds_pool_num_blocks`；
       - prologue 以 block 级原子方式从 bitmap 申请 PDS block，写入 shared；
@@ -177,5 +181,5 @@
 - **指令覆盖**：目标集合为 `VentusInst_basic.txt`（减去 `data/inst_exceptions.txt`）；在 `--require-known` 下遇到 unknown/unsupported 仍 fail-fast。
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
 - **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
-- **ABI/元数据**：当前 `.entry` 参数为 `(elf_base, heap_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`，并在 prologue 初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
+- **ABI/元数据**：当前 `.entry` 参数为 `(global_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`；helper `runtime_env_blob` 也只携带一个 `global_base`。prologue 仍会初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
 - **PDS（private）**：入口 prologue 由 `thread_linear_id==0` 原子申请/写回 `wg_pds_base`，kernel 退出前释放；`vlw.v/vsw.v` 与 `CSR_PDS` 都基于该 `wg_pds_base` 计算，不再按 full-grid block 线性编号寻址。

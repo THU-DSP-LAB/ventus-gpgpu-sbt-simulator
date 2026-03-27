@@ -33,14 +33,13 @@ static std::string u16(int i) { return "%uh" + std::to_string(i); }
 static constexpr uint32_t kNumXRegs = 256u;
 static constexpr uint32_t kNumVRegs = 256u;
 static constexpr uint32_t kBlobWordBytes = 4u;
-static constexpr uint32_t kRuntimeEnvBytes = 16u;
+static constexpr uint32_t kRuntimeEnvBytes = 8u;
 static constexpr uint32_t kMachineCtxBytes = 20u;
 static constexpr uint32_t kMutableLeaderOffset = 0u;
 static constexpr uint32_t kMutableXOffset = kMutableLeaderOffset + kBlobWordBytes;
 static constexpr uint32_t kMutableVOffset = kMutableXOffset + kNumXRegs * kBlobWordBytes;
 static constexpr uint32_t kMutableStateBytes = kMutableVOffset + kNumVRegs * kBlobWordBytes;
-static constexpr uint32_t kRuntimeElfOffset = 0u;
-static constexpr uint32_t kRuntimeHeapOffset = 8u;
+static constexpr uint32_t kRuntimeGlobalOffset = 0u;
 static constexpr uint32_t kMachineKnlOffset = 0u;
 static constexpr uint32_t kMachinePdsBaseOffset = 4u;
 static constexpr uint32_t kMachinePdsSizeOffset = 8u;
@@ -191,8 +190,8 @@ struct EmitCtx final {
   // %r1: use-point activemask scratch
   // %r2: persistent leader_lane
   // %p0: is_leader
-  // %rd0: elf_base (global)
-  // %rd1: heap_base (global)
+  // %rd0: global_base (global)
+  // %rd1: reserved scratch
   // %rd2: shmem_base (shared)
   // %rd3: reserved (legacy wctx_ptr slot)
   // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
@@ -271,7 +270,7 @@ struct EmitCtx final {
 
     emit_line("setp.eq.u32 " + p(7) + ", " + r(27) + ", 0;");
     emit_line("@" + p(7) + " trap;");
-    emit_line("setp.lt.u32 " + p(7) + ", " + r(26) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + p(7) + ", " + r(26) + ", " + hex_u32(opt.global_base_vaddr) + ";");
     emit_line("@" + p(7) + " trap;");
 
     emit_line("add.u32 " + r(23) + ", " + r(27) + ", 31;");
@@ -284,9 +283,9 @@ struct EmitCtx final {
 
     emit_line("shl.b32 " + r(22) + ", " + r(21) + ", 2;");
     emit_line("add.u32 " + r(24) + ", " + r(26) + ", " + r(22) + ";"); // bitmap word numeric addr
-    emit_line("add.u32 " + r(25) + ", " + r(24) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("add.u32 " + r(25) + ", " + r(24) + ", -" + hex_u32(opt.global_base_vaddr) + ";");
     emit_line("cvt.u64.u32 " + rd(18) + ", " + r(25) + ";");
-    emit_line("add.u64 " + rd(18) + ", " + rd(1) + ", " + rd(18) + ";");
+    emit_line("add.u64 " + rd(18) + ", " + rd(0) + ", " + rd(18) + ";");
     emit_line("ld.global.u32 " + r(25) + ", [" + rd(18) + "];");
     emit_line("not.b32 " + r(22) + ", " + r(25) + ";"); // free bits
 
@@ -369,9 +368,9 @@ struct EmitCtx final {
 
     emit_line("shl.b32 " + r(22) + ", " + r(21) + ", 2;");
     emit_line("add.u32 " + r(24) + ", " + r(26) + ", " + r(22) + ";");
-    emit_line("add.u32 " + r(25) + ", " + r(24) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("add.u32 " + r(25) + ", " + r(24) + ", -" + hex_u32(opt.global_base_vaddr) + ";");
     emit_line("cvt.u64.u32 " + rd(18) + ", " + r(25) + ";");
-    emit_line("add.u64 " + rd(18) + ", " + rd(1) + ", " + rd(18) + ";");
+    emit_line("add.u64 " + rd(18) + ", " + rd(0) + ", " + rd(18) + ";");
     emit_line("atom.global.and.b32 " + r(17) + ", [" + rd(18) + "], " + r(19) + ";");
 
     emit_label(L_release_done);
@@ -478,8 +477,7 @@ struct EmitCtx final {
   }
 
   void emit_store_runtime_env_blob(const std::string &blob_name) {
-    emit_store_param_u64(blob_name, kRuntimeElfOffset, rd(0));
-    emit_store_param_u64(blob_name, kRuntimeHeapOffset, rd(1));
+    emit_store_param_u64(blob_name, kRuntimeGlobalOffset, rd(0));
   }
 
   void emit_store_machine_ctx_blob(const std::string &blob_name) {
@@ -491,8 +489,7 @@ struct EmitCtx final {
   }
 
   void emit_load_runtime_env_blob(const std::string &blob_name) {
-    emit_load_param_u64(rd(0), blob_name, kRuntimeElfOffset);
-    emit_load_param_u64(rd(1), blob_name, kRuntimeHeapOffset);
+    emit_load_param_u64(rd(0), blob_name, kRuntimeGlobalOffset);
   }
 
   void emit_load_machine_ctx_blob(const std::string &blob_name) {
@@ -583,35 +580,35 @@ struct EmitCtx final {
     emit_warp_sync();
   }
 
-  void emit_addr_map_and_ld_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
+  void emit_prepare_addr_mapping(const std::string &addr_r, uint32_t pc_for_err) {
+    (void)pc_for_err;
+
     // Copy to a scratch register to avoid aliasing with r16 temporaries (addr_r can be %r16 in prologue).
     emit_line("mov.u32 " + r(31) + ", " + addr_r + ";");
 
-    // shared predicate: addr in [shared_base_vaddr, elf_base_vaddr)
+    // Shared addresses live in [shared_base_vaddr, global_base_vaddr); everything below shared is invalid.
     emit_line("setp.ge.u32 " + p(1) + ", " + r(31) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.elf_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.global_base_vaddr) + ";");
     emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // p3 = is_shared
-
-    // heap predicate: addr >= heap_base_vaddr (else: ELF global)
-    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";"); // p4 = is_heap
+    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.global_base_vaddr) + ";"); // p4 = is_global
+    emit_line("or.pred " + p(5) + ", " + p(3) + ", " + p(4) + ";");
+    emit_line("@!" + p(5) + " trap;");
 
     // shared_ptr -> rd17
     emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
     emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
     emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
 
-    // global_ptr -> rd16 (default: ELF); heap overwrites rd16 under @p4
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
+    // global_ptr -> rd16
+    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.global_base_vaddr) + ";");
     emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
     emit_line("add.u64 " + rd(16) + ", " + rd(0) + ", " + rd(16) + ";");
+  }
 
-    emit_line("@" + p(4) + " add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("@" + p(4) + " cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("@" + p(4) + " add.u64 " + rd(16) + ", " + rd(1) + ", " + rd(16) + ";");
-
+  void emit_addr_map_and_ld_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
+    emit_prepare_addr_mapping(addr_r, pc_for_err);
     emit_line("@" + p(3) + " ld.shared.u32 " + dst_r + ", [" + rd(17) + "];");
-    emit_line("@!" + p(3) + " ld.global.u32 " + dst_r + ", [" + rd(16) + "];");
-    (void)pc_for_err;
+    emit_line("@" + p(4) + " ld.global.u32 " + dst_r + ", [" + rd(16) + "];");
   }
 
   void emit_addr_map_and_ld_u32_leader(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
@@ -622,30 +619,9 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_st_u32(const std::string &addr_r, const std::string &src_r, uint32_t pc_for_err) {
-    emit_line("mov.u32 " + r(31) + ", " + addr_r + ";");
-    emit_line("setp.ge.u32 " + p(1) + ", " + r(31) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // p3 = is_shared
-
-    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";"); // p4 = is_heap
-
-    // shared_ptr -> rd17
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
-
-    // global_ptr -> rd16 (default: ELF); heap overwrites rd16 under @p4
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(16) + ", " + rd(0) + ", " + rd(16) + ";");
-
-    emit_line("@" + p(4) + " add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("@" + p(4) + " cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("@" + p(4) + " add.u64 " + rd(16) + ", " + rd(1) + ", " + rd(16) + ";");
-
+    emit_prepare_addr_mapping(addr_r, pc_for_err);
     emit_line("@" + p(3) + " st.shared.u32 [" + rd(17) + "], " + src_r + ";");
-    emit_line("@!" + p(3) + " st.global.u32 [" + rd(16) + "], " + src_r + ";");
-    (void)pc_for_err;
+    emit_line("@" + p(4) + " st.global.u32 [" + rd(16) + "], " + src_r + ";");
   }
 
   void emit_addr_map_and_st_u32_leader(const std::string &addr_r, const std::string &src_r, uint32_t pc_for_err) {
@@ -656,59 +632,17 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_ld_u8_zext_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
-    emit_line("mov.u32 " + r(31) + ", " + addr_r + ";");
-    emit_line("setp.ge.u32 " + p(1) + ", " + r(31) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // p3 = is_shared
-
-    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";"); // p4 = is_heap
-
-    // shared_ptr -> rd17
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
-
-    // global_ptr -> rd16 (default: ELF); heap overwrites rd16 under @p4
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(16) + ", " + rd(0) + ", " + rd(16) + ";");
-
-    emit_line("@" + p(4) + " add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("@" + p(4) + " cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("@" + p(4) + " add.u64 " + rd(16) + ", " + rd(1) + ", " + rd(16) + ";");
-
+    emit_prepare_addr_mapping(addr_r, pc_for_err);
     emit_line("@" + p(3) + " ld.shared.u8 " + u8(0) + ", [" + rd(17) + "];");
-    emit_line("@!" + p(3) + " ld.global.u8 " + u8(0) + ", [" + rd(16) + "];");
+    emit_line("@" + p(4) + " ld.global.u8 " + u8(0) + ", [" + rd(16) + "];");
     emit_line("cvt.u32.u8 " + dst_r + ", " + u8(0) + ";");
-    (void)pc_for_err;
   }
 
   void emit_addr_map_and_ld_u16_zext_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
-    emit_line("mov.u32 " + r(31) + ", " + addr_r + ";");
-    emit_line("setp.ge.u32 " + p(1) + ", " + r(31) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // p3 = is_shared
-
-    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";"); // p4 = is_heap
-
-    // shared_ptr -> rd17
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
-
-    // global_ptr -> rd16 (default: ELF); heap overwrites rd16 under @p4
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(16) + ", " + rd(0) + ", " + rd(16) + ";");
-
-    emit_line("@" + p(4) + " add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("@" + p(4) + " cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("@" + p(4) + " add.u64 " + rd(16) + ", " + rd(1) + ", " + rd(16) + ";");
-
+    emit_prepare_addr_mapping(addr_r, pc_for_err);
     emit_line("@" + p(3) + " ld.shared.u16 " + u16(0) + ", [" + rd(17) + "];");
-    emit_line("@!" + p(3) + " ld.global.u16 " + u16(0) + ", [" + rd(16) + "];");
+    emit_line("@" + p(4) + " ld.global.u16 " + u16(0) + ", [" + rd(16) + "];");
     emit_line("cvt.u32.u16 " + dst_r + ", " + u16(0) + ";");
-    (void)pc_for_err;
   }
 
   void emit_addr_map_and_ld_u8_zext_u32_leader(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
@@ -726,57 +660,15 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_st_u8(const std::string &addr_r, const std::string &src_u8, uint32_t pc_for_err) {
-    emit_line("mov.u32 " + r(31) + ", " + addr_r + ";");
-    emit_line("setp.ge.u32 " + p(1) + ", " + r(31) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // p3 = is_shared
-
-    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";"); // p4 = is_heap
-
-    // shared_ptr -> rd17
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
-
-    // global_ptr -> rd16 (default: ELF); heap overwrites rd16 under @p4
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(16) + ", " + rd(0) + ", " + rd(16) + ";");
-
-    emit_line("@" + p(4) + " add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("@" + p(4) + " cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("@" + p(4) + " add.u64 " + rd(16) + ", " + rd(1) + ", " + rd(16) + ";");
-
+    emit_prepare_addr_mapping(addr_r, pc_for_err);
     emit_line("@" + p(3) + " st.shared.u8 [" + rd(17) + "], " + src_u8 + ";");
-    emit_line("@!" + p(3) + " st.global.u8 [" + rd(16) + "], " + src_u8 + ";");
-    (void)pc_for_err;
+    emit_line("@" + p(4) + " st.global.u8 [" + rd(16) + "], " + src_u8 + ";");
   }
 
   void emit_addr_map_and_st_u16(const std::string &addr_r, const std::string &src_u16, uint32_t pc_for_err) {
-    emit_line("mov.u32 " + r(31) + ", " + addr_r + ";");
-    emit_line("setp.ge.u32 " + p(1) + ", " + r(31) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // p3 = is_shared
-
-    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.heap_base_vaddr) + ";"); // p4 = is_heap
-
-    // shared_ptr -> rd17
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
-
-    // global_ptr -> rd16 (default: ELF); heap overwrites rd16 under @p4
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.elf_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(16) + ", " + rd(0) + ", " + rd(16) + ";");
-
-    emit_line("@" + p(4) + " add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.heap_base_vaddr) + ";");
-    emit_line("@" + p(4) + " cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("@" + p(4) + " add.u64 " + rd(16) + ", " + rd(1) + ", " + rd(16) + ";");
-
+    emit_prepare_addr_mapping(addr_r, pc_for_err);
     emit_line("@" + p(3) + " st.shared.u16 [" + rd(17) + "], " + src_u16 + ";");
-    emit_line("@!" + p(3) + " st.global.u16 [" + rd(16) + "], " + src_u16 + ";");
-    (void)pc_for_err;
+    emit_line("@" + p(4) + " st.global.u16 [" + rd(16) + "], " + src_u16 + ";");
   }
 
   void emit_addr_map_and_st_u8_leader(const std::string &addr_r, const std::string &src_u8, uint32_t pc_for_err) {
@@ -2606,16 +2498,14 @@ struct EmitCtx final {
 
   void emit_prologue() {
     // Params:
-    //  - elf_base: backing buffer for [elf_base_vaddr, heap_base_vaddr)
-    //  - heap_base: backing buffer for [heap_base_vaddr, ...)
+    //  - global_base: backing buffer for [global_base_vaddr, 0x1_0000_0000)
     //  - knl_vaddr: Ventus numeric address of metadata buffer (u32)
     //  - pds_base_vaddr: Ventus numeric address of the global PDS buffer base (u32)
     //  - pds_size_per_thread: bytes of private memory per thread (u32)
     //  - pds_bitmap_base_vaddr: Ventus numeric address of PDS allocation bitmap (u32)
     //  - pds_pool_num_blocks: number of reusable WG blocks in PDS pool (u32)
     emit_raw(".visible .entry " + ptx_name + "(\n");
-    emit_raw("    .param .u64 elf_base,\n");
-    emit_raw("    .param .u64 heap_base,\n");
+    emit_raw("    .param .u64 global_base,\n");
     emit_raw("    .param .u32 knl_vaddr,\n");
     emit_raw("    .param .u32 pds_base_vaddr,\n");
     emit_raw("    .param .u32 pds_size_per_thread,\n");
@@ -2633,10 +2523,8 @@ struct EmitCtx final {
     emit_line(".reg .b32 %v<256>;");
 
     // Load params and compute global/shared base pointers.
-    emit_line("ld.param.u64 " + rd(10) + ", [elf_base];");
+    emit_line("ld.param.u64 " + rd(10) + ", [global_base];");
     emit_line("cvta.to.global.u64 " + rd(0) + ", " + rd(10) + ";");
-    emit_line("ld.param.u64 " + rd(11) + ", [heap_base];");
-    emit_line("cvta.to.global.u64 " + rd(1) + ", " + rd(11) + ";");
     emit_line("ld.param.u32 " + r(30) + ", [knl_vaddr];");
     emit_line("ld.param.u32 " + r(28) + ", [pds_base_vaddr];");
     emit_line("ld.param.u32 " + r(29) + ", [pds_size_per_thread];");
@@ -2685,9 +2573,9 @@ struct EmitCtx final {
     emit_line("mov.u64 " + rd(3) + ", 0;");
     emit_select_leader_from_active_mask();
 
-    // Fail fast if pds_base_vaddr is outside heap/global numeric address range.
+    // Fail fast if pds_base_vaddr is outside the supported Global numeric address range.
     // Allow pds_size_per_thread==0 to bypass the check (some kernels may not allocate private memory).
-    emit_line("setp.lt.u32 " + p(1) + ", " + r(28) + ", " + hex_u32(opt.heap_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + p(1) + ", " + r(28) + ", " + hex_u32(opt.global_base_vaddr) + ";");
     emit_line("setp.ne.u32 " + p(2) + ", " + r(29) + ", 0;");
     emit_line("and.pred " + p(1) + ", " + p(1) + ", " + p(2) + ";");
     emit_line("@" + p(1) + " trap;");

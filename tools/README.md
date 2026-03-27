@@ -13,7 +13,7 @@
 - `regress.sh`：统一回归入口（聚合 smoke/gate/端到端；默认临时工作目录执行并自动清理，可用参数覆盖）
   - 端到端阶段会强制使用当前树的 `build/sbt_ptx` 作为 `GPU_SBT_PTX`
 - `rodinia_ptx_smoke.sh`：Rodinia compile-first smoke（PTX + ptxas）
-- `pds_ptx_smoke.sh`：PDS 参数与 PTX 映射 smoke
+- `pds_ptx_smoke.sh`：PDS 参数、single-Global entry ABI 与 PTX 映射 smoke
 - `microtest_coverage_gate.sh`：Spike-vs-PTX 微测例 + 覆盖 gate 入口
 - `check_spike_want_consistency.sh`：want 文件一致性 smoke
 - `update_spike_want.py`：从 `VentusInst_basic.txt` 更新 `data/spike_want.txt`

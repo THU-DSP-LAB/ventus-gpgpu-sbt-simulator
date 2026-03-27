@@ -116,6 +116,12 @@ int main() {
           "prototype signature should include runtime-env blob");
   require(ptx.find("    .param .u64 __sbt_arg_vctx_base") == std::string::npos,
           "legacy vctx parameter should be removed");
+  require(ptx.find(".param .u64 elf_base") == std::string::npos,
+          "kernel ABI should not keep legacy elf_base");
+  require(ptx.find(".param .u64 heap_base") == std::string::npos,
+          "kernel ABI should not keep legacy heap_base");
+  require(ptx.find(".param .u64 global_base") != std::string::npos,
+          "kernel ABI should expose one global_base parameter");
   require(ptx.find("@%p0 st.param.u32") == std::string::npos,
           "mutable-state ABI must not predicate st.param");
   require(ptx.find("@%p0 ld.param.u32") == std::string::npos,

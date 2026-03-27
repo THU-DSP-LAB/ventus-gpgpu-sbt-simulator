@@ -10,9 +10,10 @@
 若你要理解当前仓库的 OpenSpec 口径，建议按这个顺序读：
 
 1. `openspec/project.md`
-2. `openspec/specs/replicated-scalar-state/spec.md`
-3. `openspec/specs/ptx-call-prototype/spec.md`
-4. 其它当前 specs
+2. `openspec/specs/global-address-space/spec.md`
+3. `openspec/specs/replicated-scalar-state/spec.md`
+4. `openspec/specs/ptx-call-prototype/spec.md`
+5. 其它当前 specs
 
 ## 状态分层
 
@@ -24,6 +25,7 @@
 ## 当前 specs
 
 - `build-time-spike-pattern-subset`：构建期 Spike pattern 子集生成合同
+- `global-address-space`：当前 PTX ordinary address mapping / single-Global / VMM backing 合同
 - `inst-support`：指令支持与语义验证合同
 - `ptx-call-prototype`：多函数 PTX helper prototype / value ABI 合同
 - `replicated-scalar-state`：当前 PTX lowering 主线合同

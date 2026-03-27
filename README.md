@@ -150,6 +150,15 @@ cd ../rodinia/opencl/bfs
 ./run
 ```
 
+当前 PTX backend 的 current contract 是：
+
+- runtime-visible 普通地址空间只区分 `Shared` 与 `Global`
+- driver 端要求 CUDA VMM 支持；无 VMM 时显式失败，不保留 legacy 双 backing fallback
+- `VENTUS_PTX_HEAP_MB` 仍用于限制 driver 在 `0x9000_0000` 以上的 runtime allocation 窗口；它不再代表 PTX 侧独立 `Heap` 地址空间
+- driver 在单一 `Global` VMM backing 下按页稀疏映射，但 heap-window 内的小 runtime allocation 仍按请求大小推进；落在 heap window 的 ELF `PT_LOAD` 也必须能与已存在的 runtime 页共存
+- heap-window 之外的 `Global` ELF `PT_LOAD` 可以存在，但不会推进 runtime allocation 游标；PDS bitmap 需要扩容时，driver 允许分配新的内部 bitmap，而不是要求旧 bitmap 必须仍是最后一个 allocation
+- 当前阶段空闲 VMM 页不会在 `free` 时立刻 `unmap/release`；driver 会保留这些空页到 device close，以减少连续 kernel launch 场景下的反复映射开销
+
 若要确保端到端运行验证的是当前工作树中的翻译器实现，应显式导出 `GPU_SBT_PTX=$PWD/build/sbt_ptx`；`tools/regress.sh` 与 `tools/ventus_regression_profile.py` 在检测到该二进制存在时会自动这样做。
 
 ## 覆盖与性能回归
@@ -181,6 +190,7 @@ python3 tools/ventus_regression_profile.py --clean
 - 实现文档索引：[doc/README.md](doc/README.md)
 - 当前实现真相（as-built）：[doc/IMPLEMENTATION_CODEMAP.md](doc/IMPLEMENTATION_CODEMAP.md)
 - OpenSpec 入口与状态分层：[openspec/README.md](openspec/README.md)
+- 当前 Global 地址空间 contract：[openspec/specs/global-address-space/spec.md](openspec/specs/global-address-space/spec.md)
 - 当前仍活跃的 PTX 专项问题：[doc/ADDRESS_SPACE_SPECIALIZATION.md](doc/ADDRESS_SPACE_SPECIALIZATION.md)
 - 工具清单与分层：[tools/README.md](tools/README.md)
 - 历史 PTX 设计/讨论参考：`doc/archive/`

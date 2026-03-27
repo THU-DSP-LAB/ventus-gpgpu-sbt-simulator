@@ -19,6 +19,7 @@
 - `README.md`：用户入口、构建命令、回归入口、文档导航。
 - `doc/IMPLEMENTATION_CODEMAP.md`：当前实现真相（as-built）。目录/模块职责、关键数据结构与调用链。
 - `openspec/README.md`：OpenSpec 状态分层、当前 specs 与 archive 的使用方式。
+- `openspec/specs/global-address-space/spec.md`：当前 PTX ordinary address mapping / single-Global / VMM backing contract。
 - `openspec/specs/replicated-scalar-state/spec.md`：当前 PTX lowering contract 的核心规格。
 - `openspec/specs/ptx-call-prototype/spec.md`：多函数 PTX helper prototype / value ABI 合同。
 - `doc/ADDRESS_SPACE_SPECIALIZATION.md`：当前仍活跃的剩余问题说明（问题 2）。
@@ -30,6 +31,7 @@
 ## 2. 当前事实与 contract
 
 - `doc/IMPLEMENTATION_CODEMAP.md`：当前代码口径。
+- `openspec/specs/global-address-space/spec.md`：当前 Global 地址空间 / driver VMM backing 合同。
 - `doc/ADDRESS_SPACE_SPECIALIZATION.md`：当前仍活跃的地址空间专门化问题说明。
 - `openspec/specs/replicated-scalar-state/spec.md`：当前标量状态/分歧/调用合同。
 - `openspec/specs/ptx-call-prototype/spec.md`：当前 helper prototype 合同。

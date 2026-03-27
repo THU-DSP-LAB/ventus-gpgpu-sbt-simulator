@@ -614,6 +614,12 @@ int main() {
           "helper definition should use runtime-env blob");
   require(ptx.find(".param .align 4 .b8 __sbt_arg_vctx_base") == std::string::npos,
           "legacy vctx ABI must be removed from helper signature");
+  require(ptx.find(".param .u64 elf_base") == std::string::npos,
+          "entry ABI should not keep legacy elf_base");
+  require(ptx.find(".param .u64 heap_base") == std::string::npos,
+          "entry ABI should not keep legacy heap_base");
+  require(ptx.find(".param .u64 global_base") != std::string::npos,
+          "entry ABI should expose one global_base parameter");
   require(ptx.find("call.uni (__sbt_call_mutable_out") != std::string::npos,
           "direct call should return mutable-state blob explicitly");
 

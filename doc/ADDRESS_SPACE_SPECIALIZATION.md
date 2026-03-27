@@ -13,9 +13,8 @@
 当前普通标量/向量访存仍大量复用统一的数值地址映射模板：
 
 - 先判断地址是否落在 shared 区间；
-- 再判断是否落在 heap 区间；
-- 计算 shared pointer / ELF global pointer；
-- 视 heap 条件覆写 global pointer；
+- 再判断是否落在 global 区间；
+- 计算 shared pointer / global pointer；
 - 最后执行真实 `ld/st`。
 
 当前主要涉及的 lowering 入口包括：
@@ -33,7 +32,7 @@
 
 - 单条常见 `lw/sw/lb/lh/...` 往往会展开成多条与真实访存无关的模板指令；
 - 即使地址显然来自 `x2/x8 + imm` 的栈/LDS 访问，也常走完整模板；
-- 即使地址显然来自 `x10` 参数区或 `auipc/lui + imm` 形成的 ELF backing，也常走完整模板；
+- 即使地址显然来自 `x10` 参数区或 `auipc/lui + imm` 形成的 Global 地址，也常走完整模板；
 - Rodinia/PoCL 中高频出现的普通访存会因此承担稳定且系统性的 PTX 膨胀。
 
 换句话说，当前 remaining issue 不是“访存语义错误”，而是“过多可静态判定的地址仍被当作 Unknown 处理”。
@@ -60,8 +59,8 @@
 
 当前更合理的方向是把问题收敛为“地址来源可判定时的专门化 lowering”：
 
-- 对常见地址表达式做静态分类，例如 `SharedKnown`、`ElfKnown`、`HeapKnown`、`Unknown`；
-- 优先覆盖 `x2/x8` 派生栈/LDS、`x10` 派生参数区、`auipc/lui + imm` 形成的 ELF 区；
+- 对常见地址表达式做静态分类，例如 `SharedKnown`、`GlobalKnown`、`Unknown`；
+- 优先覆盖 `x2/x8` 派生栈/LDS、`x10` 派生参数区、`auipc/lui + imm` 形成的 Global 区；
 - 仅在地址空间可证明时发 `.shared` / `.global` 专门化 PTX；
 - 对不能证明的情况继续保留当前通用模板。
 

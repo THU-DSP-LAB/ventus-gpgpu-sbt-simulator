@@ -54,6 +54,9 @@ rg -q "\\.param \\.u32 pds_base_vaddr," "$ptx"
 rg -q "\\.param \\.u32 pds_size_per_thread," "$ptx"
 rg -q "\\.param \\.u32 pds_bitmap_base_vaddr," "$ptx"
 rg -q "\\.param \\.u32 pds_pool_num_blocks" "$ptx"
+rg -q "\\.param \\.u64 global_base," "$ptx"
+! rg -q "\\.param \\.u64 elf_base," "$ptx"
+! rg -q "\\.param \\.u64 heap_base," "$ptx"
 
 "$PTXAS" -arch="$ARCH" "$ptx" -o "$cubin" >/dev/null
 echo "ok PDS smoke: $picked_fn (ARCH=$ARCH)"
