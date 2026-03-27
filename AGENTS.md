@@ -13,7 +13,7 @@
 ## Repo Context
 
 本仓库作为 `ventus-env` 的子项目集成使用时，`ventus-env` 位于本仓库的上级目录（`../`）。
-* ventus 有关的软件工具使用 `../install/bin` 目录下的可执行程序
+* ventus 有关的软件工具使用 `../install` 目录下的可执行程序或库，通过 `source ../env.sh` 设置环境变量让 OpenCL App 在 ventus 环境中运行
 * ventus 编译器：`../install/bin/clang -cl-std=CL2.0 -target riscv32 -mcpu=ventus-gpgpu kernel.cl -o kernel.riscv -nodefaultlibs -Wl,${VENTUS_ENV_PATH}/install/lib/crt0.o -Wl,${VENTUS_ENV_PATH}/install/lib/riscv32clc.o -Wl,--gc-sections -L${VENTUS_ENV_PATH}/install/lib -lworkitem -I${VENTUS_ENV_PATH}/installinclude/clc -O1 -Wl,-T,${VENTUS_ENV_PATH}/install/lib/ldscripts/ventus/elf32lriscv.ld -Wl,--init=${KERNEL_FUNC_NAME} -w -D__opencl_c_generic_address_space=1 -D__opencl_c_named_address_space_builtins=1 -D__OPENCL_VERSION__=200` 注意替换 `${VENTUS_ENV_PATH}` 和 `${KERNEL_FUNC_NAME}`
 * ventus 反汇编器：`../install/bin/llvm-objdump -d --mattr=+v,+zfinx kernel.riscv > kernel.dump`
 * `ventus-env` 典型子仓库包括：
@@ -25,6 +25,8 @@
   * Ventus 驱动程序 `../driver`
 
 本项目通常不应直接修改上级 `ventus-env` 的源码；仅在做“集成到工具链”的工作（例如 `driver/driver/ptx_device`）时例外。
+* 如果修改了 driver / pocl 等其它 ventus-env 子项目源码，需用 `../build-ventus.sh` 来编译安装新版本到 `../install` 或者其它临时目录
+* 临时安装目录：推荐 `cp -a --reflink=auto` 复制 `../install` 然后单独按需编译安装修改的子项目，仿照 `../env.sh` 重置环境变量
 
 使用 Ventus ELF 作为输入，采用（不要使用 `.vmem` 文件）：
 * `../rodinia/opencl/*/*.riscv`
