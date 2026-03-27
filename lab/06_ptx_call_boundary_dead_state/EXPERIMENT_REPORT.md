@@ -5,7 +5,8 @@
 本报告对应的本地默认实验产物由以下命令生成：
 
 ```bash
-cd /work/ventus-env/sbtsim/lab/06_ptx_call_boundary_dead_state
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/lab/06_ptx_call_boundary_dead_state"
 python3 tools/run_experiment.py --out-dir build
 ```
 
@@ -143,7 +144,8 @@ python3 tools/run_experiment.py --out-dir build
 ## 6. 复现步骤
 
 ```bash
-cd /work/ventus-env/sbtsim/lab/06_ptx_call_boundary_dead_state
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/lab/06_ptx_call_boundary_dead_state"
 python3 -m unittest tests.test_run_experiment -v
 python3 tools/run_experiment.py --out-dir build
 ```

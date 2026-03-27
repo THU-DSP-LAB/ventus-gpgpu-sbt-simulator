@@ -12,7 +12,8 @@
 本报告对应的本地默认实验产物由以下命令生成：
 
 ```bash
-cd /work/ventus-env/sbtsim_lab/lab/05_ptx_direct_call_param_abi
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/lab/05_ptx_direct_call_param_abi"
 ./run_experiment.py --out-dir build
 ```
 
