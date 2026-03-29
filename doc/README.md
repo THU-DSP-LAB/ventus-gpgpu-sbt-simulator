@@ -3,13 +3,13 @@
 ## 状态图例
 
 - `current`：当前实现真相或当前 contract
-- `active future work`：仍在推进的剩余问题或未来工作
+- `active`：仍在推进的共享前置决策、剩余问题或未来工作
 - `historical`：历史设计、历史计划、历史回归结论
 - `legacy`：仍有参考价值，但已不再是当前入口或回归基线
 
 维护约定：
 - 长期维护文档优先在文首标明状态与角色；不要把“最近一次提交 hash/更新时间列表”当作主维护机制，文档新鲜度应通过正文口径、索引位置和 Git 历史共同体现。
-- `doc/` 根目录优先保留长期维护入口：`current` 文档，以及少量跨多个 change 仍成立的 `active future work` 专题。
+- `doc/` 根目录优先保留长期维护入口：`current` 文档，以及少量跨多个 change 仍成立的 `active` 专题。
 - 同一主题在 `doc/` 根目录只保留一个 active 入口；若是某次 change 的阶段性 proposal/design/tasks，应进入 `openspec/changes/` 而不是继续留在 `doc/` 根目录竞争入口。
 
 ## 1. 当前优先阅读（按“先现状、再设计、后背景”）
@@ -26,6 +26,8 @@
 
 若你要看仍然活跃的前瞻专项，再读：
 
+- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：custom 指令两条 active change 的共享前置基线；冻结 `.version 7.8` / `sm_90`、oracle、non-MMA 语义和 MMA 首发支持子集。
+- `doc/CUSTOM_INSTRUCTION_INPUT.md`：custom 指令输入材料的受管副本；供 shared baseline 与 active changes 引用，但不覆盖 current spec。
 - `doc/ventus-divergence-sgpr-analysis.md`：基于 `../llvm` 的参考分析，说明 Ventus LLVM 如何处理 `vbranch` / `join` 下的 SGPR/VGPR 有效性问题。
 
 ## 2. 当前事实与 contract
@@ -38,6 +40,7 @@
 - `openspec/specs/inst-support/spec.md`：当前指令支持与验证合同。
 - `openspec/specs/sbt-rodinia-bringup/spec.md`：当前 Rodinia bring-up / fail-fast 边界。
 - `openspec/specs/build-time-spike-pattern-subset/spec.md`：当前 Spike pattern 子集生成合同。
+- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：active shared baseline；约束 `support-custom-instructions` / `support-custom-mma` 在 sync spec 前的共同前提。
 
 ## 3. 历史 PTX 设计/规划（已归档）
 

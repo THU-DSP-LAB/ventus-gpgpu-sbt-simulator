@@ -45,6 +45,7 @@
 - 文档分层：
   - `README.md`：用户入口
   - `doc/`：长期维护文档；其中 `doc/IMPLEMENTATION_CODEMAP.md` 是当前实现真相
+  - custom 指令当前还存在 `doc/CUSTOM_INSTRUCTION_INPUT.md`（受管输入材料）与 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`（shared active baseline）；两者都不是 current contract
   - `openspec/specs/`：当前 contract
   - `openspec/changes/`：具体 change 的 proposal/design/tasks 与阶段性材料
   - `doc/archive/` / `openspec/changes/archive/` / `lab/`：历史背景
@@ -55,6 +56,8 @@
 - 解码测试：字段提取、非法编码、以及必要时的 encode/decode round-trip
 - 指令语义测试：运行 Spike-vs-PTX 微测例，按整数精确对比 + 浮点容差对比
 - 回归产物：保留生成的 PTX 文本、运行输出、以及必要的 `cuobjdump --dump-sass` 片段做对照（避免工具链升级导致悄然变化）
+
+对于依赖较高 PTX/SM 能力的新能力（例如 TF32 / BF16 / packed / MMA），若当前 baseline 不足，必须先通过 probe / compile-first 实验决定统一的 project-wide PTX baseline，再进入对应 change 的实现阶段；不得让并行 active changes 各自隐式决定不同 baseline。
 
 ### Git Workflow
 - `main` 保持“随时可运行/可复现”
@@ -72,6 +75,7 @@
 - 原型阶段优先功能正确与可验证性，不追求性能最优
 - 指令表（`VentusInst_basic.xlsx`）含合并单元格：若做自动解析需要特别处理
 - PTX 必须满足 `ptxas` 约束（控制流、寄存器、地址空间等），默认以 `sm_75` 做 compile-first 验证
+- 若某个 active change 需要提高 PTX baseline，必须先把“所需能力 -> 最低可行 PTX version / SM”的实验结论收敛为单一 project-wide 决策，再修改 current contract、默认值与回归口径；在该决策落地前，current baseline 仍以 `sm_75` 为准
 - 当前仍允许小范围显式例外（如非 `ret` 形态 `jalr`），并保持 fail-fast 诊断
 - proposal/design 一旦被实现，必须同步更新状态说明，不能继续以未来时描述当前主线
 
