@@ -22,7 +22,7 @@
 - 项目 domain context 明确 `v0` 是普通向量寄存器；non-MMA custom 指令里的 `vm`/`m` 编码位当前也不引入独立 mask 语义；
 - 本地 `ptxas 13.1` 探针已证明：
   - `shuffle` 和 `f16x2` packed 算术可以直接映射；
-  - `bf16x2` packed 算术要求更高目标架构；
+  - `bf16x2` packed `add/mul` 与部分 native SFU 需要 `sm_90+`，但 `fma.rn.bf16x2` 与 `bf16<->f32` convert 在 `sm_89` 上可用；
   - `vcvt.*f16x2/bf16x2` 可以直接映射；
   - packed SFU 并不是所有子操作都有原生 PTX；
   - MMA 的部分 Ventus shape 不能直接当作 PTX native MMA shape 使用。
@@ -38,7 +38,7 @@
 - 把 `doc/CUSTOM_INSTRUCTION_INPUT.md` 中的新增指令收敛到一个可实施的 active change，而不是继续依赖未同步的输入材料口述。
 - 将 custom 指令支持拆分为两个 active changes，并把本 change 收敛为 non-MMA 范围。
 - 为 custom 指令建立可持续的前端架构：允许 Spike-backed pattern 与 repo-local custom decode 并存。
-- 在 shared baseline 文档已冻结的 `sm_90` / oracle / packed 合同之上实现 non-MMA custom 支持，避免为了兼容旧 SM 而把大量新指令降成复杂软件模拟。
+- 在 shared baseline 文档已冻结的 `sm_89` / oracle / packed 合同之上实现 non-MMA custom 支持；对 `bf16x2` 保留必要的 targeted composite lowering，但不再为 `sm_75` 等旧 baseline 维持兼容实现。
 - 为后续 MMA change 预留可扩展的前端结构，但不在本 change 中承担 MMA lowering 责任。
 
 **Non-Goals:**
@@ -69,7 +69,7 @@
 
 本 change 不再自己决定 baseline/oracle/shared semantics，而是直接采用 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 中已冻结的共享前提。当前至少包括：
 
-- `.version 7.8` / `sm_90` project-wide PTX baseline
+- `.version 7.8` / `sm_89` project-wide PTX baseline
 - repository-managed reference-model oracle
 - packed `f16x2` / `bf16x2` 的 32-bit container 语义
 - MMA 首发只承诺 `native-mma-sync` 子集的边界
@@ -134,15 +134,20 @@ repo-local custom decode 负责本 change 新增的 custom opcode 家族，例�
 
 - `shuffle`: 直接映射到 `shfl.sync.idx/up/down/bfly.b32`
 - `vcvt`: 直接映射到 PTX `cvt` / packed convert
-- packed `f16x2` / `bf16x2` arithmetic:
+- packed `f16x2` arithmetic:
   - 优先用原生 `add/mul/fma.*x2`
-  - 不再为低 SM 保留兼容实现
+- packed `bf16x2` arithmetic on the shared `sm_89` baseline:
+  - `vfma.bf16x2` 直接映射到原生 `fma.rn.bf16x2`
+  - `vadd.bf16x2` / `vmul.bf16x2` 走 `bf16 -> f32 -> fp32 op -> bf16` 的显式 lowering
 - `fp32` SFU:
   - 对 `ex2/lg2/rcp/sqrt/rsqrt/sin/cos` 用原生 PTX
   - `tanh/gelu/silu` 用显式组合序列展开
-- packed `f16x2` / `bf16x2` SFU:
+- packed `f16x2` SFU:
   - 原生 PTX 存在时直接映射
   - 原生 PTX 缺失时走 unpack -> per-half compute -> repack 的显式 lowering
+- packed `bf16x2` SFU on the shared `sm_89` baseline:
+  - canonical path 为 `bf16 -> f32 -> fp32 SFU/composed sequence -> bf16`
+  - 不再把 `sm_90`-only native packed BF16 SFU 指令视为首发前提
 
 这里有一个关键判断：即使本 change 覆盖“其它所有指令”，它也仍然是可做的，因为缺失原生 PTX 的 packed SFU 子操作可以用显式 lowering 补齐；但这要求一开始就接受“native-first, synthesis-second”的实现模式。
 

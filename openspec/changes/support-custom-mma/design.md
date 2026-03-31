@@ -18,7 +18,7 @@ MMA 被拆成独立 change 的直接原因是：它的主要难点不在普通 c
 
 - `doc/CUSTOM_INSTRUCTION_INPUT.md` 列出了多种 Ventus MMA shape/type 组合；
 - 本地 `ptxas` 探针已经证明其中一部分 shape 不能直接作为 PTX native MMA shape 使用；
-- `tf32` / `bf16` MMA 需要更高 PTX/SM target；
+- `tf32` / `bf16` MMA 需要高于当前 `sm_75` 主线的 PTX/SM target，但 shared baseline 已收敛到 `sm_89`；
 - 即使某个组合存在 PTX native MMA，也仍需证明 Ventus 的寄存器窗口与 PTX fragment 寄存器排布能够稳定对应。
 - 对首发 `native-mma-sync` 子集，本地 `ptxas 13.1` 探针还表明 `row.col` 可接受，而 `row.row` / `col.row` / `col.col` 不在当前 native 接受面中。
 
@@ -34,7 +34,7 @@ MMA 被拆成独立 change 的直接原因是：它的主要难点不在普通 c
 - 定义支持矩阵中每个组合的 lowering 路径和所需 PTX target。
 - 明确 unsupported 组合的 fail-fast 行为与诊断要求。
 - 为 supported MMA subset 规划 compile-first 与语义验证闭环。
-- 在 shared baseline 文档已冻结的 `.version 7.8` / `sm_90` / oracle / MMA 首发边界之上展开 support matrix，但不单独决定 project-wide baseline。
+- 在 shared baseline 文档已冻结的 `.version 7.8` / `sm_89` / oracle / MMA 首发边界之上展开 support matrix，但不单独决定 project-wide baseline。
 
 **Non-Goals:**
 

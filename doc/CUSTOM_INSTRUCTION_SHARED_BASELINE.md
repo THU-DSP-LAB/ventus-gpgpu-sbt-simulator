@@ -24,7 +24,7 @@ This document consolidates decisions based on:
 
 - `doc/CUSTOM_INSTRUCTION_INPUT.md` as input material, not as canonical current contract,
 - current project constraints in `README.md`, `doc/IMPLEMENTATION_CODEMAP.md`, `openspec/project.md`, and `openspec/specs/inst-support/spec.md`,
-- local `ptxas 13.1` compile-first probes performed on 2026-03-29,
+- local `ptxas 13.1` compile-first probes performed on 2026-03-29 and 2026-03-31,
 - and NVIDIA PTX ISA documentation for `mma.sync`, `wmma`, `bf16x2`, and related target requirements.
 
 This document covers shared prerequisites only. It does not replace:
@@ -39,24 +39,26 @@ This document covers shared prerequisites only. It does not replace:
 The shared project-wide PTX baseline for the planned custom-instruction support is frozen as:
 
 - `.version 7.8`
-- `.target sm_90`
+- `.target sm_89`
 
 Rationale:
 
-- The planned non-MMA scope explicitly includes packed `bf16x2` arithmetic and packed `bf16x2` SFU.
-- Local `ptxas 13.1` probes on 2026-03-29 confirmed that:
-  - `add.bf16x2` requires PTX ISA `.version 7.8+`
-  - `ex2.approx.ftz.bf16x2` requires PTX ISA `.version 7.8+`
+- The planned non-MMA scope explicitly includes packed `bf16x2` arithmetic and packed `bf16x2` SFU, and that scope is still retained.
+- Local `ptxas 13.1` probes on 2026-03-29 and 2026-03-31 confirmed that:
   - `add.bf16x2` and `mul.bf16x2` require `sm_90+`
   - `ex2.approx.ftz.bf16x2` requires `sm_90+`
-- local probes also confirmed that the first committed `mma.sync` subset for `m16n8k16` / `m16n8k8` is accepted starting at `.version 7.8`
-- Therefore the non-MMA scope already forces a baseline above `sm_80`.
+  - `fma.rn.bf16x2` is accepted on `sm_89`
+  - `cvt.rn.f32.bf16`, `cvt.rn.bf16.f32`, and `cvt.rn.bf16x2.f32` are accepted on `sm_89`
+  - the first committed `mma.sync` subset for `m16n8k16` / `m16n8k8` `row.col` is accepted on `sm_89`
+- Therefore the project can keep the planned `bf16x2` and MMA scope on an `sm_89` baseline only if packed `bf16x2` support is specified as a mixed native/composite lowering strategy instead of assuming `sm_90`-only native arithmetic and SFU opcodes.
+- This keeps the shared baseline aligned with currently available validation hardware instead of freezing the whole custom-instruction plan behind unavailable `sm_90` runtime hardware.
 
 Implications:
 
 - `sm_75` compatibility is no longer a goal for the active custom-instruction changes.
 - Current docs, command examples, regression defaults, and runtime assumptions that still use `sm_75` remain `current` only until the active changes land; they must be updated together during implementation rather than via custom-only exceptions.
-- The integrated runtime path must migrate together with this repo. In particular, the default SM selection in `../driver/driver/ptx_device/ventus.cpp` must stop clamping to `75`, or integrated PoCL/driver execution will diverge from the frozen project baseline even if compile-first passes in this repo.
+- The integrated runtime path must migrate together with this repo. In particular, the default SM selection in `../driver/driver/ptx_device/ventus.cpp` must stop clamping to `75`, or integrated PoCL/driver execution will diverge from the frozen `sm_89` project baseline even if compile-first passes in this repo.
+- The first implementation phase must treat explicit composite `bf16x2` lowering as part of the baseline contract, not as an optional fallback that can be skipped when native `sm_90` opcodes are unavailable.
 
 ### 2. Canonical semantic oracle path
 
@@ -86,6 +88,10 @@ The following non-MMA decisions are frozen before implementation.
 - One active vector element corresponds to one 32-bit packed container.
 - `vl` counts packed containers, not individual 16-bit halves.
 - These instructions are not required to preserve the mental model of ordinary `vsew=16` element-wise vector execution.
+- On the shared `sm_89` baseline, packed `bf16x2` support uses a mixed lowering strategy:
+  - `vfma.bf16x2` may map to native `fma.rn.bf16x2`
+  - `vadd.bf16x2` / `vmul.bf16x2` may lower through `bf16 -> f32 -> fp32 op -> bf16`
+  - packed `bf16x2` SFU may lower through `bf16 -> f32 -> fp32 SFU/composed sequence -> bf16`
 
 #### 3.2 Packed FMA aliasing rule
 
@@ -108,6 +114,7 @@ For `fp32`, `f16x2`, and `bf16x2` custom SFU instructions:
 - the project does not require bit-exact agreement with one specific implementation
 - lowering should map to the closest native PTX instruction where available
 - where native PTX is missing, explicit composed lowering is allowed
+- on the shared `sm_89` baseline, packed `bf16x2` SFU support is expected to use explicit convert/compute/repack lowering rather than `sm_90`-only native PTX SFU opcodes
 
 #### 3.5 Vector convert
 
@@ -182,13 +189,15 @@ They are not declared impossible forever, but they are not part of the first imp
 
 ## Local Probe Notes
 
-The following local compile-first facts were confirmed with `ptxas 13.1` on 2026-03-29:
+The following local compile-first facts were confirmed with `ptxas 13.1` on 2026-03-29 and 2026-03-31:
 
 - `.version 7.8` is the first probed PTX ISA version that simultaneously accepts:
-  - packed `bf16x2` arithmetic
-  - packed `bf16x2` `ex2.approx`
-  - the first committed `mma.sync` subset on `sm_90`
-- packed `bf16x2` arithmetic and packed `bf16x2` `ex2.approx` require `sm_90+`
+  - `fma.rn.bf16x2`
+  - `cvt.rn.f32.bf16` / `cvt.rn.bf16.f32` / `cvt.rn.bf16x2.f32`
+  - the first committed `mma.sync` subset on `sm_89`
+- packed `bf16x2` `add` / `mul` and packed `bf16x2` `ex2.approx` require `sm_90+`
+- `fma.rn.bf16x2` is accepted on `sm_89`
+- `cvt.rn.f32.bf16`, `cvt.rn.bf16.f32`, and `cvt.rn.bf16x2.f32` are accepted on `sm_89`
 - `mma.sync` rejects several input-material shapes when used as direct native shapes, including:
   - `m16n16k16`
   - `m8n8k16`
@@ -196,6 +205,7 @@ The following local compile-first facts were confirmed with `ptxas 13.1` on 2026
   - `m16n16k8`
   - `m8n8k8`
 - for the first committed `native-mma-sync` shapes, local probes accepted `row.col` and rejected `row.row`, `col.row`, and `col.col`
+- local `nvdisasm` inspection on `sm_89` showed `fma.rn.bf16x2` lowering to `HFMA2.BF16_V2` and `cvt.rn.bf16.f32` lowering to `F2FP.BF16...`; this is treated as design evidence that the shared `sm_89` baseline retains a usable per-thread BF16 datapath subset
 
 These probe notes are used here as design evidence. Reproducible implementation-time probes may later be added under `lab/` or another maintained location, but that is not a prerequisite for freezing this active baseline.
 
@@ -205,7 +215,7 @@ These probe notes are used here as design evidence. Reproducible implementation-
 
 This change must treat the following as already frozen by this document:
 
-- `.version 7.8` / `sm_90` shared PTX baseline
+- `.version 7.8` / `sm_89` shared PTX baseline
 - repository-managed reference-model oracle
 - packed custom instruction contract
 - shuffle / approximate SFU / `vcvt` shared semantic boundary
@@ -216,7 +226,7 @@ It must not silently redefine those shared decisions inside its own artifacts or
 
 This change must treat the following as already frozen by this document:
 
-- `.version 7.8` / `sm_90` shared PTX baseline
+- `.version 7.8` / `sm_89` shared PTX baseline
 - repository-managed reference-model oracle path
 - initial MMA commitment limited to the first `native-mma-sync` subset
 - `wmma` reserved as active research rather than first-subset commitment

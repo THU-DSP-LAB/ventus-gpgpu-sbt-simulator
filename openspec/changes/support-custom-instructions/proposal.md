@@ -34,7 +34,8 @@
 - 调整 current contract：
   - custom 指令支持不再被“必须来自 Spike whitelist”这一隐含前提绑定；
   - custom 非 MMA 指令不引入 `v0` mask 语义，相关 `vm`/`m` 位仅保留为编码位；
-  - custom 指令相关的 PTX baseline（`.version 7.8` / `sm_90`）、oracle、packed 语义与 MMA 首发边界，必须先遵守 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`，而不是由本 change 单独隐式决定。
+  - custom 指令相关的 PTX baseline（`.version 7.8` / `sm_89`）、oracle、packed 语义与 MMA 首发边界，必须先遵守 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`，而不是由本 change 单独隐式决定。
+  - packed `bf16x2` 支持在 shared `sm_89` baseline 下保留，但其 lowering 不再假设存在 `sm_90`-only native `add/mul/ex2.bf16x2`；需要显式 mixed native/composite lowering。
 - 将 MMA 支持显式移交给独立 active change `support-custom-mma`。
 
 ## Capabilities
@@ -52,7 +53,7 @@
 ## Impact
 
 - 现有 decode 架构需要从“Spike pattern + scalar fallback”扩展到“三路结构”：Spike-backed pattern、repo-local custom decode、scalar fallback。
-- 非 MMA 指令虽然被拆成独立 change，但并不只是补 emitter case；它们仍要求先扩展 decode IR，并将 PTX target baseline 提升到 shared baseline 文档冻结的 `sm_90`。
+- 非 MMA 指令虽然被拆成独立 change，但并不只是补 emitter case；它们仍要求先扩展 decode IR，并将 PTX target baseline 提升到 shared baseline 文档冻结的 `sm_89`。
 - 本 change 的实现顺序会被 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 中的 shared prerequisite 显式约束。
 - MMA 风险被移交到独立 active change `support-custom-mma`；本 change 不再承诺 MMA shape/type 的任何支持范围。
 - 一旦 baseline 决策完成并高于当前 `sm_75`，历史文档/命令示例与回归默认值都必须一起同步，不能只改 custom 专项路径。

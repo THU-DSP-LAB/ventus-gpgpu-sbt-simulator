@@ -13,8 +13,8 @@
 - [ ] Add decode-focused tests that prove `--require-known` accepts the new non-MMA instructions without requiring Spike whitelist changes.
 
 - [ ] Phase 1 foundation: raise the PTX baseline for custom instruction support.
-- [ ] Update PTX emitter target/version defaults to the shared baseline frozen in `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` (`.version 7.8` / `sm_90`).
-- [ ] Update compile-first and regression entrypoints so the project defaults validate against the shared `sm_90` baseline rather than `sm_75`.
+- [ ] Update PTX emitter target/version defaults to the shared baseline frozen in `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` (`.version 7.8` / `sm_89`).
+- [ ] Update compile-first and regression entrypoints so the project defaults validate against the shared `sm_89` baseline rather than `sm_75`.
 - [ ] Update the integrated runtime default in `../driver/driver/ptx_device/ventus.cpp` so the normal PoCL/driver path no longer clamps the default target SM to `75` once the shared baseline is adopted.
 - [ ] Update runtime-facing docs/examples that currently rely on `VENTUS_PTX_SM=75` or `sm_75` defaults so the integrated flow matches the shared baseline rather than requiring a hidden environment override.
 
@@ -22,18 +22,21 @@
 - [ ] Implement the packed `f16x2` / `bf16x2` lowering against the shared 32-bit-container contract from `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`, rather than redefining `vtype/vsew/vlmul` semantics locally in this change.
 - [ ] Lower `shuffle.idx/up/down/bfly` through PTX `shfl.sync.*`.
 - [ ] Lower `vcvt` instructions through PTX scalar/packed conversion instructions.
-- [ ] Lower packed `f16x2` / `bf16x2` add/mul/fma.
+- [ ] Lower packed `f16x2` add/mul/fma through native PTX packed arithmetic.
+- [ ] Lower `vfma.bf16x2` through native `fma.rn.bf16x2` on the shared `sm_89` baseline.
+- [ ] Lower `vadd.bf16x2` / `vmul.bf16x2` through explicit `bf16 -> f32 -> fp32 op -> bf16` composite sequences on the shared `sm_89` baseline.
 - [ ] Lower `fp32` SFU instructions, using explicit composed sequences for `tanh/gelu/silu`.
-- [ ] Lower packed `f16x2` / `bf16x2` SFU instructions, using explicit unpack/compute/repack logic where PTX lacks a native instruction.
+- [ ] Lower packed `f16x2` SFU instructions, using explicit unpack/compute/repack logic where PTX lacks a native instruction.
+- [ ] Lower packed `bf16x2` SFU instructions through explicit `bf16 -> f32 -> fp32 SFU/composed sequence -> bf16` lowering on the shared `sm_89` baseline.
 
 - [ ] Phase 1 validation: add compile-first and semantic coverage for every non-MMA family.
 - [ ] Add microtests that make each non-MMA family observable through output buffers.
 - [ ] Ensure floating-point validation uses tolerance and packed/integer validation uses exact comparison where appropriate.
 - [ ] Implement the repository-managed reference-model oracle path frozen in `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` rather than relying on an implicit default.
-- [ ] Run the relevant compile-first and microtest coverage gates on the shared `sm_90` baseline.
+- [ ] Run the relevant compile-first and microtest coverage gates on the shared `sm_89` baseline.
 
 - [ ] Documentation sync:
-- [ ] Update `README.md` with the shared `sm_90` baseline and the current custom-instruction support scope.
+- [ ] Update `README.md` with the shared `sm_89` baseline and the current custom-instruction support scope.
 - [ ] Update `doc/README.md`, `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`, and `doc/IMPLEMENTATION_CODEMAP.md` to describe the new decode path, the shared PTX baseline, the oracle path, and the non-MMA / MMA change boundary.
 - [ ] Sync the resulting current contract into the relevant `openspec/specs/` files, including `openspec/specs/inst-support/spec.md` and any affected Spike-pattern contract docs.
 - [ ] Check `openspec/README.md` index wording if the current/active contract boundaries need clarification.

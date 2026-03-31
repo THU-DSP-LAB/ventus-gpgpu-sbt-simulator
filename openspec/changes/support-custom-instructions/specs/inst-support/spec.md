@@ -58,11 +58,19 @@ This change MUST cover every custom instruction family in `doc/CUSTOM_INSTRUCTIO
 
 These instructions MUST be compile-supported under `--require-known`; where PTX does not provide a direct native instruction, the backend MAY lower them via explicit helper sequences, unpack/compute/repack logic, or equivalent explicit lowering.
 
+For packed `bf16x2` families on a shared baseline below `sm_90`, the active artifacts MUST explicitly document the chosen mixed native/composite lowering path rather than assuming that native packed BF16 arithmetic or SFU opcodes are available for every operation.
+
 #### Scenario: Non-MMA custom kernel compiles
 - **GIVEN** an input kernel uses only the non-MMA custom instruction families listed above
 - **WHEN** `sbt_ptx --require-known` translates the kernel
 - **THEN** PTX emission must not fail with `unknown instruction` or `unsupported.inst` for those instruction families
 - **AND THEN** the generated PTX must compile with `ptxas` for the chosen project-wide custom-support baseline
+
+#### Scenario: Packed bf16x2 support stays available on the shared `sm_89` baseline
+- **GIVEN** the shared active baseline is frozen to `.version 7.8` / `sm_89`
+- **WHEN** the project lowers packed `bf16x2` arithmetic or SFU instructions whose direct PTX native forms are unavailable below `sm_90`
+- **THEN** the active artifacts document an explicit mixed native/composite lowering path
+- **AND THEN** `bf16x2` support remains part of the supported non-MMA family set rather than being silently deferred or dropped
 
 ### Requirement: Packed custom instructions define their `vtype` contract explicitly before implementation
 For packed non-MMA custom instruction families (`f16x2` / `bf16x2` arithmetic and SFU), the project MUST define how the instructions relate to the current Ventus `vtype` contract before implementation.
