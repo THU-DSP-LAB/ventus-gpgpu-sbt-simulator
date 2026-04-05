@@ -220,6 +220,7 @@ struct CacheKey final {
   int sm = 0;
   bool require_known = false;
   bool bundle_regext = true;
+  bool compat_spike_nested_regext = false;
   bool include_comments = true;
   std::string exe_abs;
   long long exe_time = 0;
@@ -239,6 +240,7 @@ static std::string render_cache_meta(const CacheKey &k) {
   o << "sm=" << k.sm << "\n";
   o << "require_known=" << (k.require_known ? 1 : 0) << "\n";
   o << "bundle_regext=" << (k.bundle_regext ? 1 : 0) << "\n";
+  o << "compat_spike_nested_regext=" << (k.compat_spike_nested_regext ? 1 : 0) << "\n";
   o << "include_comments=" << (k.include_comments ? 1 : 0) << "\n";
   o << "exe_abs=" << k.exe_abs << "\n";
   o << "exe_time=" << k.exe_time << "\n";
@@ -287,8 +289,9 @@ static bool cache_meta_matches(const CacheKey &k, const std::string &meta) {
   if (!fmt || *fmt != "2") return false;
 
   return eqs("elf_abs", k.elf_abs) && eql("elf_time", k.elf_time) && eqs("func", k.func) && eqs("out_abs", k.out_abs.string()) && eqi("sm", k.sm) &&
-         eqi("require_known", k.require_known ? 1 : 0) && eqi("bundle_regext", k.bundle_regext ? 1 : 0) && eqi("include_comments", k.include_comments ? 1 : 0) &&
-         eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
+         eqi("require_known", k.require_known ? 1 : 0) && eqi("bundle_regext", k.bundle_regext ? 1 : 0) &&
+         eqi("compat_spike_nested_regext", k.compat_spike_nested_regext ? 1 : 0) &&
+         eqi("include_comments", k.include_comments ? 1 : 0) && eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
 }
 
 } // namespace
@@ -307,6 +310,7 @@ int main(int argc, char **argv) {
   bool include_comments = true;
   int sm = 89;
   bool cache_enabled = true;
+  const bool compat_spike_nested_regext = env_bool("SBT_COMPAT_SPIKE_NESTED_REGEXT", false);
 
   elf_path = argv[1];
 
@@ -358,6 +362,7 @@ int main(int argc, char **argv) {
     key.sm = sm;
     key.require_known = require_known;
     key.bundle_regext = bundle_regext;
+    key.compat_spike_nested_regext = compat_spike_nested_regext;
     key.include_comments = include_comments;
     if (auto exe = self_exe_path()) {
       key.exe_abs = fs::absolute(*exe).string();
@@ -438,6 +443,7 @@ int main(int argc, char **argv) {
     sbt::DecodeOptions dopt;
     dopt.bundle_regext = bundle_regext;
     dopt.require_known = require_known;
+    dopt.spike_compat_nested_regext = compat_spike_nested_regext;
     const auto decoded = sbt::decode_text(slice, fr->start, dopt, patterns);
 
     const auto cfg = sbt::cfg::build_function_cfg(decoded, fr->start, fr->end);

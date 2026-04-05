@@ -6,6 +6,8 @@
 #include "spike_encoding_subset.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -227,6 +229,16 @@ static fs::path default_dump_path(const fs::path &elf) {
   return p;
 }
 
+static bool env_bool(const char *k, bool default_value) {
+  const char *v = std::getenv(k);
+  if (!v) return default_value;
+  std::string s(v);
+  for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "yes" || s == "on") return true;
+  if (s == "0" || s == "false" || s == "no" || s == "off") return false;
+  return default_value;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -245,6 +257,7 @@ int main(int argc, char **argv) {
   bool bundle_regext = true;
   bool include_start = false;
   bool verbose = false;
+  const bool compat_spike_nested_regext = env_bool("SBT_COMPAT_SPIKE_NESTED_REGEXT", false);
 
   for (int i = 3; i < argc; ++i) {
     std::string a = argv[i];
@@ -321,6 +334,7 @@ int main(int argc, char **argv) {
       sbt::DecodeOptions opt;
       opt.bundle_regext = bundle_regext;
       opt.require_known = require_known;
+      opt.spike_compat_nested_regext = compat_spike_nested_regext;
 
       std::vector<uint8_t> slice = text.data;
       uint32_t base = text.vaddr;
@@ -399,6 +413,7 @@ int main(int argc, char **argv) {
       sbt::DecodeOptions opt;
       opt.bundle_regext = bundle_regext;
       opt.require_known = require_known;
+      opt.spike_compat_nested_regext = compat_spike_nested_regext;
 
       std::vector<uint8_t> slice = text.data;
       uint32_t base = text.vaddr;
@@ -446,6 +461,7 @@ int main(int argc, char **argv) {
       sbt::DecodeOptions opt;
       opt.bundle_regext = bundle_regext;
       opt.require_known = require_known;
+      opt.spike_compat_nested_regext = compat_spike_nested_regext;
 
       struct FuncRange final {
         std::string name;

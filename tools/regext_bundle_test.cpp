@@ -1,3 +1,4 @@
+#include "sbt/cfg.hpp"
 #include "sbt/riscv_decode.hpp"
 #include "sbt/spike_encoding_parser.hpp"
 
@@ -172,6 +173,73 @@ int main(int argc, char **argv) {
       threw = true;
     }
     require(threw, "dangling regext throws");
+  }
+
+  // 5) temporary Spike-compat mode accepts nested regexti+regext and follows Spike overwrite semantics.
+  {
+    const uint32_t regexti_imm12 = (3u << 6) | (2u << 3) | 1u;
+    uint32_t w_regexti = patterns[1].match;
+    w_regexti = set_bits(w_regexti, 20, 12, regexti_imm12);
+
+    const uint32_t regext_imm12 = (7u << 9) | (6u << 6) | (5u << 3) | 4u;
+    uint32_t w_regext = patterns[0].match;
+    w_regext = set_bits(w_regext, 20, 12, regext_imm12);
+
+    uint32_t w_vadd_vi = patterns[3].match;
+    w_vadd_vi = set_bits(w_vadd_vi, 7, 5, 4u);   // rd5
+    w_vadd_vi = set_bits(w_vadd_vi, 20, 5, 5u);  // rs2_5
+    w_vadd_vi = set_bits(w_vadd_vi, 15, 5, 1u);  // imm5
+
+    std::vector<uint8_t> text;
+    append_u32_le(text, w_regexti);
+    append_u32_le(text, w_regext);
+    append_u32_le(text, w_vadd_vi);
+
+    sbt::DecodeOptions opt;
+    opt.bundle_regext = true;
+    opt.require_known = true;
+    opt.spike_compat_nested_regext = true;
+    const auto decoded = sbt::decode_text(text, /*text_vaddr=*/0x5000u, opt, patterns);
+    require(decoded.size() == 1, "compat nested prefixes produce one decoded inst");
+    require(decoded[0].had_regext, "compat nested prefixes keep regext info");
+    require(decoded[0].regext.pc == 0x5000u, "bundle start stays at first prefix");
+    require(decoded[0].regext.prefix_bytes == 8, "two prefixes consume 8 bytes");
+    require(decoded[0].regext.validi, "regexti validi survives later regext like Spike");
+    require(decoded[0].regext.ext_imm == 0, "later regext clears ext_imm like Spike");
+    require(decoded[0].rd == (4 | (4 << 5)), "later regext overrides rd extension");
+    require(decoded[0].rs2 == (5 | (6 << 5)), "later regext overrides rs2 extension");
+    require(decoded[0].imm == 1, "vi immediate follows Spike-compatible ext_imm overwrite");
+
+    const auto cfg = sbt::cfg::build_function_cfg(decoded, /*func_start=*/0x5000u, /*func_end_excl=*/0x500cu);
+    require(cfg.insts.size() == 1, "compat cfg contains one bundled inst");
+    require(cfg.insts[0].pc == 0x5000u, "cfg bundle start matches first prefix");
+    require(cfg.insts[0].inst_pc == 0x5008u, "cfg inst pc points at real instruction");
+    require(cfg.insts[0].len == 12, "cfg bundle length covers both prefixes and real instruction");
+  }
+
+  // 6) compat mode still rejects prefix chains that would overflow BundleInst.len.
+  {
+    uint32_t w_regext = patterns[0].match;
+    w_regext = set_bits(w_regext, 20, 12, 1u);
+    uint32_t w_vadd = patterns[2].match;
+    w_vadd = set_bits(w_vadd, 7, 5, 1u);
+
+    std::vector<uint8_t> text;
+    for (int i = 0; i < 63; ++i) append_u32_le(text, w_regext);
+    append_u32_le(text, w_vadd);
+
+    sbt::DecodeOptions opt;
+    opt.bundle_regext = true;
+    opt.require_known = true;
+    opt.spike_compat_nested_regext = true;
+
+    bool threw = false;
+    try {
+      (void)sbt::decode_text(text, /*text_vaddr=*/0x6000u, opt, patterns);
+    } catch (const std::exception &) {
+      threw = true;
+    }
+    require(threw, "compat mode rejects prefix chains before bundle length wraps");
   }
 
   std::cout << "ok regext bundling\n";

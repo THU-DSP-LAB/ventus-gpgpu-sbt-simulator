@@ -62,6 +62,42 @@ static bool ends_with(std::string_view s, std::string_view suf) {
 
 static int ext_apply(int base5, uint8_t ext3) { return base5 | (int(ext3) << 5); }
 
+static void start_regext_bundle(RegextPrefix &px, uint32_t pc) {
+  constexpr uint8_t kMaxPrefixBytesBeforeAnotherPrefix = static_cast<uint8_t>(0xFFu - 8u);
+  if (!px.valid) {
+    px = RegextPrefix{};
+    px.valid = true;
+    px.pc = pc;
+    px.prefix_bytes = 4;
+    return;
+  }
+  if (px.prefix_bytes > kMaxPrefixBytesBeforeAnotherPrefix) {
+    throw std::runtime_error("regext prefix chain too long at pc=" + hex_u32(pc));
+  }
+  px.prefix_bytes = static_cast<uint8_t>(px.prefix_bytes + 4);
+}
+
+static void apply_regext_fields(RegextPrefix &px, uint16_t imm12) {
+  px.valid = true;
+  px.imm12 = imm12;
+  px.ext_rd = imm12 & 7u;
+  px.ext_rs1 = (imm12 >> 3) & 7u;
+  px.ext_rs2 = (imm12 >> 6) & 7u;
+  px.ext_rs3 = (imm12 >> 9) & 7u;
+  px.ext_imm = 0;
+}
+
+static void apply_regexti_fields(RegextPrefix &px, uint16_t imm12) {
+  px.valid = true;
+  px.validi = true;
+  px.imm12 = imm12;
+  px.ext_rd = imm12 & 7u;
+  px.ext_rs1 = 0;
+  px.ext_rs2 = (imm12 >> 3) & 7u;
+  px.ext_rs3 = 0;
+  px.ext_imm = (imm12 >> 6) & 0x3Fu;
+}
+
 static Pattern const *match_pattern(uint32_t w, const std::vector<Pattern> &patterns) {
   for (const auto &p : patterns) {
     if (p.name == nullptr) continue;
@@ -856,31 +892,23 @@ std::vector<DecodedInst> decode_text(const std::vector<uint8_t> &text, uint32_t 
     if (opt.bundle_regext) {
       const Pattern *p = match_pattern(w, patterns);
       if (p && std::string_view(p->name) == "regext") {
-        if (px.valid) throw std::runtime_error("nested regext prefix at pc=" + hex_u32(pc));
         const uint16_t imm12 = static_cast<uint16_t>((w >> 20) & 0xFFFu);
-        px.valid = true;
-        px.validi = false;
-        px.pc = pc;
-        px.imm12 = imm12;
-        px.ext_rd = imm12 & 7u;
-        px.ext_rs1 = (imm12 >> 3) & 7u;
-        px.ext_rs2 = (imm12 >> 6) & 7u;
-        px.ext_rs3 = (imm12 >> 9) & 7u;
-        px.ext_imm = 0;
+        if (px.valid && !opt.spike_compat_nested_regext) {
+          throw std::runtime_error("nested regext prefix at pc=" + hex_u32(pc));
+        }
+        // Temporary compatibility path: when enabled, follow Spike's existing behavior
+        // for chained regext/regexti prefixes instead of rejecting nested prefixes.
+        start_regext_bundle(px, pc);
+        apply_regext_fields(px, imm12);
         continue;
       }
       if (p && std::string_view(p->name) == "regexti") {
-        if (px.valid) throw std::runtime_error("nested regext prefix at pc=" + hex_u32(pc));
         const uint16_t imm12 = static_cast<uint16_t>((w >> 20) & 0xFFFu);
-        px.valid = true;
-        px.validi = true;
-        px.pc = pc;
-        px.imm12 = imm12;
-        px.ext_rd = imm12 & 7u;
-        px.ext_rs1 = 0;
-        px.ext_rs2 = (imm12 >> 3) & 7u;
-        px.ext_rs3 = 0;
-        px.ext_imm = (imm12 >> 6) & 0x3Fu;
+        if (px.valid && !opt.spike_compat_nested_regext) {
+          throw std::runtime_error("nested regext prefix at pc=" + hex_u32(pc));
+        }
+        start_regext_bundle(px, pc);
+        apply_regexti_fields(px, imm12);
         continue;
       }
     }

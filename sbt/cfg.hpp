@@ -25,7 +25,7 @@ struct Edge final {
 struct BundleInst final {
   uint32_t pc = 0;      // bundle start PC (includes regext prefix if present)
   uint32_t inst_pc = 0; // actual instruction PC
-  uint8_t len = 4;      // bytes: 4 or 8
+  uint8_t len = 4;      // bytes: 4 + bundled prefix bytes (usually 4/8, compat chains may be 12+)
   DecodedInst inst{};
 };
 
@@ -51,4 +51,3 @@ FunctionCfg
 build_function_cfg(const std::vector<DecodedInst> &decoded, uint32_t func_start, uint32_t func_end_excl);
 
 } // namespace sbt::cfg
-

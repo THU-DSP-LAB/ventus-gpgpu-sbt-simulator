@@ -129,7 +129,7 @@ FunctionCfg build_function_cfg(const std::vector<DecodedInst> &decoded, uint32_t
     BundleInst bi;
     bi.inst_pc = di.pc;
     bi.pc = di.had_regext ? di.regext.pc : di.pc;
-    bi.len = static_cast<uint8_t>(di.had_regext ? 8 : 4);
+    bi.len = static_cast<uint8_t>(di.had_regext ? (di.regext.prefix_bytes + 4) : 4);
     bi.inst = di;
     cfg.insts.push_back(std::move(bi));
   }

@@ -97,12 +97,13 @@ struct RegextPrefix final {
   bool valid = false;
   bool validi = false; // regexti: extends rs2/rd and immediate
   uint32_t pc = 0;
-  uint16_t imm12 = 0;
+  uint16_t imm12 = 0; // Raw imm12 of the last-applied prefix in this bundle.
   uint8_t ext_rd = 0;
   uint8_t ext_rs1 = 0;
   uint8_t ext_rs2 = 0;
   uint8_t ext_rs3 = 0;
   uint8_t ext_imm = 0; // 6-bit field (meaningful when validi=true)
+  uint8_t prefix_bytes = 0;
 };
 
 struct DecodedInst final {
@@ -136,6 +137,7 @@ struct DecodedInst final {
 struct DecodeOptions final {
   bool bundle_regext = true;
   bool require_known = false;
+  bool spike_compat_nested_regext = false;
 };
 
 struct Pattern final {

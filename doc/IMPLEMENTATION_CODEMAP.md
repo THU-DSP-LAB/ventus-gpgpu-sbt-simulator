@@ -41,12 +41,13 @@
 - `sbt/riscv_decode.{hpp,cpp}`
   - `decode_text(text, vaddr, opt, patterns)`：按 4B 指令解码。
   - 支持 `regext/regexti` 前缀 bundling：前缀只作用下一条指令；CFG 里会把“bundle pc”和“真实指令 pc”区分开。
+  - current：默认对连续前缀 fail-fast，报 `nested regext prefix`；若环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1` 打开，则临时按 Spike 现有行为顺序覆盖前缀状态，允许同一条真实指令前出现连续 `regext/regexti`。
   - Ventus 扩展优先：先走 repository-local custom non-MMA decode（对齐上游 LLVM/Spike 的 `0x42/0x2A/0x5A/0x7A` opcode 口径），再按 `match/mask` 命中 Spike pattern，最后才走 RV32 标量子集解码。
   - `DecodedInst` 是当前“最小 IR”：含 `name`、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
 
 - `sbt/cfg.{hpp,cpp}`
   - `build_function_cfg(decoded, func_start, func_end_excl)`：构建函数级 CFG。
-  - `BundleInst`：`pc` 表示 bundle start（若有 regext 则为前缀 pc），`inst_pc` 是真实指令 pc；`len` 为 4 或 8。
+  - `BundleInst`：`pc` 表示 bundle start（若有 regext 则为前缀 pc），`inst_pc` 是真实指令 pc；`len` 为 `4 + prefix_bytes`，常见为 4 或 8，开启 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1` 后连续前缀场景可能为 12 及以上。
   - 基本块 leader 规则：函数入口、分支/跳转目标、terminator 后一条、以及 `join` 处会作为 leader。
   - 控制流分类：
     - `jal x0, off`：uncond jump（terminator）
