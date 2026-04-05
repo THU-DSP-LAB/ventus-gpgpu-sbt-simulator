@@ -15,7 +15,7 @@ MMA 是这批 custom 指令里风险最高、与 PTX backend 耦合最深的一�
 - 明确本 change 与 `support-custom-instructions` 的边界：
   - `support-custom-instructions` 负责 non-MMA custom 指令，以及 shared custom decode framework 的主线基础设施；
   - 本 change 只负责 MMA 的专属元数据、`0x0A` 语义、寄存器窗口/fragments 映射、support matrix 和验证闭环。
-- 明确本 change 需要遵守 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 中冻结的 `.version 7.8` / `sm_89` baseline、reference-model oracle，以及 MMA 首发只承诺 `native-mma-sync` `row.col` 子集的边界。
+- 明确本 change 需要遵守 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 中冻结的 `.version 7.8` / `sm_89` baseline、shared oracle policy，以及 MMA 首发只承诺 `native-mma-sync` `row.col` 子集的边界。
 - 将 MMA 支持定义为“显式支持子集 + 显式 fail-fast unsupported 子集”，而不是承诺一次性覆盖原始文档中的全部组合。
 
 ## Capabilities

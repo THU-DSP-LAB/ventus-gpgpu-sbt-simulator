@@ -26,7 +26,7 @@
 
 若你要看仍然活跃的前瞻专项，再读：
 
-- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：custom 指令两条 active change 的共享前置基线；冻结 `.version 7.8` / `sm_89`、oracle、non-MMA 语义和 MMA 首发支持子集，并明确 `bf16x2` 的 mixed native/composite lowering 边界。
+- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：custom 指令两条 active change 的共享前置基线；冻结 `.version 7.8` / `sm_89`、family-scoped oracle policy、non-MMA 语义和 MMA 首发支持子集，并明确 `bf16x2` 的 mixed native/composite lowering 边界。
 - `doc/CUSTOM_INSTRUCTION_INPUT.md`：custom 指令输入材料的受管副本；供 shared baseline 与 active changes 引用，但不覆盖 current spec。
 - `doc/ventus-divergence-sgpr-analysis.md`：基于 `../llvm` 的参考分析，说明 Ventus LLVM 如何处理 `vbranch` / `join` 下的 SGPR/VGPR 有效性问题。
 

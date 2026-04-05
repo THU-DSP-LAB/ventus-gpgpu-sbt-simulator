@@ -115,3 +115,68 @@ For float results, the comparison MUST use tolerance-based equality (atol/rtol).
 - **WHEN** `tools/microtest_coverage_gate.sh --require-full` is executed against the updated `VentusInst_basic.txt`
 - **THEN** it MUST report full mnemonic coverage for `(VentusInst_basic - inst_exceptions)` including the scalar F
   mnemonics added by this change
+
+### Requirement: Repository-local custom decode coexists with the Spike-backed pattern subset
+The project MUST allow custom instruction families that are absent from Spike `encoding.h` to be recognized through a repository-local opcode/funct decoder path.
+
+The build-time Spike subset remains the single source of truth for Spike-backed pattern inputs, but it MUST NOT be treated as the only decode entrypoint for future custom instruction families.
+
+#### Scenario: Custom instruction is not declared in Spike encoding
+- **GIVEN** an input ELF contains a project-supported custom non-MMA instruction that is absent from `../spike/riscv/encoding.h`
+- **WHEN** `sbt_decode decode --require-known` or `sbt_ptx --require-known` is executed
+- **THEN** the instruction may still be recognized through the repository-local custom decode path
+- **AND THEN** translation does not fail merely because the instruction is missing from Spike `DECLARE_INSN(...)`
+
+### Requirement: Custom non-MMA instructions preserve ordinary vector-register semantics
+For the supported custom non-MMA instruction families, `v0` MUST remain an ordinary vector register.
+
+The project MUST NOT introduce implicit RVV mask semantics or a special `v0` mask-register interpretation for these instruction families. Any encoded `vm`/`m` bit in the current non-MMA custom instruction families MUST be treated as encoding metadata only: it MUST NOT cause execution to read `v0`, derive a separate write mask, or bypass the SIMT-stack-controlled active mask model.
+
+#### Scenario: Custom non-MMA operands are decoded and lowered
+- **GIVEN** a kernel uses supported custom `shuffle`, `vcvt`, packed arithmetic, or SFU instructions
+- **WHEN** the instructions are decoded and lowered
+- **THEN** operand fetch and writeback use ordinary vector-register semantics
+- **AND THEN** translation does not read an implicit mask value from `v0`
+- **AND THEN** any encoded `vm`/`m` bit does not enable a separate `v0`-based mask path
+
+### Requirement: Custom non-MMA support is compile-supported on the shared `sm_89` baseline
+The project MUST compile-support the current non-MMA custom instruction families under `--require-known`, including:
+- `shuffle.idx/up/down/bfly`
+- `vcvt.f32.fp16`, `vcvt.f16.fp32`, `vcvt.fp32.bf16`, `vcvt.bf16.fp32`
+- packed `f16x2` and `bf16x2` add/mul/fma
+- `fp32` SFU (`ex2/lg2/rcp/sqrt/rsqrt/sin/cos/tanh/gelu/silu`)
+- packed `f16x2` SFU
+- packed `bf16x2` SFU
+
+The generated PTX for this support surface MUST target the shared custom-support baseline `.version 7.8` / `.target sm_89`. Where PTX lacks a direct native instruction, the backend MAY lower the instruction via explicit helper sequences or unpack/compute/repack logic, but it MUST remain compile-supported on `sm_89`.
+
+#### Scenario: Non-MMA custom kernel translates under `--require-known`
+- **GIVEN** an input kernel uses only the supported non-MMA custom instruction families
+- **WHEN** `sbt_ptx --require-known --sm 89` translates the kernel
+- **THEN** PTX emission does not fail with `unknown instruction` or `unsupported.inst` for those instruction families
+- **AND THEN** the generated PTX compiles with `ptxas -arch=sm_89`
+
+### Requirement: Packed custom instructions follow the 32-bit container contract
+For packed non-MMA custom instruction families (`f16x2` / `bf16x2` arithmetic and SFU), the project MUST treat one active vector element as one 32-bit packed container.
+
+The canonical contract is:
+- `vl` counts packed containers, not individual 16-bit halves
+- legality is not defined as ordinary `vsew=16` element-wise execution
+- packed `bf16x2` support on the shared `sm_89` baseline may mix native PTX and explicit composite lowering, but it MUST remain part of the supported non-MMA family set
+
+#### Scenario: Packed custom microtest interprets `vl`
+- **GIVEN** a packed `f16x2` or `bf16x2` custom kernel is executed
+- **WHEN** the kernel consumes `vl` active elements
+- **THEN** the implementation interprets those elements as `vl` packed 32-bit containers
+- **AND THEN** validation and lowering do not reinterpret the instruction as two independent ordinary 16-bit vector elements per lane
+
+### Requirement: Current non-MMA custom semantic validation uses Spike-backed OpenCL comparison
+For the current supported non-MMA custom instruction families, the canonical semantic validation path MUST compare observable OpenCL output buffers produced by the Spike backend and the PTX backend.
+
+Compile-first success is required but is not sufficient by itself.
+
+#### Scenario: Non-MMA custom oracle run compares Spike and PTX
+- **GIVEN** a supported non-MMA custom microtest kernel
+- **WHEN** the project runs its semantic validation gate
+- **THEN** the gate executes the same kernel through both the Spike backend and the PTX backend
+- **AND THEN** it compares observable output buffers with exact comparison for integer/packed arithmetic cases and tolerance-based comparison for floating-point SFU cases

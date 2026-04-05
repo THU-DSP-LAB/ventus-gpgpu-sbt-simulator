@@ -296,7 +296,7 @@ run_custom_non_mma_oracle_gate() {
   need_cmd python3
   need_cmd ptxas
   run_step "custom non-MMA oracle gate (ARCH=${ARCH})" \
-    python3 "${ROOT_DIR}/tools/custom_non_mma_oracle.py" --sm "${ARCH}"
+    python3 "${ROOT_DIR}/tools/custom_non_mma_oracle.py" --sm "${ARCH}" --spike-compat-nested-regext
 }
 
 run_want_consistency() {

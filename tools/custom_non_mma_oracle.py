@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 背景
-- custom non-MMA 指令现在已经有 Spike 软件栈支持，可以直接用 Spike backend 作为语义 oracle，而不是继续停留在仓库内 reference model。
+- custom non-MMA 指令现在已进入 Spike-backed OpenCL 语义验证主路径；对当前 non-MMA family set，这条路径就是 canonical oracle。
+- 一部分当前编译产物会生成连续 `regext/regexti` 前缀；仓库默认仍对 nested prefix fail-fast，只有显式打开兼容模式时才按 Spike 现有行为继续解码。
 
 需求/作用
 - 用 `ventus_ocl_run` 执行 `testcases/ocl_compare/custom_non_mma_kernels.cl` 中的 custom 微测例。
@@ -11,16 +12,18 @@
 用法
 - `python3 tools/custom_non_mma_oracle.py`
 - `python3 tools/custom_non_mma_oracle.py --n 128 --sm sm_89`
+- `python3 tools/custom_non_mma_oracle.py --n 8 --spike-compat-nested-regext`
 
 实现原理/处理步骤
 1) 通过 `source ../env.sh` 分别设置 `VENTUS_BACKEND=spike` 与 `VENTUS_BACKEND=ptx` 运行同一组 custom kernel。
-2) 基于该次编译产物 `object0.riscv` 执行 `sbt_decode --require-known` 与 `sbt_ptx/ptxas` compile-first。
+2) 基于该次编译产物 `object0.riscv` 执行 `sbt_decode --require-known` 与 `sbt_ptx/ptxas` compile-first；若调用者显式传入 `--spike-compat-nested-regext`，则只对本 gate 的解码/PTX 路径打开 nested-prefix 兼容环境变量。
 3) 读取 Spike / PTX 输出并逐项比较；失败时显式报错并返回非 0。
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import shlex
 import struct
 import subprocess
@@ -79,12 +82,16 @@ def f32_to_bf16_bits(x: float) -> int:
 def approx_equal(a: float, b: float, *, atol: float, rtol: float) -> bool:
     if a == b:
         return True
+    if math.isinf(a) or math.isinf(b):
+        return False
     if a != a and b != b:
         return True
     if a != a or b != b:
         return False
     diff = abs(a - b)
-    limit = max(atol, rtol * max(abs(a), abs(b)))
+    # Match ventus_ocl_compare.py semantics: treat the second operand as the
+    # reference value for relative tolerance.
+    limit = atol + rtol * abs(b)
     return diff <= limit
 
 
@@ -95,6 +102,10 @@ def run_checked(cmd: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return p
 
 
+def run_capture(cmd: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["bash", "-lc", cmd], cwd=str(cwd), text=True, capture_output=True)
+
+
 def normalize_sm(sm: str) -> int:
     s = sm.strip()
     if s.startswith("sm_"):
@@ -103,6 +114,12 @@ def normalize_sm(sm: str) -> int:
     if v <= 0:
         raise ValueError(f"invalid sm: {sm}")
     return v
+
+
+def maybe_prefix_nested_regext_env(cmd: str, enabled: bool) -> str:
+    if not enabled:
+        return cmd
+    return f"SBT_COMPAT_SPIKE_NESTED_REGEXT=1 {cmd}"
 
 
 @dataclass(frozen=True)
@@ -226,6 +243,87 @@ def build_vrsqrt_input_words(kind: str, n: int) -> list[int]:
     return out
 
 
+def signed_sample(gid: int, salt: int, scale: float) -> float:
+    sample = ((gid * 37) ^ salt) & 0x7F
+    return float(sample - 64) * scale
+
+
+def positive_sample(gid: int, salt: int, scale: float, bias: float) -> float:
+    return abs(signed_sample(gid, salt, scale)) + bias
+
+
+def build_pack_f16x2_words(n: int, kind: str) -> list[int]:
+    out: list[int] = []
+    for gid in range(n):
+        if kind == "a":
+            lo = signed_sample(gid, 0x11, 0.03125)
+            hi = signed_sample(gid, 0x22, 0.015625)
+        elif kind == "b":
+            lo = signed_sample(gid, 0x33, 0.03125)
+            hi = signed_sample(gid, 0x44, 0.015625)
+        elif kind == "c":
+            lo = signed_sample(gid, 0x55, 0.03125)
+            hi = signed_sample(gid, 0x66, 0.015625)
+        elif kind == "pos_a":
+            lo = positive_sample(gid, 0x10, 0.03125, 0.25)
+            hi = positive_sample(gid, 0x20, 0.015625, 0.25)
+        elif kind == "pos_b":
+            lo = positive_sample(gid, 0x30, 0.03125, 0.25)
+            hi = positive_sample(gid, 0x40, 0.015625, 0.25)
+        else:
+            raise ValueError(f"unknown f16x2 pack kind: {kind}")
+        out.append(pack_u16x2(f32_to_fp16_bits(lo), f32_to_fp16_bits(hi)))
+    return out
+
+
+def build_pack_bf16x2_words(n: int, kind: str) -> list[int]:
+    out: list[int] = []
+    for gid in range(n):
+        if kind == "a":
+            lo = signed_sample(gid, 0x77, 0.03125)
+            hi = signed_sample(gid, 0x88, 0.015625)
+        elif kind == "b":
+            lo = signed_sample(gid, 0x99, 0.03125)
+            hi = signed_sample(gid, 0xAA, 0.015625)
+        elif kind == "c":
+            lo = signed_sample(gid, 0xBB, 0.03125)
+            hi = signed_sample(gid, 0xCC, 0.015625)
+        elif kind == "pos_a":
+            lo = positive_sample(gid, 0x50, 0.03125, 0.25)
+            hi = positive_sample(gid, 0x60, 0.015625, 0.25)
+        elif kind == "pos_b":
+            lo = positive_sample(gid, 0x70, 0.03125, 0.25)
+            hi = positive_sample(gid, 0x80, 0.015625, 0.25)
+        else:
+            raise ValueError(f"unknown bf16x2 pack kind: {kind}")
+        out.append(pack_u16x2(f32_to_bf16_bits(lo), f32_to_bf16_bits(hi)))
+    return out
+
+
+def build_kernel_input_words(name: str, n: int) -> list[int] | None:
+    if name == "mt_custom_vrsqrt_f16x2":
+        return build_vrsqrt_input_words("f16", n)
+    if name == "mt_custom_vrsqrt_bf16x2":
+        return build_vrsqrt_input_words("bf16", n)
+    if name in {"mt_custom_vex2_f16x2"}:
+        return build_pack_f16x2_words(n, "a")
+    if name in {"mt_custom_vrcp_f16x2", "mt_custom_vsqrt_f16x2"}:
+        return build_pack_f16x2_words(n, "pos_a")
+    if name in {"mt_custom_vtanh_f16x2", "mt_custom_vgelu_f16x2"}:
+        return build_pack_f16x2_words(n, "b")
+    if name in {"mt_custom_vsilu_f16x2"}:
+        return build_pack_f16x2_words(n, "c")
+    if name in {"mt_custom_vex2_bf16x2"}:
+        return build_pack_bf16x2_words(n, "a")
+    if name in {"mt_custom_vrcp_bf16x2", "mt_custom_vsqrt_bf16x2"}:
+        return build_pack_bf16x2_words(n, "pos_a")
+    if name in {"mt_custom_vtanh_bf16x2", "mt_custom_vgelu_bf16x2"}:
+        return build_pack_bf16x2_words(n, "b")
+    if name in {"mt_custom_vsilu_bf16x2"}:
+        return build_pack_bf16x2_words(n, "c")
+    return None
+
+
 def write_u32_words(path: Path, words: list[int]) -> None:
     path.write_bytes(struct.pack("<" + ("I" * len(words)), *words))
 
@@ -243,11 +341,14 @@ def run_backend(
     out_path: Path,
     sm_num: int,
     in_path: Path | None,
+    compat_nested_regext: bool,
 ) -> None:
     env_parts = [f"VENTUS_BACKEND={backend}"]
     if backend == "ptx":
         env_parts.append(f"GPU_SBT_PTX={shlex.quote(str(sbt_ptx))}")
         env_parts.append(f"VENTUS_PTX_SM={sm_num}")
+        if compat_nested_regext:
+            env_parts.append("SBT_COMPAT_SPIKE_NESTED_REGEXT=1")
     cmd = (
         f"source {shlex.quote(str(env_sh))} >/dev/null 2>&1 && "
         + " ".join(env_parts)
@@ -272,6 +373,11 @@ def main() -> int:
     ap.add_argument("--ptxas", type=str, default="ptxas")
     ap.add_argument("--sfu-atol", type=float, default=3e-2)
     ap.add_argument("--sfu-rtol", type=float, default=5e-2)
+    ap.add_argument(
+        "--spike-compat-nested-regext",
+        action="store_true",
+        help="对本 gate 内部调用的 sbt_decode/sbt_ptx 与 PTX backend 显式打开 Spike-compatible nested regext 兼容模式",
+    )
     args = ap.parse_args()
 
     exe = args.exe.resolve()
@@ -287,6 +393,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="custom_non_mma_oracle_") as td:
         workdir = Path(td)
+        compat_nested_hits: list[str] = []
         for spec in KERNELS:
             out_spike = workdir / f"{spec.name}.spike.bin"
             out_ptx = workdir / f"{spec.name}.ptx.bin"
@@ -294,12 +401,10 @@ def main() -> int:
             cubin_path = workdir / f"{spec.name}.cubin"
             input_path: Path | None = None
 
-            if spec.name == "mt_custom_vrsqrt_f16x2":
+            input_words = build_kernel_input_words(spec.name, args.n)
+            if input_words is not None:
                 input_path = workdir / f"{spec.name}.in.bin"
-                write_u32_words(input_path, build_vrsqrt_input_words("f16", args.n))
-            elif spec.name == "mt_custom_vrsqrt_bf16x2":
-                input_path = workdir / f"{spec.name}.in.bin"
-                write_u32_words(input_path, build_vrsqrt_input_words("bf16", args.n))
+                write_u32_words(input_path, input_words)
 
             effective_n = max(args.n, WARP_LANES) if spec.name in SHUFFLE_KERNELS else args.n
 
@@ -315,6 +420,7 @@ def main() -> int:
                 out_path=out_spike,
                 sm_num=sm_num,
                 in_path=input_path,
+                compat_nested_regext=args.spike_compat_nested_regext,
             )
 
             elf = workdir / "object0.riscv"
@@ -325,12 +431,24 @@ def main() -> int:
                 f"{shlex.quote(str(sbt_decode))} decode {shlex.quote(str(elf))} "
                 f"--func {shlex.quote(spec.name)} --require-known >/dev/null"
             )
+            if args.spike_compat_nested_regext:
+                strict_decode = run_capture(decode_cmd, workdir)
+                if strict_decode.returncode != 0:
+                    if "nested regext prefix" in strict_decode.stderr:
+                        compat_nested_hits.append(spec.name)
+                    else:
+                        raise RuntimeError(
+                            "strict decode failed before compat mode\n"
+                            f"cmd: {decode_cmd}\nstdout:\n{strict_decode.stdout}\nstderr:\n{strict_decode.stderr}"
+                        )
+            decode_cmd = maybe_prefix_nested_regext_env(decode_cmd, args.spike_compat_nested_regext)
             run_checked(decode_cmd, workdir)
 
             emit_cmd = (
                 f"{shlex.quote(str(sbt_ptx))} {shlex.quote(str(elf))} "
                 f"--func {shlex.quote(spec.name)} --require-known --sm {sm_num} --out {shlex.quote(str(ptx_path))}"
             )
+            emit_cmd = maybe_prefix_nested_regext_env(emit_cmd, args.spike_compat_nested_regext)
             run_checked(emit_cmd, workdir)
 
             ptxas_cmd = (
@@ -351,6 +469,7 @@ def main() -> int:
                 out_path=out_ptx,
                 sm_num=sm_num,
                 in_path=input_path,
+                compat_nested_regext=args.spike_compat_nested_regext,
             )
 
             exp = parse_u32_array(out_spike.read_bytes())
@@ -367,6 +486,10 @@ def main() -> int:
                 raise RuntimeError(f"unknown compare mode: {spec.mode}")
 
             print(f"PASS kernel={spec.name} mode={spec.mode} sm=sm_{sm_num}")
+
+        if compat_nested_hits:
+            uniq = ", ".join(dict.fromkeys(compat_nested_hits))
+            print(f"NOTE nested regext compat used for kernels: {uniq}")
 
     print("PASS custom non-MMA oracle gate")
     return 0

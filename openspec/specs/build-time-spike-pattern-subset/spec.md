@@ -44,6 +44,18 @@ The system SHALL remove runtime override entrypoints that can affect the pattern
 - **AND WHEN** the user runs `sbt_ptx --help` or provides invalid arguments
 - **THEN** the usage output does not mention `--encoding-h`
 
+### Requirement: Build-time Spike subset only governs the Spike-backed decode path
+The generated Spike subset header defines the Spike-backed pattern input surface only.
+
+The project MAY additionally recognize instructions through repository-local decode logic that does not depend on `DECLARE_INSN(...)`, provided that such instructions are explicitly owned by the repository and do not mutate the embedded Spike subset at runtime.
+
+#### Scenario: Repo-local custom decode exists outside Spike subset
+- **GIVEN** an instruction family is intentionally decoded through repository-local opcode/funct logic
+- **AND GIVEN** that family is absent from both `data/spike_want.txt` and the referenced Spike `encoding.h`
+- **WHEN** the developer rebuilds the project and runs `sbt_decode` or `sbt_ptx`
+- **THEN** the generated Spike subset remains unchanged
+- **AND THEN** the instruction may still be accepted through the separate repository-local decode path
+
 ### Requirement: Build fails fast when inputs are unavailable or inconsistent
 If the build-time `encoding.h` path is missing/unreadable, the build SHALL fail with a clear error message.
 

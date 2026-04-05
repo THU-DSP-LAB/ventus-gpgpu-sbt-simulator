@@ -62,16 +62,21 @@ Implications:
 
 ### 2. Canonical semantic oracle path
 
-The canonical semantic oracle for the active custom instructions is frozen as:
+The canonical semantic oracle policy for the active custom instructions is frozen as an explicit family-scoped rule:
 
-- a repository-managed reference model
+- for custom instruction families that are already supported by the current Spike/Ventus OpenCL software stack, the canonical semantic oracle is Spike-backed OpenCL buffer comparison;
+- for custom instruction families that are outside the current Spike-backed support surface, the canonical oracle remains a repository-managed reference model.
 
-This reference model is the required validation path for custom instructions that are outside the current Spike-backed support surface.
+This avoids two failure modes:
+
+- silently treating compile-first success as semantic validation,
+- and forcing already Spike-supported families to maintain a second independent oracle path without a concrete benefit.
 
 Constraints:
 
-- The reference model must remain implementation-independent from PTX lowering.
+- Any repository-managed reference model must remain implementation-independent from PTX lowering.
 - It must not reuse the core semantic helpers in a way that would make the oracle and lowering fail in the same way for the same bug.
+- Any Spike-backed oracle path must still make outputs observable through OpenCL buffers and compare them explicitly, rather than relying on implicit device success.
 
 External anchors:
 
@@ -216,7 +221,7 @@ These probe notes are used here as design evidence. Reproducible implementation-
 This change must treat the following as already frozen by this document:
 
 - `.version 7.8` / `sm_89` shared PTX baseline
-- repository-managed reference-model oracle
+- explicit oracle policy, with current non-MMA validation using Spike-backed OpenCL buffer comparison
 - packed custom instruction contract
 - shuffle / approximate SFU / `vcvt` shared semantic boundary
 
@@ -227,7 +232,7 @@ It must not silently redefine those shared decisions inside its own artifacts or
 This change must treat the following as already frozen by this document:
 
 - `.version 7.8` / `sm_89` shared PTX baseline
-- repository-managed reference-model oracle path
+- explicit oracle policy, with current MMA work still outside the Spike-backed surface and therefore still requiring an explicitly chosen non-Spike fallback until proven otherwise
 - initial MMA commitment limited to the first `native-mma-sync` subset
 - `wmma` reserved as active research rather than first-subset commitment
 

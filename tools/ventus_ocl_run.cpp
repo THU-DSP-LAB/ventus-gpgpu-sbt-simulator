@@ -224,7 +224,7 @@ static Buffers run_once(cl_context ctx, cl_command_queue q, cl_device_id dev, co
   cl_check(clSetKernelArg(k, 1, sizeof(cl_mem), &out_m), "clSetKernelArg(B)");
 
   const size_t global = n;
-  const size_t local = (n >= 32 ? 32 : 1);
+  const size_t local = (n >= 32 && (n % 32u) == 0u) ? 32u : 1u;
   cl_check(clEnqueueNDRangeKernel(q, k, 1, nullptr, &global, &local, 0, nullptr, nullptr), "clEnqueueNDRangeKernel");
   cl_check(clFinish(q), "clFinish");
 

@@ -89,7 +89,7 @@ The canonical contract MUST state at least:
 ### Requirement: Non-MMA custom semantics are validated by an explicitly chosen oracle path
 The project MUST provide microtests that make this change's non-MMA custom instruction effects observable through OpenCL buffers and compare outputs against an explicitly chosen oracle path.
 
-Before implementation, the active artifacts MUST name which oracle path is used for these instructions in the shared active baseline document (for example Spike-backed oracle if upstream support exists, or a repository-managed reference-oracle path if it does not).
+Before implementation, the active artifacts MUST name which oracle path is used for these instructions in the shared active baseline document. For the current non-MMA family set, the canonical path is Spike-backed OpenCL buffer comparison; repository-managed reference models remain reserved for instruction families that are still outside the Spike-backed support surface.
 
 For floating-point outputs, comparison MUST allow approximate equality. For integer / packed-bit results, comparison MUST be exact unless the relevant spec explicitly permits tolerance.
 

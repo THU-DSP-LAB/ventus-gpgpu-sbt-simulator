@@ -14,6 +14,7 @@
 - `ptx_emit_leader_lane_abi_test.cpp`：replicated scalar-state / value ABI / divergence 回归测试（文件名沿用历史命名）
 - `custom_non_mma_oracle.py`：custom non-MMA 的 Spike-vs-PTX 对照 + compile-first gate
   - shuffle 类 kernel 会自动提升到 32-lane warp 规模执行，避免 `n < 32` 时的伪失败
+  - 若当前 custom kernel 产物包含连续 `regext/regexti` 前缀，可显式传 `--spike-compat-nested-regext`；该开关只作用于本 gate 内部调用的 `sbt_decode/sbt_ptx` 与 PTX backend 路径，不改变工具默认 fail-fast 语义
 - `regress.sh`：统一回归入口（聚合 smoke/gate/端到端；默认临时工作目录执行并自动清理，可用参数覆盖）
   - 端到端阶段会强制使用当前树的 `build/sbt_ptx` 作为 `GPU_SBT_PTX`
 - `rodinia_ptx_smoke.sh`：Rodinia compile-first smoke（PTX + ptxas）

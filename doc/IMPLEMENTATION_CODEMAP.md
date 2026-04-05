@@ -149,12 +149,14 @@
     - `VENTUS_BACKEND=spike` 与 `VENTUS_BACKEND=ptx` 结果对照；
     - 同一 ELF 的 `sbt_decode --require-known`；
     - 同一 ELF 的 `sbt_ptx --require-known` + `ptxas` compile-first。
+  - current：这条 Spike-vs-PTX OpenCL buffer compare 路径就是当前 non-MMA custom families 的 canonical semantic oracle。
   - 比较规则：
     - shuffle / vcvt / packed arithmetic：精确比较；
     - `fp32` SFU：f32 容差比较；
     - packed `f16x2` / `bf16x2` SFU：按半精度 lane 容差比较。
   - current：shuffle 类 microtest 会在 oracle 中强制以完整 32-lane warp 规模执行，避免 `n < 32` 时因 runner 把 local size 降成 1 而引入伪失败。
-  - 当前 `mt_custom_vrsqrt_f16x2` / `mt_custom_vrsqrt_bf16x2` 使用 raw packed 输入文件驱动；这是刻意将 “packed 输入构造” 与 “rsqrt 指令语义” 解耦，避免被 `vcvt_*_fp32 + pack_*x2` 的独立 contract 问题污染结论。
+  - current：若当前 custom kernel 编译产物出现连续 `regext/regexti` 指向同一条真实指令，oracle gate 通过显式 `--spike-compat-nested-regext` 仅对该验证链打开 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`；`sbt_decode/sbt_ptx` 默认行为仍保持 fail-fast。
+  - 当前 packed SFU microtests 使用 raw packed 输入文件驱动；这是刻意将 “packed 输入构造” 与 “SFU 指令语义” 解耦，避免被 `vcvt_*_fp32 + pack_*x2` 的独立 contract 问题污染结论。
 
 - `tools/regext_bundle_test.cpp` → `build/regext_bundle_test`
   - `regext/regexti` bundling 边界情况的最小回归。

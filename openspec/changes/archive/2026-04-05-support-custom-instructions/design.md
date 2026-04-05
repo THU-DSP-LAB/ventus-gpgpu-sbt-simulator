@@ -70,7 +70,7 @@
 本 change 不再自己决定 baseline/oracle/shared semantics，而是直接采用 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 中已冻结的共享前提。当前至少包括：
 
 - `.version 7.8` / `sm_89` project-wide PTX baseline
-- repository-managed reference-model oracle
+- explicit oracle policy, with current non-MMA validation using Spike-backed OpenCL buffer comparison
 - packed `f16x2` / `bf16x2` 的 32-bit container 语义
 - MMA 首发只承诺 `native-mma-sync` 子集的边界
 

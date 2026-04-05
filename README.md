@@ -106,6 +106,8 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 当前实现仍坚持 fail-fast：遇到 unknown/unsupported 指令、不可接受的 CFG 形态、或当前未支持的 `jalr` 用法时直接报错退出，而不是静默降级。
 
+当前 custom non-MMA support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。MMA 仍属于独立的 active change，不在当前 support surface 内。
+
 `regext/regexti` 默认仍按严格 bundling 处理；若需临时兼容 Spike 对连续前缀的现有行为，可设置环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`。打开后，`sbt_decode` 与 `sbt_ptx` 在遇到连续 `regext`/`regexti` 指向同一条真实指令时，不再报 `nested regext prefix`，而是按 Spike 现有顺序覆盖前缀状态继续解码；这是临时兼容方案，不改变默认 fail-fast 路径。
 
 ## 统一回归入口（推荐）
@@ -179,8 +181,9 @@ tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
 ./build/ventus_ocl_run --src testcases/ocl_compare/custom_non_mma_kernels.cl \
   --kernel mt_custom_vrsqrt_f16x2 --n 16 --in /tmp/vrsqrt_f16x2.in.bin --out /tmp/vrsqrt_f16x2.out.bin
 
-# shuffle 类 microtest 需要完整 warp 条件；custom_non_mma_oracle.py 会自动把它们提升到 32-lane 执行
-python3 tools/custom_non_mma_oracle.py --n 8
+# shuffle 类 microtest 需要完整 warp 条件；custom_non_mma_oracle.py 会自动把它们提升到 32-lane 执行。
+# 当前 custom kernels 若出现连续 regext/regexti 前缀，需显式打开 Spike-compatible nested-prefix 兼容模式。
+python3 tools/custom_non_mma_oracle.py --n 8 --spike-compat-nested-regext
 
 # ventus_ocl_compare.py 在未显式设置 GPU_SBT_PTX 时，会自动绑定当前树的 build/sbt_ptx，
 # 避免误用 ../install/bin/sbt_ptx 的旧安装产物
