@@ -374,6 +374,11 @@ int main(int argc, char **argv) {
         if (di.rs1_class != sbt::RegClass::None) *os << ",\"rs1_class\":\"" << sbt::to_string(di.rs1_class) << "\",\"rs1\":" << di.rs1;
         if (di.rs2_class != sbt::RegClass::None) *os << ",\"rs2_class\":\"" << sbt::to_string(di.rs2_class) << "\",\"rs2\":" << di.rs2;
         if (di.imm_kind != sbt::ImmKind::None) *os << ",\"imm_kind\":\"" << sbt::to_string(di.imm_kind) << "\",\"imm\":" << di.imm;
+        if (di.custom.valid) {
+          *os << ",\"custom\":{\"family\":\"" << sbt::to_string(di.custom.family) << "\",\"subop\":\"" << sbt::to_string(di.custom.subop)
+              << "\",\"dtype\":\"" << sbt::to_string(di.custom.dtype) << "\",\"vm_bit\":" << (di.custom.vm_bit ? "true" : "false")
+              << ",\"funct6\":" << unsigned(di.custom.funct6) << ",\"funct3\":" << unsigned(di.custom.funct3) << "}";
+        }
         if (di.had_regext) {
           *os << ",\"regext\":{\"pc\":\"" << hex_u32(di.regext.pc) << "\",\"imm12\":" << di.regext.imm12
               << ",\"ext_rd\":" << unsigned(di.regext.ext_rd) << ",\"ext_rs1\":" << unsigned(di.regext.ext_rs1)

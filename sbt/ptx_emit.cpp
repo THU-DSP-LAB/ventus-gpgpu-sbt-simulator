@@ -27,6 +27,7 @@ static std::string p(int i) { return "%p" + std::to_string(i); }
 static std::string f(int i) { return "%f" + std::to_string(i); }
 static std::string v(int i) { return "%v" + std::to_string(i); }
 static std::string x(int i) { return "%x" + std::to_string(i); }
+static std::string h(int i) { return "%h" + std::to_string(i); }
 static std::string u8(int i) { return "%ub" + std::to_string(i); }
 static std::string u16(int i) { return "%uh" + std::to_string(i); }
 
@@ -1706,6 +1707,220 @@ struct EmitCtx final {
       return;
     }
 
+    auto unpack_u32_to_halves = [&](const std::string &src_u32, int lo_h16, int hi_h16) {
+      emit_line("mov.b32 {" + h(lo_h16) + ", " + h(hi_h16) + "}, " + src_u32 + ";");
+    };
+    auto pack_halves_to_u32 = [&](const std::string &dst_u32, int lo_h16, int hi_h16) {
+      emit_line("mov.b32 " + dst_u32 + ", {" + h(lo_h16) + ", " + h(hi_h16) + "};");
+    };
+    auto emit_tanh_f32 = [&](const std::string &dst_f, const std::string &src_f) {
+      emit_line("mul.rn.f32 " + f(6) + ", " + src_f + ", -2.8853900817779268;");
+      emit_line("ex2.approx.f32 " + f(6) + ", " + f(6) + ";");
+      emit_line("add.rn.f32 " + f(7) + ", " + f(6) + ", 1.0;");
+      emit_line("rcp.approx.f32 " + f(7) + ", " + f(7) + ";");
+      emit_line("mul.rn.f32 " + f(7) + ", " + f(7) + ", 2.0;");
+      emit_line("add.rn.f32 " + dst_f + ", " + f(7) + ", -1.0;");
+    };
+    auto emit_silu_f32 = [&](const std::string &dst_f, const std::string &src_f) {
+      emit_line("mul.rn.f32 " + f(6) + ", " + src_f + ", -1.4426950408889634;");
+      emit_line("ex2.approx.f32 " + f(6) + ", " + f(6) + ";");
+      emit_line("add.rn.f32 " + f(7) + ", " + f(6) + ", 1.0;");
+      emit_line("rcp.approx.f32 " + f(7) + ", " + f(7) + ";");
+      emit_line("mul.rn.f32 " + dst_f + ", " + src_f + ", " + f(7) + ";");
+    };
+    auto emit_gelu_f32 = [&](const std::string &dst_f, const std::string &src_f) {
+      emit_line("mul.rn.f32 " + f(6) + ", " + src_f + ", " + src_f + ";");
+      emit_line("mul.rn.f32 " + f(6) + ", " + f(6) + ", " + src_f + ";");
+      emit_line("mad.rn.f32 " + f(6) + ", " + f(6) + ", 0.044715, " + src_f + ";");
+      emit_line("mul.rn.f32 " + f(6) + ", " + f(6) + ", 0.7978845608028654;");
+      emit_tanh_f32(f(7), f(6));
+      emit_line("add.rn.f32 " + f(7) + ", " + f(7) + ", 1.0;");
+      emit_line("mul.rn.f32 " + f(7) + ", " + f(7) + ", 0.5;");
+      emit_line("mul.rn.f32 " + dst_f + ", " + src_f + ", " + f(7) + ";");
+    };
+    auto emit_custom_sfu_f32 = [&](const std::string &dst_f, const std::string &src_f, sbt::CustomSubOp subop) {
+      switch (subop) {
+      case sbt::CustomSubOp::Ex2: emit_line("ex2.approx.f32 " + dst_f + ", " + src_f + ";"); return;
+      case sbt::CustomSubOp::Lg2: emit_line("lg2.approx.f32 " + dst_f + ", " + src_f + ";"); return;
+      case sbt::CustomSubOp::Rcp: emit_line("rcp.approx.f32 " + dst_f + ", " + src_f + ";"); return;
+      case sbt::CustomSubOp::Sqrt: emit_line("sqrt.approx.f32 " + dst_f + ", " + src_f + ";"); return;
+      case sbt::CustomSubOp::Rsqrt: emit_line("rsqrt.approx.f32 " + dst_f + ", " + src_f + ";"); return;
+      case sbt::CustomSubOp::Sin: emit_line("sin.approx.f32 " + dst_f + ", " + src_f + ";"); return;
+      case sbt::CustomSubOp::Cos: emit_line("cos.approx.f32 " + dst_f + ", " + src_f + ";"); return;
+      case sbt::CustomSubOp::Tanh: emit_tanh_f32(dst_f, src_f); return;
+      case sbt::CustomSubOp::Gelu: emit_gelu_f32(dst_f, src_f); return;
+      case sbt::CustomSubOp::Silu: emit_silu_f32(dst_f, src_f); return;
+      default: throw EmitError("unsupported.custom.sfu", func_name, pc, di.name);
+      }
+    };
+    auto emit_custom_rsqrt_dual_lane = [&](bool bf16_kind, int src_h16, const std::string &src_f32,
+                                           const std::string &dst_f32, int dst_h16) {
+      const std::string exp_mask = bf16_kind ? "0x7f80" : "0x7c00";
+      const std::string frac_mask = bf16_kind ? "0x007f" : "0x03ff";
+      const std::string pos_inf = bf16_kind ? "0x7f80" : "0x7c00";
+      const std::string convert_to_f32 = bf16_kind ? "cvt.f32.bf16 " : "cvt.f32.f16 ";
+      const std::string convert_from_f32 = bf16_kind ? "cvt.rn.bf16.f32 " : "cvt.rn.f16.f32 ";
+      emit_line("mov.b16 " + u16(0) + ", " + h(src_h16) + ";");
+      emit_line("cvt.u32.u16 " + r(20) + ", " + u16(0) + ";");
+      emit_line("and.b32 " + r(21) + ", " + r(20) + ", 0x8000;");
+      emit_line("and.b32 " + r(22) + ", " + r(20) + ", " + exp_mask + ";");
+      emit_line("and.b32 " + r(23) + ", " + r(20) + ", " + frac_mask + ";");
+      emit_line("setp.ne.u32 " + p(2) + ", " + r(21) + ", 0;");
+      emit_line("setp.eq.u32 " + p(3) + ", " + r(22) + ", 0;");
+      emit_line("setp.eq.u32 " + p(4) + ", " + r(22) + ", " + exp_mask + ";");
+      emit_line("setp.eq.u32 " + p(5) + ", " + r(23) + ", 0;");
+      emit_line("and.pred " + p(6) + ", " + p(3) + ", " + p(5) + ";");
+      emit_line("and.pred " + p(7) + ", " + p(4) + ", " + p(5) + ";");
+      emit_line("not.pred " + p(8) + ", " + p(5) + ";");
+      emit_line("and.pred " + p(8) + ", " + p(4) + ", " + p(8) + ";");
+      emit_line("not.pred " + p(9) + ", " + p(6) + ";");
+      emit_line("and.pred " + p(9) + ", " + p(2) + ", " + p(9) + ";");
+      emit_line("not.pred " + p(10) + ", " + p(2) + ";");
+      emit_line("and.pred " + p(10) + ", " + p(7) + ", " + p(10) + ";");
+      emit_line(convert_to_f32 + src_f32 + ", " + h(src_h16) + ";");
+      emit_custom_sfu_f32(dst_f32, src_f32, sbt::CustomSubOp::Rsqrt);
+      emit_line(convert_from_f32 + h(dst_h16) + ", " + dst_f32 + ";");
+      emit_line("@" + p(6) + " mov.b16 " + h(dst_h16) + ", " + pos_inf + ";");
+      emit_line("@" + p(9) + " mov.b16 " + h(dst_h16) + ", 0x7fff;");
+      emit_line("@" + p(10) + " mov.b16 " + h(dst_h16) + ", 0;");
+      emit_line("@" + p(8) + " mov.b16 " + h(dst_h16) + ", 0x7fff;");
+    };
+    auto subop_from_sfu_name = [&]() -> sbt::CustomSubOp {
+      if (di.name.rfind("vex2_approx_", 0) == 0) return sbt::CustomSubOp::Ex2;
+      if (di.name.rfind("vlg2_approx_", 0) == 0) return sbt::CustomSubOp::Lg2;
+      if (di.name.rfind("vrcp_approx_", 0) == 0) return sbt::CustomSubOp::Rcp;
+      if (di.name.rfind("vsqrt_approx_", 0) == 0) return sbt::CustomSubOp::Sqrt;
+      if (di.name.rfind("vrsqrt_approx_", 0) == 0) return sbt::CustomSubOp::Rsqrt;
+      if (di.name.rfind("vsin_approx_", 0) == 0) return sbt::CustomSubOp::Sin;
+      if (di.name.rfind("vcos_approx_", 0) == 0) return sbt::CustomSubOp::Cos;
+      if (di.name.rfind("vtanh_approx_", 0) == 0) return sbt::CustomSubOp::Tanh;
+      if (di.name.rfind("vgelu_approx_", 0) == 0) return sbt::CustomSubOp::Gelu;
+      if (di.name.rfind("vsilu_approx_", 0) == 0) return sbt::CustomSubOp::Silu;
+      return sbt::CustomSubOp::None;
+    };
+
+    if (di.name == "shuffle_idx" || di.name == "shuffle_up" || di.name == "shuffle_down" || di.name == "shuffle_bfly") {
+      emit_read_activemask(r(1));
+      emit_line("mov.u32 " + r(14) + ", " + std::to_string(di.imm & 31) + ";");
+      if (di.name == "shuffle_idx") emit_line("shfl.sync.idx.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x1f, " + r(1) + ";");
+      else if (di.name == "shuffle_up") emit_line("shfl.sync.up.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x0, " + r(1) + ";");
+      else if (di.name == "shuffle_down") emit_line("shfl.sync.down.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x1f, " + r(1) + ";");
+      else emit_line("shfl.sync.bfly.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x1f, " + r(1) + ";");
+      return;
+    }
+
+    if (di.name == "vcvt_f32_fp16") {
+      unpack_u32_to_halves(v(di.rs2), 0, 1);
+      emit_line("cvt.f32.f16 " + f(0) + ", " + h(0) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(0) + ";");
+      return;
+    }
+    if (di.name == "vcvt_f16_fp32") {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("cvt.rn.f16.f32 " + h(0) + ", " + f(0) + ";");
+      emit_line("mov.b16 " + h(1) + ", 0;");
+      pack_halves_to_u32(r(14), 0, 1);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+    if (di.name == "vcvt_fp32_bf16") {
+      unpack_u32_to_halves(v(di.rs2), 0, 1);
+      emit_line("cvt.f32.bf16 " + f(0) + ", " + h(0) + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(0) + ";");
+      return;
+    }
+    if (di.name == "vcvt_bf16_fp32") {
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_line("cvt.rn.bf16.f32 " + h(0) + ", " + f(0) + ";");
+      emit_line("mov.b16 " + h(1) + ", 0;");
+      pack_halves_to_u32(r(14), 0, 1);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+
+    if (di.name == "vadd_f16x2" || di.name == "vmul_f16x2" || di.name == "vfma_f16x2") {
+      if (di.name == "vadd_f16x2") emit_line("add.rn.f16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
+      else if (di.name == "vmul_f16x2") emit_line("mul.rn.f16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
+      else emit_line("fma.rn.f16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+
+    if (di.name == "vadd_bf16x2" || di.name == "vmul_bf16x2" || di.name == "vfma_bf16x2") {
+      if (di.name == "vfma_bf16x2") {
+        emit_line("fma.rn.bf16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
+        emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+        return;
+      }
+      unpack_u32_to_halves(v(di.rs1), 0, 1);
+      unpack_u32_to_halves(v(di.rs2), 2, 3);
+      emit_line("cvt.f32.bf16 " + f(0) + ", " + h(0) + ";");
+      emit_line("cvt.f32.bf16 " + f(1) + ", " + h(1) + ";");
+      emit_line("cvt.f32.bf16 " + f(2) + ", " + h(2) + ";");
+      emit_line("cvt.f32.bf16 " + f(3) + ", " + h(3) + ";");
+      if (di.name == "vadd_bf16x2") {
+        emit_line("add.rn.f32 " + f(4) + ", " + f(0) + ", " + f(2) + ";");
+        emit_line("add.rn.f32 " + f(5) + ", " + f(1) + ", " + f(3) + ";");
+      } else {
+        emit_line("mul.rn.f32 " + f(4) + ", " + f(0) + ", " + f(2) + ";");
+        emit_line("mul.rn.f32 " + f(5) + ", " + f(1) + ", " + f(3) + ";");
+      }
+      emit_line("cvt.rn.bf16.f32 " + h(4) + ", " + f(4) + ";");
+      emit_line("cvt.rn.bf16.f32 " + h(5) + ", " + f(5) + ";");
+      pack_halves_to_u32(r(14), 4, 5);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+
+    if (di.name.find("_approx_f32") != std::string::npos && di.name.rfind("v", 0) == 0) {
+      const sbt::CustomSubOp subop = (di.custom.valid && di.custom.subop != sbt::CustomSubOp::None) ? di.custom.subop : subop_from_sfu_name();
+      require(subop != sbt::CustomSubOp::None, EmitError("unsupported.custom.sfu", func_name, pc, di.name));
+      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
+      emit_custom_sfu_f32(f(1), f(0), subop);
+      emit_line("mov.b32 " + v(di.rd) + ", " + f(1) + ";");
+      return;
+    }
+
+    if (di.name.find("_approx_f16x2") != std::string::npos) {
+      const sbt::CustomSubOp subop = (di.custom.valid && di.custom.subop != sbt::CustomSubOp::None) ? di.custom.subop : subop_from_sfu_name();
+      require(subop != sbt::CustomSubOp::None, EmitError("unsupported.custom.sfu", func_name, pc, di.name));
+      unpack_u32_to_halves(v(di.rs2), 0, 1);
+      if (subop == sbt::CustomSubOp::Rsqrt) {
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/false, 0, f(0), f(2), 2);
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/false, 1, f(1), f(3), 3);
+      } else {
+        emit_line("cvt.f32.f16 " + f(0) + ", " + h(0) + ";");
+        emit_line("cvt.f32.f16 " + f(1) + ", " + h(1) + ";");
+        emit_custom_sfu_f32(f(2), f(0), subop);
+        emit_custom_sfu_f32(f(3), f(1), subop);
+        emit_line("cvt.rn.f16.f32 " + h(2) + ", " + f(2) + ";");
+        emit_line("cvt.rn.f16.f32 " + h(3) + ", " + f(3) + ";");
+      }
+      pack_halves_to_u32(r(14), 2, 3);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+
+    if (di.name.find("_approx_bf16x2") != std::string::npos) {
+      const sbt::CustomSubOp subop = (di.custom.valid && di.custom.subop != sbt::CustomSubOp::None) ? di.custom.subop : subop_from_sfu_name();
+      require(subop != sbt::CustomSubOp::None, EmitError("unsupported.custom.sfu", func_name, pc, di.name));
+      unpack_u32_to_halves(v(di.rs2), 0, 1);
+      if (subop == sbt::CustomSubOp::Rsqrt) {
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/true, 0, f(0), f(2), 2);
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/true, 1, f(1), f(3), 3);
+      } else {
+        emit_line("cvt.f32.bf16 " + f(0) + ", " + h(0) + ";");
+        emit_line("cvt.f32.bf16 " + f(1) + ", " + h(1) + ";");
+        emit_custom_sfu_f32(f(2), f(0), subop);
+        emit_custom_sfu_f32(f(3), f(1), subop);
+        emit_line("cvt.rn.bf16.f32 " + h(2) + ", " + f(2) + ";");
+        emit_line("cvt.rn.bf16.f32 " + h(3) + ", " + f(3) + ";");
+      }
+      pack_halves_to_u32(r(14), 2, 3);
+      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      return;
+    }
+
     if (di.name == "vadd_vv") {
       emit_line("add.u32 " + v(di.rd) + ", " + v(di.rs2) + ", " + v(di.rs1) + ";");
       return;
@@ -2517,8 +2732,9 @@ struct EmitCtx final {
     emit_line(".reg .b64 %rd<32>;");
     emit_line(".reg .pred %p<16>;");
     emit_line(".reg .f32 %f<16>;");
+    emit_line(".reg .b16 %h<16>;");
     emit_line(".reg .u8 %ub<4>;");
-    emit_line(".reg .u16 %uh<4>;");
+    emit_line(".reg .u16 %uh<16>;");
     emit_line(".reg .b32 %x<256>;");
     emit_line(".reg .b32 %v<256>;");
 
@@ -2621,8 +2837,9 @@ struct EmitCtx final {
     emit_line(".reg .b64 %rd<32>;");
     emit_line(".reg .pred %p<16>;");
     emit_line(".reg .f32 %f<16>;");
+    emit_line(".reg .b16 %h<16>;");
     emit_line(".reg .u8 %ub<4>;");
-    emit_line(".reg .u16 %uh<4>;");
+    emit_line(".reg .u16 %uh<16>;");
     emit_line(".reg .b32 %x<256>;");
     emit_line(".reg .b32 %v<256>;");
 
@@ -2681,7 +2898,7 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
                        const std::unordered_map<uint32_t, std::string> &ptx_name_by_addr, const Options &opt) {
   // Module header.
   std::ostringstream out;
-  out << ".version 7.0\n";
+  out << ".version 7.8\n";
   out << ".target sm_" << opt.sm << "\n";
   out << ".address_size 64\n\n";
   out << ".extern .shared .align 16 .b8 __sbt_shmem[];\n";

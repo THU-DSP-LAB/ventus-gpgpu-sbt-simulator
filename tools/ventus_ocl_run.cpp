@@ -85,6 +85,20 @@ static std::string read_file(const std::string &path) {
   return s;
 }
 
+static std::vector<uint8_t> read_binary_file(const std::string &path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    std::cerr << "failed to read: " << path << "\n";
+    std::exit(2);
+  }
+  f.seekg(0, std::ios::end);
+  const size_t size = static_cast<size_t>(f.tellg());
+  f.seekg(0, std::ios::beg);
+  std::vector<uint8_t> bytes(size);
+  f.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  return bytes;
+}
+
 static uint64_t fnv1a64(const uint8_t *p, size_t n) {
   uint64_t h = 1469598103934665603ull;
   for (size_t i = 0; i < n; ++i) {
@@ -133,7 +147,8 @@ static std::optional<std::vector<uint8_t>> get_program_binary_first_device(cl_pr
 }
 
 static Buffers run_once(cl_context ctx, cl_command_queue q, cl_device_id dev, const std::string &src, const char *kernel_name, size_t n,
-                        bool force_binary, std::optional<std::vector<uint8_t>> binary_override) {
+                        bool force_binary, std::optional<std::vector<uint8_t>> binary_override,
+                        std::optional<std::vector<uint8_t>> input_override) {
   cl_int err = CL_SUCCESS;
 
   cl_program prog = nullptr;
@@ -190,7 +205,16 @@ static Buffers run_once(cl_context ctx, cl_command_queue q, cl_device_id dev, co
   //   __kernel void K(__global const uint *A, __global uint *B)
   // where A and B each contain N uint32 elements.
   std::vector<uint32_t> a(n);
-  for (size_t i = 0; i < n; ++i) a[i] = uint32_t(i * 2654435761u) ^ 0xdeadbeefu;
+  if (input_override) {
+    const size_t expected = a.size() * sizeof(uint32_t);
+    if (input_override->size() != expected) {
+      std::cerr << "invalid --in byte size: got=" << input_override->size() << " expected=" << expected << "\n";
+      std::exit(2);
+    }
+    std::memcpy(a.data(), input_override->data(), expected);
+  } else {
+    for (size_t i = 0; i < n; ++i) a[i] = uint32_t(i * 2654435761u) ^ 0xdeadbeefu;
+  }
 
   std::vector<uint8_t> out_host(n * sizeof(uint32_t));
   cl_mem in_m = make_buf(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, a.data(), a.size() * sizeof(uint32_t));
@@ -221,7 +245,7 @@ static Buffers run_once(cl_context ctx, cl_command_queue q, cl_device_id dev, co
 
 static void usage() {
   std::cerr << "Usage:\n";
-  std::cerr << "  ventus_ocl_run --src <kernels.cl> --kernel <name> [--n <elements>] [--out <file>] [--binary-roundtrip]\n";
+  std::cerr << "  ventus_ocl_run --src <kernels.cl> --kernel <name> [--n <elements>] [--in <file>] [--out <file>] [--binary-roundtrip]\n";
 }
 
 } // namespace
@@ -230,6 +254,7 @@ int main(int argc, char **argv) {
   std::string src_path = "testcases/ocl_compare/kernels.cl";
   std::string kernel = "test_u32_basic";
   size_t n = 256;
+  std::optional<std::string> in_path;
   std::optional<std::string> out_path;
   bool binary_roundtrip = false;
 
@@ -241,6 +266,8 @@ int main(int argc, char **argv) {
       kernel = argv[++i];
     } else if (a == "--n" && i + 1 < argc) {
       n = static_cast<size_t>(std::stoull(argv[++i]));
+    } else if (a == "--in" && i + 1 < argc) {
+      in_path = argv[++i];
     } else if (a == "--out" && i + 1 < argc) {
       out_path = argv[++i];
     } else if (a == "--binary-roundtrip") {
@@ -256,6 +283,8 @@ int main(int argc, char **argv) {
   }
 
   const std::string src = read_file(src_path);
+  std::optional<std::vector<uint8_t>> input_override;
+  if (in_path) input_override = read_binary_file(*in_path);
 
   cl_uint nplat = 0;
   cl_check(clGetPlatformIDs(0, nullptr, &nplat), "clGetPlatformIDs(n)");
@@ -283,7 +312,7 @@ int main(int argc, char **argv) {
   cl_command_queue q = clCreateCommandQueue(ctx, dev, 0, &err);
   cl_check(err, "clCreateCommandQueue");
 
-  const Buffers res_src = run_once(ctx, q, dev, src, kernel.c_str(), n, /*force_binary=*/false, std::nullopt);
+  const Buffers res_src = run_once(ctx, q, dev, src, kernel.c_str(), n, /*force_binary=*/false, std::nullopt, input_override);
 
   std::optional<std::vector<uint8_t>> bin0;
   if (binary_roundtrip) {
@@ -306,7 +335,7 @@ int main(int argc, char **argv) {
       return 3;
     }
 
-    const Buffers res_bin = run_once(ctx, q, dev, src, kernel.c_str(), n, /*force_binary=*/true, bin0);
+    const Buffers res_bin = run_once(ctx, q, dev, src, kernel.c_str(), n, /*force_binary=*/true, bin0, input_override);
     if (res_bin.bytes != res_src.bytes) {
       std::cerr << "binary roundtrip output mismatch\n";
       return 3;

@@ -41,7 +41,7 @@
 - `sbt/riscv_decode.{hpp,cpp}`
   - `decode_text(text, vaddr, opt, patterns)`：按 4B 指令解码。
   - 支持 `regext/regexti` 前缀 bundling：前缀只作用下一条指令；CFG 里会把“bundle pc”和“真实指令 pc”区分开。
-  - Ventus 扩展优先：先按 `match/mask` 命中 Spike pattern；否则走 RV32 标量子集解码。
+  - Ventus 扩展优先：先走 repository-local custom non-MMA decode（对齐上游 LLVM/Spike 的 `0x42/0x2A/0x5A/0x7A` opcode 口径），再按 `match/mask` 命中 Spike pattern，最后才走 RV32 标量子集解码。
   - `DecodedInst` 是当前“最小 IR”：含 `name`、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
 
 - `sbt/cfg.{hpp,cpp}`
@@ -132,14 +132,28 @@
 
 - `tools/ventus_ocl_run.cpp` → `build/ventus_ocl_run`（可选构建）
   - OpenCL host runner：按 A/B buffer 约定跑指定 kernel，并把 B 写回/输出 hash。
+  - 支持 `--in <raw-u32.bin>` 覆盖默认生成的 A buffer；用于 packed microtest 直接喂入原始 bit pattern，而不是在 kernel 内现场 pack。
   - 用于 Spike vs PTX 语义对照的 micro-test 执行器。
 
 - `tools/ventus_ocl_compare.py` + `tools/microtest_coverage_gate.sh`
   - 以同一份 OpenCL 源码为输入，分别在 `VENTUS_BACKEND=spike` 与 `VENTUS_BACKEND=ptx` 下运行 kernel 列表，对比输出 B：
     - 整数/位运算：byte-exact；
     - 浮点：atol/rtol 容差。
+  - current：若调用者未显式设置 `GPU_SBT_PTX`，脚本会自动绑定当前仓库 `build/sbt_ptx`，避免 PTX 对照误落到 `../install/bin/sbt_ptx` 等旧安装产物。
   - `--coverage`：对 `_start` + 各 kernel 导出 `sbt_decode --json`，调用 `tools/ventus_inst_coverage.py` 计算 `VentusInst_basic.txt` mnemonic 覆盖率，并按 `data/inst_exceptions.txt` 扣除例外。
   - 路径解析采用脚本绝对路径（`env.sh` 与 `ventus_inst_coverage.py`），不依赖调用时当前目录。
+
+- `tools/custom_non_mma_oracle.py`
+  - custom non-MMA 专用 gate：对 `testcases/ocl_compare/custom_non_mma_kernels.cl` 里的 microtests 逐个执行：
+    - `VENTUS_BACKEND=spike` 与 `VENTUS_BACKEND=ptx` 结果对照；
+    - 同一 ELF 的 `sbt_decode --require-known`；
+    - 同一 ELF 的 `sbt_ptx --require-known` + `ptxas` compile-first。
+  - 比较规则：
+    - shuffle / vcvt / packed arithmetic：精确比较；
+    - `fp32` SFU：f32 容差比较；
+    - packed `f16x2` / `bf16x2` SFU：按半精度 lane 容差比较。
+  - current：shuffle 类 microtest 会在 oracle 中强制以完整 32-lane warp 规模执行，避免 `n < 32` 时因 runner 把 local size 降成 1 而引入伪失败。
+  - 当前 `mt_custom_vrsqrt_f16x2` / `mt_custom_vrsqrt_bf16x2` 使用 raw packed 输入文件驱动；这是刻意将 “packed 输入构造” 与 “rsqrt 指令语义” 解耦，避免被 `vcvt_*_fp32 + pack_*x2` 的独立 contract 问题污染结论。
 
 - `tools/regext_bundle_test.cpp` → `build/regext_bundle_test`
   - `regext/regexti` bundling 边界情况的最小回归。

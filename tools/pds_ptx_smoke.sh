@@ -9,7 +9,7 @@ SBT_PTX="${SBT_PTX:-$BUILD_DIR/sbt_ptx}"
 PTXAS="${PTXAS:-ptxas}"
 
 # Accept ARCH=89 or ARCH=sm_89. Default aligns with CUDA 13.x ptxas minimum.
-ARCH="${ARCH:-75}"
+ARCH="${ARCH:-89}"
 if [[ "$ARCH" =~ ^[0-9]+$ ]]; then
   ARCH="sm_${ARCH}"
 fi

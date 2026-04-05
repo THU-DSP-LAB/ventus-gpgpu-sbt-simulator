@@ -19,28 +19,50 @@
 """
 
 import argparse
+import glob
 import math
+import os
 import shlex
 import subprocess
 import struct
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_EXE = REPO_ROOT / "build/ventus_ocl_run"
 DEFAULT_SBT_DECODE = REPO_ROOT / "build/sbt_decode"
+DEFAULT_SBT_PTX = REPO_ROOT / "build/sbt_ptx"
 DEFAULT_SRC = REPO_ROOT / "testcases/ocl_compare/kernels.cl"
 DEFAULT_EXCEPTIONS = REPO_ROOT / "data/inst_exceptions.txt"
 DEFAULT_COVERAGE_TARGET = REPO_ROOT / "VentusInst_basic.txt"
 DEFAULT_ENV_SH = (REPO_ROOT / ".." / "env.sh").resolve()
 DEFAULT_COVERAGE_TOOL = SCRIPT_DIR / "ventus_inst_coverage.py"
+DEFAULT_COVERAGE_EXTRA_ELF_GLOBS = [
+    str((REPO_ROOT / ".." / "rodinia" / "opencl" / "*" / "object0.riscv").resolve()),
+    str((REPO_ROOT / ".." / "rodinia" / "opencl" / "*" / "object1.riscv").resolve()),
+]
 
 
-def run_one(backend: str, exe: Path, src: Path, kernel: str, n: int, out: Path, env_sh: Path) -> str:
+def default_gpu_sbt_ptx() -> Path | None:
+    if "GPU_SBT_PTX" in os.environ:
+        return None
+    if DEFAULT_SBT_PTX.is_file():
+        return DEFAULT_SBT_PTX.resolve()
+    return None
+
+
+def run_one(
+    backend: str, exe: Path, src: Path, kernel: str, n: int, out: Path, env_sh: Path, gpu_sbt_ptx: Path | None
+) -> str:
+    env_parts = [f"VENTUS_BACKEND={shlex.quote(backend)}"]
+    if backend == "ptx" and gpu_sbt_ptx is not None:
+        env_parts.append(f"GPU_SBT_PTX={shlex.quote(str(gpu_sbt_ptx))}")
     cmd = (
         f"source {shlex.quote(str(env_sh))} >/dev/null 2>&1 && "
-        f"VENTUS_BACKEND={shlex.quote(backend)} "
+        + " ".join(env_parts)
+        + " "
         f"{shlex.quote(str(exe))} --src {shlex.quote(str(src))} "
         f"--kernel {shlex.quote(kernel)} --n {n} --out {shlex.quote(str(out))}"
     )
@@ -79,15 +101,32 @@ def _compare_f32_bytes(a: bytes, b: bytes, *, atol: float, rtol: float) -> tuple
     return True, f"f32_ok n={n} atol={atol} rtol={rtol}"
 
 
-def dump_decoded_json(sbt_decode: Path, elf: Path, func: str, out_json: Path) -> None:
-    cmd = (
-        f"{shlex.quote(str(sbt_decode))} decode {shlex.quote(str(elf))} "
-        f"--func {shlex.quote(func)} --require-known "
-        f"--json {shlex.quote(str(out_json))} >/dev/null"
-    )
+def dump_decoded_json(
+    sbt_decode: Path, elf: Path, out_json: Path, *, func: Optional[str] = None, require_known: bool = True
+) -> None:
+    cmd_parts = [f"{shlex.quote(str(sbt_decode))} decode {shlex.quote(str(elf))}"]
+    if func:
+        cmd_parts.append(f"--func {shlex.quote(func)}")
+    if require_known:
+        cmd_parts.append("--require-known")
+    cmd_parts.append(f"--json {shlex.quote(str(out_json))} >/dev/null")
+    cmd = " ".join(cmd_parts)
     p = subprocess.run(["bash", "-lc", cmd], text=True, capture_output=True)
     if p.returncode != 0:
         raise RuntimeError(f"sbt_decode failed rc={p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}\n")
+
+
+def resolve_extra_coverage_elfs(glob_patterns: list[str]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in glob_patterns:
+        for m in sorted(glob.glob(pattern)):
+            p = Path(m).resolve()
+            if not p.is_file() or p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+    return out
 
 
 def main() -> int:
@@ -128,6 +167,12 @@ def main() -> int:
     ap.add_argument("--min-ratio", type=float, default=0.0, help="Coverage gate: minimum covered/total ratio")
     ap.add_argument("--require-full", action="store_true", help="Coverage gate: require full coverage except exceptions")
     ap.add_argument(
+        "--coverage-extra-elf-glob",
+        nargs="*",
+        default=DEFAULT_COVERAGE_EXTRA_ELF_GLOBS,
+        help="Extra ELF glob(s) decoded for coverage only (decoded without --require-known)",
+    )
+    ap.add_argument(
         "--float-kernels",
         nargs="*",
         default=[
@@ -163,6 +208,10 @@ def main() -> int:
     if args.coverage and not coverage_tool.exists():
         raise SystemExit(f"missing coverage tool: {coverage_tool}")
 
+    gpu_sbt_ptx = default_gpu_sbt_ptx()
+    if gpu_sbt_ptx is not None:
+        print(f"[INFO] GPU_SBT_PTX={gpu_sbt_ptx}")
+
     # The Ventus PoCL device may choose to emit a side-effect ELF (object0.riscv) into the CWD.
     # If it already exists, it can become stale and break coverage accounting across edits.
     if args.coverage:
@@ -181,8 +230,8 @@ def main() -> int:
         for k in args.kernels:
             out_a = tdp / f"{k}.{args.backend_a}.bin"
             out_b = tdp / f"{k}.{args.backend_b}.bin"
-            log_a = run_one(args.backend_a, exe, src, k, args.n, out_a, env_sh)
-            log_b = run_one(args.backend_b, exe, src, k, args.n, out_b, env_sh)
+            log_a = run_one(args.backend_a, exe, src, k, args.n, out_a, env_sh, gpu_sbt_ptx)
+            log_b = run_one(args.backend_b, exe, src, k, args.n, out_b, env_sh, gpu_sbt_ptx)
 
             ba = out_a.read_bytes()
             bb = out_b.read_bytes()
@@ -212,12 +261,27 @@ def main() -> int:
                 if elf.exists():
                     if not decoded_start:
                         out_start = tdp / "_start.decoded.json"
-                        dump_decoded_json(sbt_decode, elf, "_start", out_start)
+                        dump_decoded_json(sbt_decode, elf, out_start, func="_start", require_known=True)
                         decoded_jsons.append(out_start)
                         decoded_start = True
                     out_json = tdp / f"{k}.decoded.json"
-                    dump_decoded_json(sbt_decode, elf, k, out_json)
+                    dump_decoded_json(sbt_decode, elf, out_json, func=k, require_known=True)
                     decoded_jsons.append(out_json)
+
+        if args.coverage:
+            extra_elfs = resolve_extra_coverage_elfs(args.coverage_extra_elf_glob)
+            extra_decoded = 0
+            for i, extra_elf in enumerate(extra_elfs):
+                out_json = tdp / f"_extra_{i}.decoded.json"
+                try:
+                    dump_decoded_json(sbt_decode, extra_elf, out_json, func=None, require_known=False)
+                except RuntimeError as err:
+                    first = str(err).splitlines()[0] if str(err) else "decode failed"
+                    print(f"WARN coverage extra decode skipped elf={extra_elf}: {first}")
+                    continue
+                decoded_jsons.append(out_json)
+                extra_decoded += 1
+            print(f"INFO coverage extras: globs={len(args.coverage_extra_elf_glob)} found={len(extra_elfs)} decoded={extra_decoded}")
 
         if args.coverage and decoded_jsons:
             cov_cmd = [

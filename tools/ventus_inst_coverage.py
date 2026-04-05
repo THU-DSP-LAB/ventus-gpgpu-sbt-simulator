@@ -7,6 +7,8 @@ from pathlib import Path
 _TARGET_ALIASES: dict[str, str] = {
     # VentusInst_basic.txt mnemonic -> sbt_decode decoded name.
     # Keep minimal and auditable.
+    # Legacy custom name kept in VentusInst_basic, but current toolchain emits vadd_vi.
+    "vadd12_vi": "vadd_vi",
     "vfexp": "vfexp_v",
     "vmandnot_mm": "vmandn_mm",
     "vmornot_mm": "vmorn_mm",

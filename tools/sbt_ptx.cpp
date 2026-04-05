@@ -305,7 +305,7 @@ int main(int argc, char **argv) {
   bool require_known = false;
   bool bundle_regext = true;
   bool include_comments = true;
-  int sm = 75;
+  int sm = 89;
   bool cache_enabled = true;
 
   elf_path = argv[1];

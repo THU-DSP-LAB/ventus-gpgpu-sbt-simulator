@@ -235,6 +235,176 @@ static void classify_by_name(std::string_view name, DecodedInst &out) {
   }
 }
 
+static void init_custom_non_mma_common(uint32_t w, DecodedInst &out) {
+  out.rd_class = RegClass::V;
+  out.rs1_class = RegClass::None;
+  out.rs2_class = RegClass::V;
+  out.rs3_class = RegClass::None;
+  out.imm_kind = ImmKind::None;
+  out.imm = 0;
+  out.custom.valid = true;
+  out.custom.vm_bit = ((w >> 25) & 0x1u) != 0;
+  out.custom.funct6 = static_cast<uint8_t>((w >> 26) & 0x3Fu);
+  out.custom.funct3 = static_cast<uint8_t>((w >> 12) & 0x7u);
+  out.rd = static_cast<int>((w >> 7) & 0x1Fu);
+  out.rs2 = static_cast<int>((w >> 20) & 0x1Fu);
+}
+
+static bool decode_repo_local_custom_non_mma(uint32_t w, DecodedInst &out) {
+  const uint32_t opcode = w & 0x7Fu;
+  const uint32_t funct3 = (w >> 12) & 0x7u;
+  const uint32_t funct6 = (w >> 26) & 0x3Fu;
+  const int imm5_or_vs1 = static_cast<int>((w >> 15) & 0x1Fu);
+
+  // Repository-local decode path for custom non-MMA families.
+  if (opcode == 0x42u && funct3 == 0x1u) {
+    DecodedInst cand = out;
+    init_custom_non_mma_common(w, cand);
+    cand.custom.family = CustomFamily::Shuffle;
+    cand.imm_kind = ImmKind::UImm5;
+    cand.imm = imm5_or_vs1;
+    if (funct6 == 0x9u) {
+      cand.name = "shuffle_idx";
+      cand.custom.subop = CustomSubOp::ShuffleIdx;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0xAu) {
+      cand.name = "shuffle_up";
+      cand.custom.subop = CustomSubOp::ShuffleUp;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0xBu) {
+      cand.name = "shuffle_down";
+      cand.custom.subop = CustomSubOp::ShuffleDown;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0x8u) {
+      cand.name = "shuffle_bfly";
+      cand.custom.subop = CustomSubOp::ShuffleBfly;
+      out = std::move(cand);
+      return true;
+    }
+    return false;
+  }
+
+  if (opcode == 0x7Au && funct3 == 0x0u) {
+    DecodedInst cand = out;
+    init_custom_non_mma_common(w, cand);
+    cand.custom.family = CustomFamily::Convert;
+    if (funct6 == 0x00u) {
+      cand.name = "vcvt_f32_fp16";
+      cand.custom.subop = CustomSubOp::CvtF32FromF16;
+      cand.custom.dtype = CustomDataType::Fp16;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0x01u) {
+      cand.name = "vcvt_f16_fp32";
+      cand.custom.subop = CustomSubOp::CvtF16FromF32;
+      cand.custom.dtype = CustomDataType::Fp16;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0x02u) {
+      cand.name = "vcvt_fp32_bf16";
+      cand.custom.subop = CustomSubOp::CvtF32FromBf16;
+      cand.custom.dtype = CustomDataType::Bf16;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0x03u) {
+      cand.name = "vcvt_bf16_fp32";
+      cand.custom.subop = CustomSubOp::CvtBf16FromF32;
+      cand.custom.dtype = CustomDataType::Bf16;
+      out = std::move(cand);
+      return true;
+    }
+    return false;
+  }
+
+  if (opcode == 0x5Au) {
+    DecodedInst cand = out;
+    init_custom_non_mma_common(w, cand);
+    cand.custom.family = CustomFamily::PackedArith;
+    cand.rs1_class = RegClass::V;
+    cand.rs1 = imm5_or_vs1;
+    if (funct3 == 0x0u) cand.custom.dtype = CustomDataType::F16x2;
+    else if (funct3 == 0x1u) cand.custom.dtype = CustomDataType::Bf16x2;
+    else return false;
+
+    if (funct6 == 0x00u) {
+      cand.name = (cand.custom.dtype == CustomDataType::F16x2) ? "vadd_f16x2" : "vadd_bf16x2";
+      cand.custom.subop = CustomSubOp::Add;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0x01u) {
+      cand.name = (cand.custom.dtype == CustomDataType::F16x2) ? "vmul_f16x2" : "vmul_bf16x2";
+      cand.custom.subop = CustomSubOp::Mul;
+      out = std::move(cand);
+      return true;
+    }
+    if (funct6 == 0x02u) {
+      cand.name = (cand.custom.dtype == CustomDataType::F16x2) ? "vfma_f16x2" : "vfma_bf16x2";
+      cand.custom.subop = CustomSubOp::Fma;
+      out = std::move(cand);
+      return true;
+    }
+    return false;
+  }
+
+  if (opcode == 0x2Au) {
+    DecodedInst cand = out;
+    init_custom_non_mma_common(w, cand);
+    cand.custom.family = CustomFamily::Sfu;
+    if (funct3 == 0x0u) cand.custom.dtype = CustomDataType::Fp32;
+    else if (funct3 == 0x1u) cand.custom.dtype = CustomDataType::F16x2;
+    else if (funct3 == 0x2u) cand.custom.dtype = CustomDataType::Bf16x2;
+    else return false;
+
+    auto dtype_suffix = [&]() -> std::string_view {
+      if (cand.custom.dtype == CustomDataType::Fp32) return "f32";
+      if (cand.custom.dtype == CustomDataType::F16x2) return "f16x2";
+      return "bf16x2";
+    };
+    auto set_sfu = [&](std::string_view stem, CustomSubOp subop) {
+      cand.custom.subop = subop;
+      cand.name = std::string(stem) + "_approx_" + std::string(dtype_suffix());
+      out = std::move(cand);
+      return true;
+    };
+
+    if (cand.custom.dtype == CustomDataType::Fp32) {
+      if (funct6 == 0x00u) return set_sfu("vex2", CustomSubOp::Ex2);
+      if (funct6 == 0x01u) return set_sfu("vlg2", CustomSubOp::Lg2);
+      if (funct6 == 0x02u) return set_sfu("vrcp", CustomSubOp::Rcp);
+      if (funct6 == 0x03u) return set_sfu("vsqrt", CustomSubOp::Sqrt);
+      if (funct6 == 0x04u) return set_sfu("vrsqrt", CustomSubOp::Rsqrt);
+      if (funct6 == 0x05u) return set_sfu("vsin", CustomSubOp::Sin);
+      if (funct6 == 0x06u) return set_sfu("vcos", CustomSubOp::Cos);
+      if (funct6 == 0x07u) return set_sfu("vtanh", CustomSubOp::Tanh);
+      if (funct6 == 0x08u) return set_sfu("vgelu", CustomSubOp::Gelu);
+      if (funct6 == 0x09u) return set_sfu("vsilu", CustomSubOp::Silu);
+      return false;
+    }
+
+    if (funct6 == 0x00u) return set_sfu("vex2", CustomSubOp::Ex2);
+    if (funct6 == 0x02u) return set_sfu("vrcp", CustomSubOp::Rcp);
+    if (funct6 == 0x03u) return set_sfu("vsqrt", CustomSubOp::Sqrt);
+    if (funct6 == 0x04u) return set_sfu("vrsqrt", CustomSubOp::Rsqrt);
+    if (funct6 == 0x07u) return set_sfu("vtanh", CustomSubOp::Tanh);
+    if (funct6 == 0x08u) return set_sfu("vgelu", CustomSubOp::Gelu);
+    if (funct6 == 0x09u) return set_sfu("vsilu", CustomSubOp::Silu);
+    return false;
+  }
+
+  // Leave MMA ownership to support-custom-mma change.
+  return false;
+}
+
 static bool decode_scalar(uint32_t w, DecodedInst &out) {
   const uint32_t opcode = w & 0x7Fu;
   const uint32_t rd5 = (w >> 7) & 0x1Fu;
@@ -596,7 +766,9 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
   const int rs2_5 = int((w >> 20) & 0x1F);
   const int rs3_5 = int((w >> 27) & 0x1F);
 
-  if (const Pattern *p = match_pattern(w, patterns)) {
+  if (decode_repo_local_custom_non_mma(w, out)) {
+    // Decoded by repository-local custom path.
+  } else if (const Pattern *p = match_pattern(w, patterns)) {
     out.name = p->name;
     classify_by_name(out.name, out);
     // Fill operands/imm based on classification.
@@ -762,6 +934,55 @@ const char *to_string(FpRoundingMode rm) {
   case FpRoundingMode::Reserved6: return "reserved6";
   case FpRoundingMode::DYN: return "dyn";
   case FpRoundingMode::None: default: return "none";
+  }
+}
+
+const char *to_string(CustomFamily f) {
+  switch (f) {
+  case CustomFamily::Shuffle: return "shuffle";
+  case CustomFamily::Convert: return "convert";
+  case CustomFamily::PackedArith: return "packed_arith";
+  case CustomFamily::Sfu: return "sfu";
+  case CustomFamily::Mma: return "mma";
+  case CustomFamily::None: default: return "none";
+  }
+}
+
+const char *to_string(CustomSubOp op) {
+  switch (op) {
+  case CustomSubOp::ShuffleIdx: return "shuffle_idx";
+  case CustomSubOp::ShuffleUp: return "shuffle_up";
+  case CustomSubOp::ShuffleDown: return "shuffle_down";
+  case CustomSubOp::ShuffleBfly: return "shuffle_bfly";
+  case CustomSubOp::CvtF32FromF16: return "cvt_f32_from_f16";
+  case CustomSubOp::CvtF16FromF32: return "cvt_f16_from_f32";
+  case CustomSubOp::CvtF32FromBf16: return "cvt_f32_from_bf16";
+  case CustomSubOp::CvtBf16FromF32: return "cvt_bf16_from_f32";
+  case CustomSubOp::Add: return "add";
+  case CustomSubOp::Mul: return "mul";
+  case CustomSubOp::Fma: return "fma";
+  case CustomSubOp::Ex2: return "ex2";
+  case CustomSubOp::Lg2: return "lg2";
+  case CustomSubOp::Rcp: return "rcp";
+  case CustomSubOp::Sqrt: return "sqrt";
+  case CustomSubOp::Rsqrt: return "rsqrt";
+  case CustomSubOp::Sin: return "sin";
+  case CustomSubOp::Cos: return "cos";
+  case CustomSubOp::Tanh: return "tanh";
+  case CustomSubOp::Gelu: return "gelu";
+  case CustomSubOp::Silu: return "silu";
+  case CustomSubOp::None: default: return "none";
+  }
+}
+
+const char *to_string(CustomDataType t) {
+  switch (t) {
+  case CustomDataType::Fp32: return "fp32";
+  case CustomDataType::Fp16: return "fp16";
+  case CustomDataType::Bf16: return "bf16";
+  case CustomDataType::F16x2: return "f16x2";
+  case CustomDataType::Bf16x2: return "bf16x2";
+  case CustomDataType::None: default: return "none";
   }
 }
 

@@ -40,6 +40,59 @@ enum class FpRoundingMode : uint8_t {
   DYN = 7, // dynamic (use CSR.frm)
 };
 
+enum class CustomFamily : uint8_t {
+  None = 0,
+  Shuffle,
+  Convert,
+  PackedArith,
+  Sfu,
+  Mma, // Reserved for support-custom-mma change ownership.
+};
+
+enum class CustomSubOp : uint8_t {
+  None = 0,
+  ShuffleIdx,
+  ShuffleUp,
+  ShuffleDown,
+  ShuffleBfly,
+  CvtF32FromF16,
+  CvtF16FromF32,
+  CvtF32FromBf16,
+  CvtBf16FromF32,
+  Add,
+  Mul,
+  Fma,
+  Ex2,
+  Lg2,
+  Rcp,
+  Sqrt,
+  Rsqrt,
+  Sin,
+  Cos,
+  Tanh,
+  Gelu,
+  Silu,
+};
+
+enum class CustomDataType : uint8_t {
+  None = 0,
+  Fp32,
+  Fp16,
+  Bf16,
+  F16x2,
+  Bf16x2,
+};
+
+struct CustomInstInfo final {
+  bool valid = false;
+  CustomFamily family = CustomFamily::None;
+  CustomSubOp subop = CustomSubOp::None;
+  CustomDataType dtype = CustomDataType::None;
+  bool vm_bit = false;
+  uint8_t funct6 = 0;
+  uint8_t funct3 = 0;
+};
+
 struct RegextPrefix final {
   bool valid = false;
   bool validi = false; // regexti: extends rs2/rd and immediate
@@ -73,6 +126,9 @@ struct DecodedInst final {
   // FP rm field for scalar F-extension instructions (when applicable).
   FpRoundingMode fp_rm = FpRoundingMode::None;
 
+  // Structured metadata for repository-local custom decode path.
+  CustomInstInfo custom{};
+
   bool had_regext = false;
   RegextPrefix regext{};
 };
@@ -95,5 +151,8 @@ decode_text(const std::vector<uint8_t> &text, uint32_t text_vaddr, const DecodeO
 const char *to_string(RegClass c);
 const char *to_string(ImmKind k);
 const char *to_string(FpRoundingMode rm);
+const char *to_string(CustomFamily f);
+const char *to_string(CustomSubOp op);
+const char *to_string(CustomDataType t);
 
 } // namespace sbt

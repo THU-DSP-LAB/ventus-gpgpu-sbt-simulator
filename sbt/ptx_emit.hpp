@@ -12,8 +12,8 @@
 namespace sbt::ptx {
 
 struct Options final {
-  // Default to the lowest arch supported by modern CUDA toolchains (e.g. ptxas in CUDA 13.x).
-  int sm = 75;
+  // Shared custom-instruction baseline: sm_89.
+  int sm = 89;
 
   // Ventus numeric address space layout (prototype defaults).
   uint32_t shared_base_vaddr = 0x7000'0000u;

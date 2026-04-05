@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # 用法
 #   tools/regress.sh --preset quick
-#   tools/regress.sh --preset all --arch sm_75
+#   tools/regress.sh --preset all --arch sm_89
 #   tools/regress.sh --preset e2e --e2e-runner profile
 #   tools/regress.sh --preset e2e --e2e-runner ventus-env --jobs 8 --timeout-scale 1.0
 #   tools/regress.sh --preset quick --in-place
@@ -20,7 +20,7 @@ set -euo pipefail
 #
 # 关键参数：
 # - --preset {quick|all|e2e}
-# - --arch {75|sm_75|89|sm_89}   (传给 ptxas 的 -arch)
+# - --arch {89|sm_89}            (传给 ptxas 的 -arch)
 # - --e2e-runner {profile|ventus-env}
 # - --build / --no-build
 # - --timeout-scale <float>      (传给端到端 runner)
@@ -31,7 +31,7 @@ set -euo pipefail
 # 1) 解析参数，确定需要运行的 suite/preset。
 # 2) 默认切到临时工作目录执行，并在退出时自动清理（除非显式要求保留）。
 # 3) 按需执行 cmake configure/build，确保回归依赖的二进制存在。
-# 4) 依次调用既有 smoke/gate/e2e 入口；任何一步失败立即退出并打印失败点。
+# 4) 依次调用既有 smoke/gate/e2e 入口（含 custom non-MMA oracle gate）；任何一步失败立即退出并打印失败点。
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
@@ -57,7 +57,7 @@ Usage: tools/regress.sh [options]
 
 Options:
   --preset {quick|all|e2e}         Which regression preset to run (default: quick)
-  --arch {75|sm_75|89|sm_89}       ptxas -arch (default: env ARCH or env VENTUS_PTX_SM or 75)
+  --arch {89|sm_89}                 ptxas -arch (default: env ARCH or env VENTUS_PTX_SM or 89)
   --e2e-runner {profile|ventus-env}End-to-end runner (default: profile)
   --timeout-scale <float>          Timeout scale for end-to-end runner (default: 1.0)
   --jobs <int>                     Parallel jobs for ventus-env runner (optional)
@@ -173,13 +173,13 @@ normalize_arch() {
   elif [[ -n "${VENTUS_PTX_SM:-}" ]]; then
     ARCH="${VENTUS_PTX_SM}"
   else
-    ARCH="75"
+    ARCH="89"
   fi
 
   if [[ "${ARCH}" =~ ^[0-9]+$ ]]; then
     ARCH="sm_${ARCH}"
   fi
-  [[ "${ARCH}" =~ ^sm_[0-9]+$ ]] || die "invalid --arch: ${ARCH} (expect 75 or sm_75)"
+  [[ "${ARCH}" =~ ^sm_[0-9]+$ ]] || die "invalid --arch: ${ARCH} (expect 89 or sm_89)"
 }
 
 setup_workdir() {
@@ -287,6 +287,18 @@ run_regext_bundle_test() {
   run_step_in_root "regext_bundle_test" "${BUILD_DIR}/regext_bundle_test"
 }
 
+run_custom_unit_tests() {
+  run_step_in_root "custom_decode_test" "${BUILD_DIR}/custom_decode_test"
+  run_step_in_root "custom_ptx_emit_test" "${BUILD_DIR}/custom_ptx_emit_test"
+}
+
+run_custom_non_mma_oracle_gate() {
+  need_cmd python3
+  need_cmd ptxas
+  run_step "custom non-MMA oracle gate (ARCH=${ARCH})" \
+    python3 "${ROOT_DIR}/tools/custom_non_mma_oracle.py" --sm "${ARCH}"
+}
+
 run_want_consistency() {
   # check_spike_want_consistency.sh regenerates the build-time subset header and diffs it with build outputs.
   run_step_in_root "want consistency smoke" bash "${ROOT_DIR}/tools/check_spike_want_consistency.sh"
@@ -362,6 +374,8 @@ main() {
         "${BUILD_DIR}/sbt_ptx" \
         "${BUILD_DIR}/gen_spike_encoding_subset" \
         "${BUILD_DIR}/regext_bundle_test" \
+        "${BUILD_DIR}/custom_decode_test" \
+        "${BUILD_DIR}/custom_ptx_emit_test" \
         "${BUILD_DIR}/ventus_ocl_run"
     fi
   else
@@ -370,11 +384,15 @@ main() {
       "${BUILD_DIR}/sbt_ptx" \
       "${BUILD_DIR}/gen_spike_encoding_subset" \
       "${BUILD_DIR}/regext_bundle_test" \
+      "${BUILD_DIR}/custom_decode_test" \
+      "${BUILD_DIR}/custom_ptx_emit_test" \
       "${BUILD_DIR}/ventus_ocl_run"
   fi
 
   if [[ "${PRESET}" == "quick" || "${PRESET}" == "all" ]]; then
     run_regext_bundle_test
+    run_custom_unit_tests
+    run_custom_non_mma_oracle_gate
     run_want_consistency
     run_compile_first_smoke
     run_pds_smoke

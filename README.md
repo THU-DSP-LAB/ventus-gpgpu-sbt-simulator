@@ -31,11 +31,11 @@ cmake --build build -j
 ./build/sbt_decode cfgverify ../rodinia/opencl/b+tree/object0.riscv --func findRangeK --require-known
 
 # 3) 生成 PTX 并做 compile-first 验证
-./build/sbt_ptx ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known --out /tmp/BFS_1.ptx --sm 75
-ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
+./build/sbt_ptx ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known --out /tmp/BFS_1.ptx --sm 89
+ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 # 4) 跑推荐的快速回归
-tools/regress.sh --preset quick --arch sm_75
+tools/regress.sh --preset quick --arch sm_89
 ```
 
 ## ISA 资料
@@ -92,10 +92,10 @@ cmake --build build -j
 ./build/sbt_ptx ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known
 
 # 显式指定输出与目标 SM
-./build/sbt_ptx ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known --out /tmp/BFS_1.ptx --sm 75
+./build/sbt_ptx ../rodinia/opencl/bfs/object0.riscv --func BFS_1 --require-known --out /tmp/BFS_1.ptx --sm 89
 
 # ptxas 可编译性验证
-ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
+ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 # 多函数 direct call 原型声明回归
 ./build/ptx_emit_call_prototype_test
@@ -109,10 +109,10 @@ ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 ## 统一回归入口（推荐）
 ```bash
 # 快速回归（不含端到端）：decode/emit + ptxas compile-first + PDS smoke + microtest gate
-tools/regress.sh --preset quick --arch sm_75
+tools/regress.sh --preset quick --arch sm_89
 
 # 全量回归（包含端到端）：在 quick 基础上增加 PoCL/driver 端到端回归
-tools/regress.sh --preset all --arch sm_75
+tools/regress.sh --preset all --arch sm_89
 
 # 仅端到端（两种 runner 二选一）
 tools/regress.sh --preset e2e --e2e-runner profile --timeout-scale 1.0
@@ -138,7 +138,7 @@ bash ../build-ventus.sh --build "ptx"
 # 3) 环境与后端选择
 source ../env.sh
 export VENTUS_BACKEND=ptx
-export VENTUS_PTX_SM=75
+export VENTUS_PTX_SM=89
 export VENTUS_PTX_HEAP_MB=1024
 
 # 4) PoCL 示例
@@ -172,6 +172,18 @@ tools/microtest_coverage_gate.sh
 
 # 浮点容差可调
 tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
+
+# 需要给 packed microtest 注入原始输入时，可直接用 runner 的 --in
+./build/ventus_ocl_run --src testcases/ocl_compare/custom_non_mma_kernels.cl \
+  --kernel mt_custom_vrsqrt_f16x2 --n 16 --in /tmp/vrsqrt_f16x2.in.bin --out /tmp/vrsqrt_f16x2.out.bin
+
+# shuffle 类 microtest 需要完整 warp 条件；custom_non_mma_oracle.py 会自动把它们提升到 32-lane 执行
+python3 tools/custom_non_mma_oracle.py --n 8
+
+# ventus_ocl_compare.py 在未显式设置 GPU_SBT_PTX 时，会自动绑定当前树的 build/sbt_ptx，
+# 避免误用 ../install/bin/sbt_ptx 的旧安装产物
+python3 tools/ventus_ocl_compare.py --src testcases/ocl_compare/custom_non_mma_kernels.cl \
+  --kernels mt_custom_shuffle_idx mt_custom_shuffle_up mt_custom_shuffle_down mt_custom_shuffle_bfly --n 32
 
 # want 列表更新
 python3 tools/update_spike_want.py --dry-run

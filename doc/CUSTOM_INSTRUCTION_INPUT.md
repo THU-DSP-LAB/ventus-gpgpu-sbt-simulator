@@ -138,7 +138,7 @@ vcvt.bf16.fp32   vd, vs
 - **语义**：逐元素转换；舍入模式固定 rn（后续可扩展）
 #### v-cvt 编码规划
 
-主 opcode：**CUSTOM-0 = 0x0B**
+主 opcode：**CUSTOM-3_10 = 0x7A**
 
 ```
 [31:26] funct6  转换种类
@@ -147,7 +147,7 @@ vcvt.bf16.fp32   vd, vs
 [19:15] vs1     预留（置 0）
 [14:12] funct3  预留/版本（置 0）
 [11:7]  vd      目的向量寄存器
-[6:0]   opcode  0x0B
+[6:0]   opcode  0x7A
 ```
 
 `funct6` 枚举：
@@ -179,7 +179,7 @@ vfma.bf16x2  vd, vs1, vs2    ; vd = vs1*vs2 + vd
 
 #### packed 编码规划
 
-主 opcode：**CUSTOM-2 = 0x5B**
+主 opcode：**CUSTOM-2_10 = 0x5A**
 
 ```
 [31:26] funct6  操作(add/mul/fma)
@@ -188,7 +188,7 @@ vfma.bf16x2  vd, vs1, vs2    ; vd = vs1*vs2 + vd
 [19:15] vs1
 [14:12] funct3  数据类型选择
 [11:7]  vd
-[6:0]   opcode  0x5B
+[6:0]   opcode  0x5A
 ```
 
 `funct3`（dtype）枚举：
@@ -240,7 +240,7 @@ vsilu.approx.bf16x2  vd, vs
 
 #### SFU 编码规划
 
-主 opcode：**CUSTOM-1 = 0x2B**
+主 opcode：**CUSTOM-1_10 = 0x2A**
 
 ```
 [31:26] funct6  SFU 函数选择
@@ -249,7 +249,7 @@ vsilu.approx.bf16x2  vd, vs
 [19:15] vs1     预留（置 0）
 [14:12] funct3  数据类型选择
 [11:7]  vd
-[6:0]   opcode  0x2B
+[6:0]   opcode  0x2A
 ```
 
 `funct3`（dtype）枚举：
