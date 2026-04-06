@@ -74,8 +74,8 @@
 ## Important Constraints
 - 原型阶段优先功能正确与可验证性，不追求性能最优
 - 指令表（`VentusInst_basic.xlsx`）含合并单元格：若做自动解析需要特别处理
-- PTX 必须满足 `ptxas` 约束（控制流、寄存器、地址空间等），默认以 `sm_75` 做 compile-first 验证
-- 若某个 active change 需要提高 PTX baseline，必须先把“所需能力 -> 最低可行 PTX version / SM”的实验结论收敛为单一 project-wide 决策，再修改 current contract、默认值与回归口径；在该决策落地前，current baseline 仍以 `sm_75` 为准
+- PTX 必须满足 `ptxas` 约束（控制流、寄存器、地址空间等），当前默认以 `.version 7.8` / `sm_89` 做 compile-first 验证
+- 若某个 active change 需要进一步提高 PTX baseline，必须先把“所需能力 -> 最低可行 PTX version / SM”的实验结论收敛为单一 project-wide 决策，再修改 current contract、默认值与回归口径；在该决策落地前，current baseline 仍以 `.version 7.8` / `sm_89` 为准
 - 当前仍允许小范围显式例外（如非 `ret` 形态 `jalr`），并保持 fail-fast 诊断
 - proposal/design 一旦被实现，必须同步更新状态说明，不能继续以未来时描述当前主线
 

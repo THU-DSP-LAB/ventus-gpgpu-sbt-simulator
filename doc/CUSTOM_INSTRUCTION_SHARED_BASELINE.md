@@ -2,9 +2,9 @@
 
 > Status: `active`
 >
-> Role: shared active design baseline for the `support-custom-instructions` and `support-custom-mma` changes.
+> Role: shared active design baseline originally created for the custom-instruction split, and still required by the remaining `support-custom-mma` track plus the synced non-MMA contract.
 >
-> This document is not a `current` contract. It freezes the cross-change prerequisite decisions that both active changes must implement against. After both changes land and sync into `openspec/specs/`, this document should be archived or downgraded to `historical`.
+> This document is not a `current` contract. It freezes the prerequisite decisions that were shared across the custom-instruction split and still constrain the remaining active MMA work. After the active MMA work lands and the resulting contracts are synced into `openspec/specs/`, this document should be archived or downgraded to `historical`.
 
 ## Purpose
 
@@ -14,9 +14,9 @@ Freeze the shared baseline for:
 - semantic oracle strategy,
 - non-MMA custom canonical semantics,
 - MMA initial support subset and lowering boundary,
-- and the ownership rules between the two active custom-instruction changes.
+- and the ownership rules between the non-MMA current contract and the remaining active MMA work.
 
-Without this shared baseline, the two active changes would otherwise be free to make conflicting decisions about `sm_XX`, oracle path, packed semantics, and MMA scope during implementation.
+Without this shared baseline, the archived non-MMA path and the remaining active MMA path would drift into conflicting assumptions about `sm_XX`, oracle path, packed semantics, and MMA scope.
 
 ## Inputs and Scope
 
@@ -30,7 +30,8 @@ This document consolidates decisions based on:
 This document covers shared prerequisites only. It does not replace:
 
 - `support-custom-instructions` ownership of shared custom decode framework and non-MMA lowering,
-- or `support-custom-mma` ownership of MMA-specific decode semantics, support matrix details, and validation closure.
+- `support-custom-mma` ownership of MMA-specific decode semantics, support matrix details, and validation closure,
+- or the detailed MMA lowering architecture in `doc/mma/LOWERING_ARCHITECTURE.md`, which freezes the `VGPR window -> logical tile -> PTX fragment tuple` model for the active MMA implementation path.
 
 ## Frozen Decisions
 
@@ -65,7 +66,9 @@ Implications:
 The canonical semantic oracle policy for the active custom instructions is frozen as an explicit family-scoped rule:
 
 - for custom instruction families that are already supported by the current Spike/Ventus OpenCL software stack, the canonical semantic oracle is Spike-backed OpenCL buffer comparison;
-- for custom instruction families that are outside the current Spike-backed support surface, the canonical oracle remains a repository-managed reference model.
+- for the committed MMA support subset, the canonical semantic oracle is also Spike-backed OpenCL buffer comparison, because current Spike now provides real MMA execution semantics rather than name-only decode;
+- repository-managed helper models may still be used as bring-up cross-checks, but they do not replace the canonical oracle contract for the supported subset;
+- for custom instruction families or MMA combinations that remain outside the committed support subset and outside the maintained Spike-backed validation harness, the implementation gate remains an explicitly chosen non-silent validation path until the baseline is revised again.
 
 This avoids two failure modes:
 
@@ -129,7 +132,7 @@ For custom `vcvt` instructions:
 - rounding mode is fixed to `rn`
 - this shared baseline does not freeze additional corner-case detail beyond consistency with the chosen reference model
 
-### 4. MMA lowering boundary and initial supported subset
+### 4. MMA lowering boundary and first implementation batch
 
 The project recognizes three MMA lowering classes:
 
@@ -137,11 +140,12 @@ The project recognizes three MMA lowering classes:
 2. `native-wmma`
 3. `composite-lowering`
 
-The initial implementation commitment is frozen as:
+The first implementation batch is frozen as:
 
-- first supported subset: `native-mma-sync` only
-- `native-wmma`: active research target, not part of the first committed subset
-- `composite-lowering`: allowed as a later direction, not part of the first committed subset
+- direct-native `native-mma-sync` support for the committed `row.col` `m16n8k16` / `m16n8k8` families,
+- structured `split-n` composite-lowering for `row.col` `m16n16k16` / `m16n16k8`, implemented as two native `m16n8*` PTX MMA operations over disjoint logical `n` subtiles,
+- `native-wmma`: active research target, not part of the first implementation batch,
+- other `composite-lowering` forms: allowed as later directions, but not part of the first implementation batch.
 
 #### 4.1 Native PTX candidate space
 
@@ -158,39 +162,48 @@ However, being a native PTX candidate does not by itself make a Ventus MMA combi
 - a stable Ventus register-window to PTX fragment mapping,
 - and semantic validation against the chosen oracle path.
 
-#### 4.2 First committed MMA subset
+#### 4.2 First committed MMA batch
 
-The initial MMA subset committed by the shared baseline is:
+The first MMA batch committed by the shared baseline is:
 
-- `m16n8k16 row.col f16 -> f16`
-- `m16n8k16 row.col f16 -> f32`
-- `m16n8k16 row.col bf16 -> f32`
-- `m16n8k8 row.col tf32 -> f32`
+- direct-native:
+  - `m16n8k16 row.col f16 -> f16`
+  - `m16n8k16 row.col f16 -> f32`
+  - `m16n8k16 row.col bf16 -> f32`
+  - `m16n8k8 row.col tf32 -> f32`
+- split-`n` composite:
+  - `m16n16k16 row.col f16 -> f16`
+  - `m16n16k16 row.col f16 -> f32`
+  - `m16n16k16 row.col bf16 -> f32`
+  - `m16n16k8 row.col tf32 -> f32`
 
-These four entries are chosen because they cover the input-material dtype families while staying inside the most plausible `native-mma-sync` support surface.
+These entries are chosen because:
 
-For the first committed `native-mma-sync` subset:
+- the direct-native `m16n8* row.col` forms remain the proven `mma.sync` acceptance surface on `sm_89`,
+- current Spike execution already models `n=16` shapes as two `n=8` blocks,
+- and current upstream `ventus-pytorch` kernels already use the `m16n16* row.col` families that can be expressed through this `split-n` composite form.
 
-- PTX-side native layout is frozen as `row.col`
-- therefore the first committed Ventus layout subset is also frozen to combinations that can map to PTX `row.col`
-- other layout pairs are not part of the first implementation commitment and must fail fast unless and until this shared baseline is revised
+For the first committed MMA batch:
+
+- PTX-side native layout is frozen as `row.col`,
+- the first committed Ventus layout subset is therefore also frozen to combinations that can map to PTX `row.col`,
+- `m16n16* row.col` is committed only through the explicit `split-n` composite contract, not as a direct-native shape claim,
+- and other layout pairs are not part of the first implementation commitment and must fail fast unless and until this shared baseline is revised.
 
 #### 4.3 Explicitly non-committed shapes
 
-The following input-material shapes are not part of the first committed subset:
+The following input-material shapes are not part of the first committed batch:
 
 - `m8n8k16`
 - `m8n16k16`
-- `m16n16k16`
 - `m8n8k8`
 - `m8n16k8`
-- `m16n16k8`
 
 They are not declared impossible forever, but they are not part of the first implementation commitment in this baseline. In particular:
 
 - some may require `wmma` rather than `mma.sync`
-- some may require composite tiling, padding, or decomposition
-- none may be silently treated as if they were already covered by the first committed subset
+- some may require shape lifting, padding, or another composite form beyond the committed `split-n` contract
+- none may be silently treated as if they were already covered by the first committed batch
 
 ## Local Probe Notes
 
@@ -199,7 +212,7 @@ The following local compile-first facts were confirmed with `ptxas 13.1` on 2026
 - `.version 7.8` is the first probed PTX ISA version that simultaneously accepts:
   - `fma.rn.bf16x2`
   - `cvt.rn.f32.bf16` / `cvt.rn.bf16.f32` / `cvt.rn.bf16x2.f32`
-  - the first committed `mma.sync` subset on `sm_89`
+  - the direct-native `m16n8* row.col` `mma.sync` forms used as the native building blocks of the first MMA batch on `sm_89`
 - packed `bf16x2` `add` / `mul` and packed `bf16x2` `ex2.approx` require `sm_90+`
 - `fma.rn.bf16x2` is accepted on `sm_89`
 - `cvt.rn.f32.bf16`, `cvt.rn.bf16.f32`, and `cvt.rn.bf16x2.f32` are accepted on `sm_89`
@@ -209,12 +222,13 @@ The following local compile-first facts were confirmed with `ptxas 13.1` on 2026
   - `m8n16k16`
   - `m16n16k8`
   - `m8n8k8`
-- for the first committed `native-mma-sync` shapes, local probes accepted `row.col` and rejected `row.row`, `col.row`, and `col.col`
+- for the direct-native `m16n8*` building-block shapes used by the first committed batch, local probes accepted `row.col` and rejected `row.row`, `col.row`, and `col.col`
+- those direct-native rejections are treated as design evidence for the committed `split-n` composite path of `m16n16* row.col`, not as evidence that `m16n16*` must remain unsupported forever
 - local `nvdisasm` inspection on `sm_89` showed `fma.rn.bf16x2` lowering to `HFMA2.BF16_V2` and `cvt.rn.bf16.f32` lowering to `F2FP.BF16...`; this is treated as design evidence that the shared `sm_89` baseline retains a usable per-thread BF16 datapath subset
 
 These probe notes are used here as design evidence. Reproducible implementation-time probes may later be added under `lab/` or another maintained location, but that is not a prerequisite for freezing this active baseline.
 
-## Scope Rules for the Two Active Changes
+## Scope Rules for the Related Custom-Instruction Tracks
 
 ### `support-custom-instructions`
 
@@ -232,15 +246,16 @@ It must not silently redefine those shared decisions inside its own artifacts or
 This change must treat the following as already frozen by this document:
 
 - `.version 7.8` / `sm_89` shared PTX baseline
-- explicit oracle policy, with current MMA work still outside the Spike-backed surface and therefore still requiring an explicitly chosen non-Spike fallback until proven otherwise
-- initial MMA commitment limited to the first `native-mma-sync` subset
-- `wmma` reserved as active research rather than first-subset commitment
+- explicit oracle policy, with the committed MMA subset now using Spike-backed OpenCL buffer comparison as the canonical oracle and any repository-local helper model limited to a bring-up cross-check role
+- initial MMA commitment limited to the first `row.col` batch: direct-native `m16n8*` plus committed `split-n` composite `m16n16*`
+- canonical master matrix, decode metadata contract, and PTX tuple-materialization architecture recorded in `doc/mma/LOWERING_ARCHITECTURE.md`
+- `wmma` reserved as active research rather than first-batch commitment
 
-It must not silently expand first-phase scope to include `wmma` or composite MMA lowering without first updating this active baseline.
+It must not silently expand first-phase scope to include `wmma`, `m8*`, non-`row.col`, or composite MMA forms beyond the committed `split-n` `m16n16*` contract without first updating this active baseline.
 
 ### Escalation rule
 
-If either active change discovers that this shared baseline is insufficient or wrong, the required order is:
+If the remaining active MMA work discovers that this shared baseline is insufficient or wrong, the required order is:
 
 1. update this `active` document first
 2. then update the affected change artifacts

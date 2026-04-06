@@ -15,8 +15,9 @@ MMA 是这批 custom 指令里风险最高、与 PTX backend 耦合最深的一�
 - 明确本 change 与 `support-custom-instructions` 的边界：
   - `support-custom-instructions` 负责 non-MMA custom 指令，以及 shared custom decode framework 的主线基础设施；
   - 本 change 只负责 MMA 的专属元数据、`0x0A` 语义、寄存器窗口/fragments 映射、support matrix 和验证闭环。
-- 明确本 change 需要遵守 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 中冻结的 `.version 7.8` / `sm_89` baseline、shared oracle policy，以及 MMA 首发只承诺 `native-mma-sync` `row.col` 子集的边界。
+- 明确本 change 需要遵守 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 中冻结的 `.version 7.8` / `sm_89` baseline、shared oracle policy，以及 MMA 首发批次只承诺 `row.col` 的 direct-native `m16n8*` 与 committed `split-n` composite `m16n16*`。
 - 将 MMA 支持定义为“显式支持子集 + 显式 fail-fast unsupported 子集”，而不是承诺一次性覆盖原始文档中的全部组合。
+- 引入长期维护的 active lowering 架构文档 `doc/mma/LOWERING_ARCHITECTURE.md`，冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型，以及 `MmaInstInfo` / native PTX ABI descriptor contract，并要求 OpenSpec artifacts 与之保持一致。
 
 ## Capabilities
 
@@ -43,8 +44,9 @@ MMA 是这批 custom 指令里风险最高、与 PTX backend 耦合最深的一�
 - `README.md`
 - `doc/README.md`
 - `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`
+- `doc/mma/LOWERING_ARCHITECTURE.md`
 - `doc/IMPLEMENTATION_CODEMAP.md`
 - `openspec/README.md`
 - `openspec/specs/inst-support/spec.md`
 
-本 change 不 supersede `support-custom-instructions`；它与后者共同组成 custom 指令支持的两条 active change，其中本 change 只承担 MMA 范围。
+本 change 不 supersede 已归档的 `support-custom-instructions`；后者提供了 current non-MMA 落地基础，而本 change 继续承担 custom 指令主题中的 MMA 范围。
