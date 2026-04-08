@@ -286,6 +286,58 @@ static void init_custom_non_mma_common(uint32_t w, DecodedInst &out) {
   out.rs2 = static_cast<int>((w >> 20) & 0x1Fu);
 }
 
+struct MmaShapeInfo final {
+  MmaShape shape = MmaShape::None;
+  uint8_t a_regs_per_thread = 0;
+  uint8_t b_regs_per_thread = 0;
+  uint8_t c_regs_per_thread = 0;
+  bool k8_shape = false;
+  bool m16_shape = false;
+  bool n16_shape = false;
+};
+
+static bool decode_mma_shape_info(uint32_t shape_bits, MmaShapeInfo &out) {
+  switch (shape_bits) {
+  case 0u:
+    out = {MmaShape::M8N8K16, 2, 2, 2, false, false, false};
+    return true;
+  case 1u:
+    out = {MmaShape::M16N8K16, 4, 2, 4, false, true, false};
+    return true;
+  case 2u:
+    out = {MmaShape::M8N16K16, 2, 4, 4, false, false, true};
+    return true;
+  case 3u:
+    out = {MmaShape::M16N16K16, 4, 4, 8, false, true, true};
+    return true;
+  case 4u:
+    out = {MmaShape::M8N8K8, 2, 2, 2, true, false, false};
+    return true;
+  case 5u:
+    out = {MmaShape::M16N8K8, 4, 2, 4, true, true, false};
+    return true;
+  case 6u:
+    out = {MmaShape::M8N16K8, 2, 4, 4, true, false, true};
+    return true;
+  case 7u:
+    out = {MmaShape::M16N16K8, 4, 4, 8, true, true, true};
+    return true;
+  default: return false;
+  }
+}
+
+static bool is_valid_mma_type(MmaShapeInfo shape, MmaAbType ab_type, MmaCdType cd_type) {
+  if (ab_type == MmaAbType::Tf32) return shape.k8_shape && cd_type == MmaCdType::Fp32;
+  if (ab_type == MmaAbType::Fp16) return cd_type == MmaCdType::Fp16 || cd_type == MmaCdType::Fp32;
+  if (ab_type == MmaAbType::Bf16) return cd_type == MmaCdType::Fp32;
+  return false;
+}
+
+static std::string make_mma_name(const MmaInstInfo &mma) {
+  return std::string("mma_") + to_string(mma.shape) + "_" + to_string(mma.a_layout) + "_" + to_string(mma.b_layout) + "_ab_" +
+         to_string(mma.ab_type) + "_cd_" + to_string(mma.cd_type);
+}
+
 static bool decode_repo_local_custom_non_mma(uint32_t w, DecodedInst &out) {
   const uint32_t opcode = w & 0x7Fu;
   const uint32_t funct3 = (w >> 12) & 0x7u;
@@ -439,6 +491,81 @@ static bool decode_repo_local_custom_non_mma(uint32_t w, DecodedInst &out) {
 
   // Leave MMA ownership to support-custom-mma change.
   return false;
+}
+
+static bool decode_repo_local_custom_mma(uint32_t w, DecodedInst &out) {
+  if ((w & 0x7Fu) != 0x0Au) return false;
+
+  const uint32_t shape_bits = (w >> 25) & 0x7u;
+  const uint32_t abtype_bits = (w >> 28) & 0xFu;
+  const uint32_t cdtype_bit = (w >> 12) & 0x1u;
+  const bool alayout_bit = ((w >> 14) & 0x1u) != 0;
+  const bool blayout_bit = ((w >> 13) & 0x1u) != 0;
+
+  MmaShapeInfo shape{};
+  if (!decode_mma_shape_info(shape_bits, shape)) return false;
+
+  MmaAbType ab_type = MmaAbType::None;
+  if (abtype_bits == 0u) ab_type = MmaAbType::Tf32;
+  else if (abtype_bits == 1u) ab_type = MmaAbType::Fp16;
+  else if (abtype_bits == 2u) ab_type = MmaAbType::Bf16;
+  else return false;
+
+  const MmaCdType cd_type = (cdtype_bit == 0u) ? MmaCdType::Fp16 : MmaCdType::Fp32;
+  if (!is_valid_mma_type(shape, ab_type, cd_type)) return false;
+
+  DecodedInst cand = out;
+  cand.rd_class = RegClass::V;
+  cand.rs1_class = RegClass::V;
+  cand.rs2_class = RegClass::V;
+  cand.rs3_class = RegClass::None;
+  cand.imm_kind = ImmKind::None;
+  cand.imm = 0;
+  cand.custom.valid = true;
+  cand.custom.family = CustomFamily::Mma;
+  cand.custom.funct6 = static_cast<uint8_t>((w >> 26) & 0x3Fu);
+  cand.custom.funct3 = static_cast<uint8_t>((w >> 12) & 0x7u);
+  cand.rd = static_cast<int>((w >> 7) & 0x1Fu);
+  cand.rs1 = static_cast<int>((w >> 15) & 0x1Fu);
+  cand.rs2 = static_cast<int>((w >> 20) & 0x1Fu);
+
+  cand.mma.valid = true;
+  cand.mma.shape = shape.shape;
+  cand.mma.a_layout = alayout_bit ? MmaLayout::Col : MmaLayout::Row;
+  cand.mma.b_layout = blayout_bit ? MmaLayout::Row : MmaLayout::Col;
+  cand.mma.ab_type = ab_type;
+  cand.mma.cd_type = cd_type;
+  cand.mma.spike_a_column_layout = alayout_bit;
+  cand.mma.spike_b_row_layout = blayout_bit;
+  cand.mma.rd_base = cand.rd;
+  cand.mma.rs1_base = cand.rs1;
+  cand.mma.rs2_base = cand.rs2;
+  cand.mma.a_regs_per_thread = shape.a_regs_per_thread;
+  cand.mma.b_regs_per_thread = shape.b_regs_per_thread;
+  cand.mma.c_regs_per_thread = shape.c_regs_per_thread;
+  cand.mma.wide_ab = (ab_type == MmaAbType::Tf32);
+  cand.mma.lowering_class = MmaLoweringClass::Unsupported;
+  cand.mma.support_class = FirstBatchMmaClass::Unsupported;
+
+  const bool row_col = cand.mma.a_layout == MmaLayout::Row && cand.mma.b_layout == MmaLayout::Col;
+  const bool first_batch_shape = shape.m16_shape;
+  if (first_batch_shape && row_col) {
+    if (shape.n16_shape) {
+      cand.mma.support_class = FirstBatchMmaClass::CommittedSplitNComposite;
+      cand.mma.lowering_class = MmaLoweringClass::CompositeLowering;
+    } else {
+      cand.mma.support_class = FirstBatchMmaClass::CommittedDirectNative;
+      cand.mma.lowering_class = MmaLoweringClass::NativeMmaSync;
+    }
+  } else if (first_batch_shape) {
+    cand.mma.support_class = FirstBatchMmaClass::Deferred;
+  } else {
+    cand.mma.support_class = FirstBatchMmaClass::Research;
+  }
+
+  cand.name = make_mma_name(cand.mma);
+  out = std::move(cand);
+  return true;
 }
 
 static bool decode_scalar(uint32_t w, DecodedInst &out) {
@@ -802,7 +929,7 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
   const int rs2_5 = int((w >> 20) & 0x1F);
   const int rs3_5 = int((w >> 27) & 0x1F);
 
-  if (decode_repo_local_custom_non_mma(w, out)) {
+  if (decode_repo_local_custom_non_mma(w, out) || decode_repo_local_custom_mma(w, out)) {
     // Decoded by repository-local custom path.
   } else if (const Pattern *p = match_pattern(w, patterns)) {
     out.name = p->name;
@@ -860,6 +987,12 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
       const int32_t imm11 = (ext6 << 5) + low5;
       out.imm = imm11;
     }
+  }
+
+  if (out.mma.valid) {
+    out.mma.rd_base = out.rd;
+    out.mma.rs1_base = out.rs1;
+    out.mma.rs2_base = out.rs2;
   }
 
   return out;
@@ -1011,6 +1144,64 @@ const char *to_string(CustomDataType t) {
   case CustomDataType::F16x2: return "f16x2";
   case CustomDataType::Bf16x2: return "bf16x2";
   case CustomDataType::None: default: return "none";
+  }
+}
+
+const char *to_string(MmaShape s) {
+  switch (s) {
+  case MmaShape::M8N8K16: return "m8n8k16";
+  case MmaShape::M16N8K16: return "m16n8k16";
+  case MmaShape::M8N16K16: return "m8n16k16";
+  case MmaShape::M16N16K16: return "m16n16k16";
+  case MmaShape::M8N8K8: return "m8n8k8";
+  case MmaShape::M16N8K8: return "m16n8k8";
+  case MmaShape::M8N16K8: return "m8n16k8";
+  case MmaShape::M16N16K8: return "m16n16k8";
+  case MmaShape::None: default: return "none";
+  }
+}
+
+const char *to_string(MmaLayout layout) {
+  switch (layout) {
+  case MmaLayout::Row: return "row";
+  case MmaLayout::Col: return "col";
+  default: return "row";
+  }
+}
+
+const char *to_string(MmaAbType t) {
+  switch (t) {
+  case MmaAbType::Tf32: return "tf32";
+  case MmaAbType::Fp16: return "f16";
+  case MmaAbType::Bf16: return "bf16";
+  case MmaAbType::None: default: return "none";
+  }
+}
+
+const char *to_string(MmaCdType t) {
+  switch (t) {
+  case MmaCdType::Fp16: return "f16";
+  case MmaCdType::Fp32: return "f32";
+  case MmaCdType::None: default: return "none";
+  }
+}
+
+const char *to_string(MmaLoweringClass c) {
+  switch (c) {
+  case MmaLoweringClass::NativeMmaSync: return "native-mma-sync";
+  case MmaLoweringClass::NativeWmma: return "native-wmma";
+  case MmaLoweringClass::CompositeLowering: return "composite-lowering";
+  case MmaLoweringClass::Unsupported: default: return "unsupported";
+  }
+}
+
+const char *to_string(FirstBatchMmaClass c) {
+  switch (c) {
+  case FirstBatchMmaClass::CommittedDirectNative: return "committed-direct-native";
+  case FirstBatchMmaClass::CommittedSplitNComposite: return "committed-split-n-composite";
+  case FirstBatchMmaClass::Deferred: return "deferred";
+  case FirstBatchMmaClass::Research: return "research";
+  case FirstBatchMmaClass::Unsupported: default: return "unsupported";
   }
 }
 

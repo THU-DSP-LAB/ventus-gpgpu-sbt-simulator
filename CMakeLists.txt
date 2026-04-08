@@ -24,6 +24,7 @@ add_library(sbt_lib
   sbt/dump_parser.cpp
   sbt/cfg.cpp
   sbt/cfg_verify.cpp
+  sbt/ptx_mma.cpp
   sbt/ptx_emit.cpp
   sbt/want_file.cpp
 )
@@ -76,6 +77,9 @@ target_link_libraries(regext_bundle_test PRIVATE sbt_lib)
 add_executable(custom_decode_test tools/custom_decode_test.cpp)
 target_link_libraries(custom_decode_test PRIVATE sbt_lib)
 
+add_executable(mma_decode_test tools/mma_decode_test.cpp)
+target_link_libraries(mma_decode_test PRIVATE sbt_lib)
+
 add_executable(ptx_emit_call_prototype_test tools/ptx_emit_call_prototype_test.cpp)
 target_link_libraries(ptx_emit_call_prototype_test PRIVATE sbt_lib)
 
@@ -84,6 +88,9 @@ target_link_libraries(ptx_emit_leader_lane_abi_test PRIVATE sbt_lib)
 
 add_executable(custom_ptx_emit_test tools/custom_ptx_emit_test.cpp)
 target_link_libraries(custom_ptx_emit_test PRIVATE sbt_lib)
+
+add_executable(mma_ptx_emit_test tools/mma_ptx_emit_test.cpp)
+target_link_libraries(mma_ptx_emit_test PRIVATE sbt_lib)
 
 # Optional: OpenCL micro-test runner (requires Ventus OpenCL headers under Ventus install prefix).
 set(VENTUS_INSTALL_PREFIX_HINT "$ENV{VENTUS_INSTALL_PREFIX}")

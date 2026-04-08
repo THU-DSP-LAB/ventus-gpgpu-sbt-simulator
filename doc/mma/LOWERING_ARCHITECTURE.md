@@ -35,6 +35,17 @@ Responsibility split:
 - this document freezes the MMA-specific lowering architecture that is expected to remain useful even after the active change artifacts evolve.
 - `openspec/changes/support-custom-mma/*` keeps the change-local proposal/design/tasks/spec delta.
 
+## Current As-Built Boundary Check (2026-04-07)
+
+This document stays `active` because MMA PTX lowering is not fully landed as a `current` supported path.
+
+Current implementation checkpoints:
+
+- `sbt/riscv_decode.cpp` now includes repository-local MMA decode metadata (`MmaInstInfo`) with explicit support-class partitioning for committed/deferred/research families.
+- dedicated MMA decode and microtest assets are landed (`tools/mma_decode_test.cpp`, `testcases/ocl_compare/custom_mma_kernels.cl`, `tools/custom_mma_oracle.py`).
+- the confirmed toolchain mismatch currently blocks the MMA `fp16 -> fp16` path, which must remain explicit fail-fast in current behavior (see `openspec/changes/support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md`).
+- therefore this document remains an active architecture contract for continued MMA lowering work, while the `fp16 -> fp16` path stays temporarily fail-fast until toolchain alignment.
+
 ## Design Goals
 
 - Add Ventus MMA lowering without changing the behavior of already supported scalar, RVV, or custom non-MMA instructions.
@@ -167,14 +178,14 @@ These are the only MMA combinations currently committed for implementation.
 
 | Ventus shape | Layout | A/B -> C/D | Status | Lowering class | Native PTX building block | PTX baseline |
 | --- | --- | --- | --- | --- | --- | --- |
-| `m16n8k16` | `row.col` | `f16 -> f16` | `committed` | `direct-native` | `1 x mma.sync m16n8k16 row.col f16/f16/f16/f16` | `.version 7.8`, `sm_89` |
-| `m16n8k16` | `row.col` | `f16 -> f32` | `committed` | `direct-native` | `1 x mma.sync m16n8k16 row.col f32/f16/f16/f32` | `.version 7.8`, `sm_89` |
-| `m16n8k16` | `row.col` | `bf16 -> f32` | `committed` | `direct-native` | `1 x mma.sync m16n8k16 row.col f32/bf16/bf16/f32` | `.version 7.8`, `sm_89` |
-| `m16n8k8` | `row.col` | `tf32 -> f32` | `committed` | `direct-native` | `1 x mma.sync m16n8k8 row.col f32/tf32/tf32/f32` | `.version 7.8`, `sm_89` |
-| `m16n16k16` | `row.col` | `f16 -> f16` | `committed` | `split-n composite` | `2 x mma.sync m16n8k16 row.col f16/f16/f16/f16` | `.version 7.8`, `sm_89` |
-| `m16n16k16` | `row.col` | `f16 -> f32` | `committed` | `split-n composite` | `2 x mma.sync m16n8k16 row.col f32/f16/f16/f32` | `.version 7.8`, `sm_89` |
-| `m16n16k16` | `row.col` | `bf16 -> f32` | `committed` | `split-n composite` | `2 x mma.sync m16n8k16 row.col f32/bf16/bf16/f32` | `.version 7.8`, `sm_89` |
-| `m16n16k8` | `row.col` | `tf32 -> f32` | `committed` | `split-n composite` | `2 x mma.sync m16n8k8 row.col f32/tf32/tf32/f32` | `.version 7.8`, `sm_89` |
+| `m16n8k16` | `row.col` | `f16 -> f16` | `committed` | `native-mma-sync (direct-native)` | `1 x mma.sync m16n8k16 row.col f16/f16/f16/f16` | `.version 7.8`, `sm_89` |
+| `m16n8k16` | `row.col` | `f16 -> f32` | `committed` | `native-mma-sync (direct-native)` | `1 x mma.sync m16n8k16 row.col f32/f16/f16/f32` | `.version 7.8`, `sm_89` |
+| `m16n8k16` | `row.col` | `bf16 -> f32` | `committed` | `native-mma-sync (direct-native)` | `1 x mma.sync m16n8k16 row.col f32/bf16/bf16/f32` | `.version 7.8`, `sm_89` |
+| `m16n8k8` | `row.col` | `tf32 -> f32` | `committed` | `native-mma-sync (direct-native)` | `1 x mma.sync m16n8k8 row.col f32/tf32/tf32/f32` | `.version 7.8`, `sm_89` |
+| `m16n16k16` | `row.col` | `f16 -> f16` | `committed` | `composite-lowering (split-n)` | `2 x mma.sync m16n8k16 row.col f16/f16/f16/f16` | `.version 7.8`, `sm_89` |
+| `m16n16k16` | `row.col` | `f16 -> f32` | `committed` | `composite-lowering (split-n)` | `2 x mma.sync m16n8k16 row.col f32/f16/f16/f32` | `.version 7.8`, `sm_89` |
+| `m16n16k16` | `row.col` | `bf16 -> f32` | `committed` | `composite-lowering (split-n)` | `2 x mma.sync m16n8k16 row.col f32/bf16/bf16/f32` | `.version 7.8`, `sm_89` |
+| `m16n16k8` | `row.col` | `tf32 -> f32` | `committed` | `composite-lowering (split-n)` | `2 x mma.sync m16n8k8 row.col f32/tf32/tf32/f32` | `.version 7.8`, `sm_89` |
 
 ### Frontend-exposed but uncommitted inventory
 

@@ -31,7 +31,7 @@ set -euo pipefail
 # 1) 解析参数，确定需要运行的 suite/preset。
 # 2) 默认切到临时工作目录执行，并在退出时自动清理（除非显式要求保留）。
 # 3) 按需执行 cmake configure/build，确保回归依赖的二进制存在。
-# 4) 依次调用既有 smoke/gate/e2e 入口（含 custom non-MMA oracle gate）；任何一步失败立即退出并打印失败点。
+# 4) 依次调用既有 smoke/gate/e2e 入口（含 custom MMA / non-MMA oracle gate）；任何一步失败立即退出并打印失败点。
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
@@ -43,6 +43,7 @@ E2E_RUNNER="profile"
 DO_BUILD="auto" # auto|yes|no
 TIMEOUT_SCALE="1.0"
 JOBS=""
+MMA_STAGE="spike-precheck"
 WORKDIR_MODE="temp" # temp|inplace|custom
 WORKDIR_OPTION_SET="no"
 WORKDIR_PATH=""
@@ -61,6 +62,8 @@ Options:
   --e2e-runner {profile|ventus-env}End-to-end runner (default: profile)
   --timeout-scale <float>          Timeout scale for end-to-end runner (default: 1.0)
   --jobs <int>                     Parallel jobs for ventus-env runner (optional)
+  --mma-stage {spike-precheck|compile-first|full}
+                                   MMA gate stage (default: spike-precheck)
   --build                          Force cmake configure/build
   --no-build                       Do not build (error if required binaries missing)
   --in-place                       Run in current directory (legacy behavior)
@@ -132,6 +135,11 @@ parse_args() {
       --jobs)
         [[ $# -ge 2 ]] || die "--jobs requires a value"
         JOBS="$2"
+        shift 2
+        ;;
+      --mma-stage)
+        [[ $# -ge 2 ]] || die "--mma-stage requires a value"
+        MMA_STAGE="$2"
         shift 2
         ;;
       --build)
@@ -299,6 +307,13 @@ run_custom_non_mma_oracle_gate() {
     python3 "${ROOT_DIR}/tools/custom_non_mma_oracle.py" --sm "${ARCH}" --spike-compat-nested-regext
 }
 
+run_custom_mma_oracle_gate() {
+  need_cmd python3
+  # custom_mma_oracle.py reports per-kernel PASS/BLOCK/FAIL and exits non-zero on any real failure.
+  run_step "custom MMA oracle gate (ARCH=${ARCH}, stage=${MMA_STAGE})" \
+    python3 "${ROOT_DIR}/tools/custom_mma_oracle.py" --sm "${ARCH}" --stage "${MMA_STAGE}" --spike-compat-nested-regext
+}
+
 run_want_consistency() {
   # check_spike_want_consistency.sh regenerates the build-time subset header and diffs it with build outputs.
   run_step_in_root "want consistency smoke" bash "${ROOT_DIR}/tools/check_spike_want_consistency.sh"
@@ -363,6 +378,10 @@ main() {
     profile|ventus-env) ;;
     *) die "invalid --e2e-runner: ${E2E_RUNNER} (expect profile|ventus-env)" ;;
   esac
+  case "${MMA_STAGE}" in
+    spike-precheck|compile-first|full) ;;
+    *) die "invalid --mma-stage: ${MMA_STAGE} (expect spike-precheck|compile-first|full)" ;;
+  esac
 
   setup_workdir
 
@@ -392,6 +411,7 @@ main() {
   if [[ "${PRESET}" == "quick" || "${PRESET}" == "all" ]]; then
     run_regext_bundle_test
     run_custom_unit_tests
+    run_custom_mma_oracle_gate
     run_custom_non_mma_oracle_gate
     run_want_consistency
     run_compile_first_smoke

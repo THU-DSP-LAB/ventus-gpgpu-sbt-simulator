@@ -1,0 +1,253 @@
+#include "sbt/ptx_emit.hpp"
+#include "sbt/ptx_mma.hpp"
+
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace {
+
+void require(bool ok, const std::string &msg) {
+  if (!ok) throw std::runtime_error("assert: " + msg);
+}
+
+sbt::cfg::BundleInst make_mma_inst(uint32_t pc, int rd_base, int rs1_base, int rs2_base, sbt::MmaShape shape, sbt::MmaAbType ab_type,
+                                   sbt::MmaCdType cd_type, sbt::MmaLayout a_layout, sbt::MmaLayout b_layout,
+                                   sbt::FirstBatchMmaClass support_class, sbt::MmaLoweringClass lowering_class,
+                                   uint8_t a_regs_per_thread, uint8_t b_regs_per_thread, uint8_t c_regs_per_thread, bool wide_ab) {
+  sbt::cfg::BundleInst bi;
+  bi.pc = pc;
+  bi.inst_pc = pc;
+  bi.len = 4;
+  bi.inst.pc = pc;
+  bi.inst.name = std::string("mma_") + sbt::to_string(shape) + "_" + sbt::to_string(a_layout) + "_" + sbt::to_string(b_layout);
+  bi.inst.rd_class = sbt::RegClass::V;
+  bi.inst.rs1_class = sbt::RegClass::V;
+  bi.inst.rs2_class = sbt::RegClass::V;
+  bi.inst.rd = rd_base;
+  bi.inst.rs1 = rs1_base;
+  bi.inst.rs2 = rs2_base;
+  bi.inst.custom.valid = true;
+  bi.inst.custom.family = sbt::CustomFamily::Mma;
+  bi.inst.mma.valid = true;
+  bi.inst.mma.shape = shape;
+  bi.inst.mma.a_layout = a_layout;
+  bi.inst.mma.b_layout = b_layout;
+  bi.inst.mma.ab_type = ab_type;
+  bi.inst.mma.cd_type = cd_type;
+  bi.inst.mma.rd_base = rd_base;
+  bi.inst.mma.rs1_base = rs1_base;
+  bi.inst.mma.rs2_base = rs2_base;
+  bi.inst.mma.a_regs_per_thread = a_regs_per_thread;
+  bi.inst.mma.b_regs_per_thread = b_regs_per_thread;
+  bi.inst.mma.c_regs_per_thread = c_regs_per_thread;
+  bi.inst.mma.wide_ab = wide_ab;
+  bi.inst.mma.support_class = support_class;
+  bi.inst.mma.lowering_class = lowering_class;
+  return bi;
+}
+
+sbt::cfg::BundleInst make_endprg(uint32_t pc) {
+  sbt::cfg::BundleInst bi;
+  bi.pc = pc;
+  bi.inst_pc = pc;
+  bi.len = 4;
+  bi.inst.pc = pc;
+  bi.inst.name = "endprg";
+  return bi;
+}
+
+sbt::cfg::FunctionCfg make_cfg(uint32_t start, std::vector<sbt::cfg::BundleInst> insts) {
+  sbt::cfg::FunctionCfg cfg;
+  cfg.start = start;
+  cfg.end = insts.empty() ? (start + 4u) : (insts.back().inst_pc + 4u);
+  cfg.insts = std::move(insts);
+
+  sbt::cfg::BasicBlock bb;
+  bb.start = start;
+  bb.inst_indices.reserve(cfg.insts.size());
+  for (size_t i = 0; i < cfg.insts.size(); ++i) {
+    const auto pc = cfg.insts[i].pc;
+    bb.inst_indices.push_back(i);
+    cfg.inst_index_by_pc.emplace(pc, i);
+    cfg.inst_pc_to_block.emplace(pc, start);
+  }
+  cfg.blocks.push_back(std::move(bb));
+  cfg.block_index_by_start.emplace(start, 0);
+  return cfg;
+}
+
+void expect_emit_error(const sbt::cfg::FunctionCfg &cfg) {
+  std::unordered_map<uint32_t, std::string> sym_by_addr;
+  sym_by_addr.emplace(cfg.start, "mma_negative");
+  sbt::ptx::Options opt;
+  opt.sm = 89;
+  opt.include_comments = false;
+  try {
+    (void)sbt::ptx::emit_kernel(cfg, sym_by_addr, "mma_negative", opt);
+  } catch (const sbt::ptx::EmitError &e) {
+    require(e.code == "unsupported.mma.fp16_fp16_contract_pending", "expected fp16->fp16 contract-pending error code");
+    require(std::string(e.what()).find("fp16->fp16 ABI/layout contract is not confirmed yet") != std::string::npos,
+            "missing fp16->fp16 contract-pending diagnostic");
+    return;
+  }
+  throw std::runtime_error("assert: expected EmitError");
+}
+
+std::string emit_success_ptx(const sbt::cfg::FunctionCfg &cfg) {
+  std::unordered_map<uint32_t, std::string> sym_by_addr;
+  sym_by_addr.emplace(cfg.start, "mma_positive");
+  sbt::ptx::Options opt;
+  opt.sm = 89;
+  opt.include_comments = false;
+  return sbt::ptx::emit_kernel(cfg, sym_by_addr, "mma_positive", opt).ptx;
+}
+
+void expect_emit_success(const sbt::cfg::FunctionCfg &cfg, const std::string &needle) {
+  const auto ptx = emit_success_ptx(cfg);
+  require(ptx.find(needle) != std::string::npos, "missing expected mma.sync opcode in PTX");
+}
+
+void expect_bf16_planner_tracks_bf16_key() {
+  sbt::MmaInstInfo f16_mma;
+  f16_mma.valid = true;
+  f16_mma.shape = sbt::MmaShape::M16N8K16;
+  f16_mma.ab_type = sbt::MmaAbType::Fp16;
+  f16_mma.cd_type = sbt::MmaCdType::Fp32;
+
+  sbt::MmaInstInfo bf16_mma = f16_mma;
+  bf16_mma.ab_type = sbt::MmaAbType::Bf16;
+
+  const auto *f16_abi = sbt::ptx::mma::find_abi_desc(f16_mma);
+  const auto *bf16_abi = sbt::ptx::mma::find_abi_desc(bf16_mma);
+  require(f16_abi != nullptr, "missing f16 mma abi");
+  require(bf16_abi != nullptr, "missing bf16 mma abi");
+  require(f16_abi->key != bf16_abi->key, "bf16 must still use a distinct AbiKey");
+
+  const auto f16_b0 = sbt::ptx::mma::scalar_value_plan(*f16_abi, sbt::ptx::mma::OperandRole::B, 0u);
+  const auto bf16_b0 = sbt::ptx::mma::scalar_value_plan(*bf16_abi, sbt::ptx::mma::OperandRole::B, 0u);
+  const auto f16_plan = sbt::ptx::mma::b_source_window_plan(f16_mma, *f16_abi, 0u);
+  const auto bf16_plan = sbt::ptx::mma::b_source_window_plan(bf16_mma, *bf16_abi, 0u);
+
+  require(f16_b0.tile_col_base == 0u && f16_b0.lane_col_bias == 0u, "unexpected baseline f16 B tuple slot");
+  require(bf16_b0.tile_col_base == 0u && bf16_b0.lane_col_bias == 0u,
+          "bf16 B tuple slot should currently follow the same source order as f16");
+  require(f16_plan.half_xor == 0u, "f16 B source planner must keep natural half order");
+  require(bf16_plan.half_xor == 0u, "bf16 B source planner must keep the native packed-half order");
+
+  const auto bf16_c0 = sbt::ptx::mma::scalar_value_plan(*bf16_abi, sbt::ptx::mma::OperandRole::C, 0u);
+  const auto bf16_c1 = sbt::ptx::mma::scalar_value_plan(*bf16_abi, sbt::ptx::mma::OperandRole::C, 1u);
+  const auto bf16_c1_slot = sbt::ptx::mma::scalar_tuple_plan(*bf16_abi, sbt::ptx::mma::OperandRole::C, 1u, 0u);
+  require(bf16_c0.tile_row_base == 0u && bf16_c0.lane_row_shift == 2u && bf16_c0.lane_col_mask == 3u && bf16_c0.lane_col_shift == 1u &&
+              bf16_c0.lane_col_bias == 0u,
+          "bf16 C tuple slot 0 must follow the native m16n8 f32 accumulator ABI");
+  require(bf16_c1.tile_row_base == 0u && bf16_c1.lane_row_shift == 2u && bf16_c1.lane_col_mask == 3u && bf16_c1.lane_col_shift == 1u &&
+              bf16_c1.lane_col_bias == 1u,
+          "bf16 C tuple slot 1 must keep the paired-lane native accumulator ABI");
+  require(bf16_c1_slot.lane_col_bias == bf16_c1.lane_col_bias,
+          "bf16 C tuple slot planner must resolve by tuple slot, not only linear value id");
+
+  const auto bf16_d1 = sbt::ptx::mma::scalar_value_plan(*bf16_abi, sbt::ptx::mma::OperandRole::D, 1u);
+  const auto bf16_d1_slot = sbt::ptx::mma::scalar_tuple_plan(*bf16_abi, sbt::ptx::mma::OperandRole::D, 1u, 0u);
+  require(bf16_d1.lane_xor_mask == 0u && bf16_d1.lane_col_bias == 1u,
+          "bf16 D tuple slot 1 must keep the native odd-column writeback slot");
+  require(bf16_d1_slot.lane_col_bias == bf16_d1.lane_col_bias,
+          "bf16 D writeback planner must resolve by D tuple slot");
+}
+
+void expect_split_n_b_source_window_is_slice_aware() {
+  sbt::MmaInstInfo mma;
+  mma.valid = true;
+  mma.shape = sbt::MmaShape::M16N16K8;
+  mma.b_layout = sbt::MmaLayout::Col;
+  mma.ab_type = sbt::MmaAbType::Tf32;
+  mma.cd_type = sbt::MmaCdType::Fp32;
+  mma.b_regs_per_thread = 4;
+
+  const auto *abi = sbt::ptx::mma::find_abi_desc(mma);
+  require(abi != nullptr, "missing tf32 mma abi");
+
+  const auto slice0 = sbt::ptx::mma::b_source_window_plan(mma, *abi, 0u);
+  const auto slice8 = sbt::ptx::mma::b_source_window_plan(mma, *abi, 8u);
+
+  require(slice0.reg_offset == 0u && slice0.reg_count == 4u, "split-n first B slice keeps the full source carrier window");
+  require(slice0.logical_n_offset == 0u && slice0.source_window_n == 16u && slice0.native_window_n == 8u,
+          "split-n first B slice must distinguish source n-span and native n-span");
+  require(slice0.source_window_k == 8u && slice0.source_pack == sbt::ptx::mma::PackMode::Wide32, "tf32 split-n B planner must carry k-span and pack mode");
+  require(slice8.reg_offset == 0u && slice8.reg_count == 4u, "split-n second B slice also keeps the full source carrier window");
+  require(slice8.logical_n_offset == 8u && slice8.source_window_n == 16u && slice8.native_window_n == 8u,
+          "split-n second B slice must carry the logical n offset separately from the native n-span");
+  require(slice8.source_window_k == 8u && slice8.source_pack == sbt::ptx::mma::PackMode::Wide32, "split-n second B slice must retain the same source carrier semantics");
+}
+
+} // namespace
+
+int main() {
+  expect_bf16_planner_tracks_bf16_key();
+  expect_split_n_b_source_window_is_slice_aware();
+
+  expect_emit_error(
+      make_cfg(0x80004000u, {make_mma_inst(0x80004000u, 32, 64, 80, sbt::MmaShape::M16N8K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp16,
+                                           sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedDirectNative,
+                                           sbt::MmaLoweringClass::NativeMmaSync, 4, 2, 4, false),
+                              make_endprg(0x80004004u)}));
+
+  {
+    const auto ptx = emit_success_ptx(
+        make_cfg(0x80004100u, {make_mma_inst(0x80004100u, 32, 64, 80, sbt::MmaShape::M16N8K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp32,
+                                             sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedDirectNative,
+                                             sbt::MmaLoweringClass::NativeMmaSync, 4, 2, 4, false),
+                                make_endprg(0x80004104u)}));
+    require(ptx.find("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32") != std::string::npos, "missing expected mma.sync opcode in PTX");
+    require(
+        ptx.find("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%f4, %f5, %f6, %f7}, {%r3, %r4, %r5, %r6}, {%r7, %r8}, {%f0, %f1, %f2, %f3};") !=
+            std::string::npos,
+        "mma tuple regs overlap helper scratch regs");
+  }
+
+  expect_emit_success(
+      make_cfg(0x80004180u, {make_mma_inst(0x80004180u, 32, 64, 80, sbt::MmaShape::M16N16K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp32,
+                                           sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedSplitNComposite,
+                                           sbt::MmaLoweringClass::CompositeLowering, 4, 4, 8, false),
+                              make_endprg(0x80004184u)}),
+      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32");
+
+  try {
+    std::unordered_map<uint32_t, std::string> sym_by_addr;
+    sym_by_addr.emplace(0x80004200u, "mma_deferred");
+    sbt::ptx::Options opt;
+    opt.sm = 89;
+    opt.include_comments = false;
+    (void)sbt::ptx::emit_kernel(
+        make_cfg(0x80004200u, {make_mma_inst(0x80004200u, 32, 64, 80, sbt::MmaShape::M16N8K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp32,
+                                             sbt::MmaLayout::Row, sbt::MmaLayout::Row, sbt::FirstBatchMmaClass::Deferred,
+                                             sbt::MmaLoweringClass::Unsupported, 4, 2, 4, false),
+                                make_endprg(0x80004204u)}),
+        sym_by_addr, "mma_deferred", opt);
+    throw std::runtime_error("assert: expected deferred EmitError");
+  } catch (const sbt::ptx::EmitError &e) {
+    require(e.code == "unsupported.mma.deferred", "expected deferred error code");
+  }
+
+  try {
+    std::unordered_map<uint32_t, std::string> sym_by_addr;
+    sym_by_addr.emplace(0x80004300u, "mma_research");
+    sbt::ptx::Options opt;
+    opt.sm = 89;
+    opt.include_comments = false;
+    (void)sbt::ptx::emit_kernel(
+        make_cfg(0x80004300u, {make_mma_inst(0x80004300u, 32, 64, 80, sbt::MmaShape::M8N8K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp32,
+                                             sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::Research,
+                                             sbt::MmaLoweringClass::Unsupported, 2, 2, 2, false),
+                                make_endprg(0x80004304u)}),
+        sym_by_addr, "mma_research", opt);
+    throw std::runtime_error("assert: expected research EmitError");
+  } catch (const sbt::ptx::EmitError &e) {
+    require(e.code == "unsupported.mma.research", "expected research error code");
+  }
+
+  std::cout << "ok mma ptx emit selective fail-fast\n";
+  return 0;
+}

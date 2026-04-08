@@ -83,6 +83,71 @@ enum class CustomDataType : uint8_t {
   Bf16x2,
 };
 
+enum class MmaShape : uint8_t {
+  None = 0,
+  M8N8K16,
+  M16N8K16,
+  M8N16K16,
+  M16N16K16,
+  M8N8K8,
+  M16N8K8,
+  M8N16K8,
+  M16N16K8,
+};
+
+enum class MmaLayout : uint8_t {
+  Row = 0,
+  Col = 1,
+};
+
+enum class MmaAbType : uint8_t {
+  None = 0xFF,
+  Tf32 = 0,
+  Fp16 = 1,
+  Bf16 = 2,
+};
+
+enum class MmaCdType : uint8_t {
+  None = 0xFF,
+  Fp16 = 0,
+  Fp32 = 1,
+};
+
+enum class MmaLoweringClass : uint8_t {
+  Unsupported = 0,
+  NativeMmaSync,
+  NativeWmma,
+  CompositeLowering,
+};
+
+enum class FirstBatchMmaClass : uint8_t {
+  Unsupported = 0,
+  CommittedDirectNative,
+  CommittedSplitNComposite,
+  Deferred,
+  Research,
+};
+
+struct MmaInstInfo final {
+  bool valid = false;
+  MmaShape shape = MmaShape::None;
+  MmaLayout a_layout = MmaLayout::Row;
+  MmaLayout b_layout = MmaLayout::Row;
+  MmaAbType ab_type = MmaAbType::None;
+  MmaCdType cd_type = MmaCdType::None;
+  bool spike_a_column_layout = false;
+  bool spike_b_row_layout = false;
+  int rd_base = -1;
+  int rs1_base = -1;
+  int rs2_base = -1;
+  uint8_t a_regs_per_thread = 0;
+  uint8_t b_regs_per_thread = 0;
+  uint8_t c_regs_per_thread = 0;
+  bool wide_ab = false;
+  MmaLoweringClass lowering_class = MmaLoweringClass::Unsupported;
+  FirstBatchMmaClass support_class = FirstBatchMmaClass::Unsupported;
+};
+
 struct CustomInstInfo final {
   bool valid = false;
   CustomFamily family = CustomFamily::None;
@@ -129,6 +194,7 @@ struct DecodedInst final {
 
   // Structured metadata for repository-local custom decode path.
   CustomInstInfo custom{};
+  MmaInstInfo mma{};
 
   bool had_regext = false;
   RegextPrefix regext{};
@@ -156,5 +222,11 @@ const char *to_string(FpRoundingMode rm);
 const char *to_string(CustomFamily f);
 const char *to_string(CustomSubOp op);
 const char *to_string(CustomDataType t);
+const char *to_string(MmaShape s);
+const char *to_string(MmaLayout layout);
+const char *to_string(MmaAbType t);
+const char *to_string(MmaCdType t);
+const char *to_string(MmaLoweringClass c);
+const char *to_string(FirstBatchMmaClass c);
 
 } // namespace sbt

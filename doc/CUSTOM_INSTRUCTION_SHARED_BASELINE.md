@@ -33,6 +33,17 @@ This document covers shared prerequisites only. It does not replace:
 - `support-custom-mma` ownership of MMA-specific decode semantics, support matrix details, and validation closure,
 - or the detailed MMA lowering architecture in `doc/mma/LOWERING_ARCHITECTURE.md`, which freezes the `VGPR window -> logical tile -> PTX fragment tuple` model for the active MMA implementation path.
 
+## Current Implementation Checkpoint (2026-04-07)
+
+This baseline remains an `active` prerequisite document, not an as-built implementation map.
+
+As of 2026-04-07 in the current repository state:
+
+- repository-local custom decode/lowering is landed for non-MMA families;
+- repository-local MMA decode metadata and front-loaded MMA microtest assets are present as active in-progress assets;
+- an ABI/metadata mismatch between Ventus LLVM and Spike is currently confirmed for the MMA `fp16 -> fp16` path, so that path remains explicit fail-fast in sbtsim until toolchain contract is clarified;
+- other MMA paths remain active implementation scope rather than globally paused.
+
 ## Frozen Decisions
 
 ### 1. Project-wide PTX baseline
@@ -252,6 +263,11 @@ This change must treat the following as already frozen by this document:
 - `wmma` reserved as active research rather than first-batch commitment
 
 It must not silently expand first-phase scope to include `wmma`, `m8*`, non-`row.col`, or composite MMA forms beyond the committed `split-n` `m16n16*` contract without first updating this active baseline.
+
+Current checkpoint note (2026-04-07):
+
+- The repository may keep MMA decode/microtest assets in-tree for active bring-up.
+- Until the mismatch recorded in `openspec/changes/support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md` is resolved, the MMA `fp16 -> fp16` path must fail fast explicitly in current behavior.
 
 ### Escalation rule
 

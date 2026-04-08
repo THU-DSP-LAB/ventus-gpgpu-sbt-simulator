@@ -108,6 +108,8 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 当前 custom non-MMA support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。MMA 仍属于独立的 active change，不在当前 support surface 内。
 
+当前 MMA 路径的 active 设计与范围边界已冻结在 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 与 `doc/mma/LOWERING_ARCHITECTURE.md`：首批仅承诺 `row.col` 的 direct-native `m16n8*` 与 committed `split-n` `m16n16*`。在这些 active 设计同步为 current contract 前，仓库 current 行为仍是对 MMA 组合保持显式 fail-fast。2026-04-07 的口径修正是：当前确认受 Ventus LLVM + Spike ABI/metadata mismatch 影响的是 `fp16 -> fp16` 路径，这条路径在 sbtsim 中临时显式 fail-fast，等待工具链澄清 contract 后再恢复；其它 MMA 路径仍按 active change 推进，不按“整体暂停”口径处理。
+
 `regext/regexti` 默认仍按严格 bundling 处理；若需临时兼容 Spike 对连续前缀的现有行为，可设置环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`。打开后，`sbt_decode` 与 `sbt_ptx` 在遇到连续 `regext`/`regexti` 指向同一条真实指令时，不再报 `nested regext prefix`，而是按 Spike 现有顺序覆盖前缀状态继续解码；这是临时兼容方案，不改变默认 fail-fast 路径。
 
 ## 统一回归入口（推荐）

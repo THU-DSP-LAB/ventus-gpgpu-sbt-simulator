@@ -180,3 +180,21 @@ Compile-first success is required but is not sufficient by itself.
 - **WHEN** the project runs its semantic validation gate
 - **THEN** the gate executes the same kernel through both the Spike backend and the PTX backend
 - **AND THEN** it compares observable output buffers with exact comparison for integer/packed arithmetic cases and tolerance-based comparison for floating-point SFU cases
+
+### Requirement: Current contract keeps MMA ownership in the active MMA change
+In the current spec, repository-local custom instruction support MUST keep MMA outside the landed non-MMA surface.
+
+Until `support-custom-mma` is synced into current specs:
+- the non-MMA custom support surface remains the only current landed custom support set,
+- MMA combinations remain governed by the active MMA artifacts (`openspec/changes/support-custom-mma/*` plus active MMA docs),
+- and translation must keep explicit fail-fast behavior for unsupported MMA combinations under `--require-known`.
+
+Current active checkpoint refinement:
+- the currently confirmed ABI/metadata mismatch is on the MMA `fp16 -> fp16` path; this path must remain explicit fail-fast in current behavior until the Ventus LLVM + Spike toolchain contract is clarified.
+- this refinement does not mean all MMA paths are globally paused; other MMA paths remain active-change work items until synced into current specs.
+
+#### Scenario: MMA opcode is not silently accepted by the current non-MMA contract
+- **GIVEN** an input kernel includes an MMA instruction combination that has not been landed into current specs
+- **WHEN** `sbt_ptx --require-known` or `sbt_decode --require-known` is executed
+- **THEN** translation fails explicitly (`unknown`/`unsupported`) instead of silently lowering through a non-MMA path
+- **AND THEN** the current `inst-support` contract and the active MMA change do not claim overlapping implementation ownership

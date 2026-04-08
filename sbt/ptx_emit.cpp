@@ -1,4 +1,5 @@
 #include "sbt/ptx_emit.hpp"
+#include "sbt/ptx_mma.hpp"
 
 #include <array>
 #include <cstdint>
@@ -46,6 +47,8 @@ static constexpr uint32_t kMachinePdsBaseOffset = 4u;
 static constexpr uint32_t kMachinePdsSizeOffset = 8u;
 static constexpr uint32_t kMachineWarpIdOffset = 12u;
 static constexpr uint32_t kMachineWarpsPerBlockOffset = 16u;
+static constexpr std::array<int, 4> kMmaATupleRegIds{{3, 4, 5, 6}};
+static constexpr std::array<int, 2> kMmaBTupleRegIds{{7, 8}};
 
 static bool is_scalar_branch(std::string_view name) {
   return name == "beq" || name == "bne" || name == "blt" || name == "bge" || name == "bltu" || name == "bgeu";
@@ -1084,6 +1087,345 @@ struct EmitCtx final {
     return false;
   }
 
+  std::string mma_detail(const sbt::MmaInstInfo &mma) const {
+    return "shape=" + std::string(sbt::to_string(mma.shape)) + " layout=" + std::string(sbt::to_string(mma.a_layout)) + "." +
+           std::string(sbt::to_string(mma.b_layout)) + " ab=" + std::string(sbt::to_string(mma.ab_type)) + " cd=" +
+           std::string(sbt::to_string(mma.cd_type)) + " support=" + std::string(sbt::to_string(mma.support_class)) + " lowering=" +
+           std::string(sbt::to_string(mma.lowering_class));
+  }
+
+  void emit_compute_mma_scratch_base(const std::string &dst_rd, uint32_t pc_for_err) {
+    require(opt.stack_stride_bytes >= 1024u,
+            EmitError("unsupported.mma.stack_stride", func_name, pc_for_err, "stack_stride_bytes<1024"));
+    emit_line("mul.lo.u32 " + r(14) + ", " + r(10) + ", " + std::to_string(opt.stack_stride_bytes) + ";");
+    emit_line("cvt.u64.u32 " + rd(19) + ", " + r(14) + ";");
+    emit_line("add.u64 " + dst_rd + ", " + rd(2) + ", " + rd(19) + ";");
+  }
+
+  void emit_load_u32_from_mma_scratch(const std::string &dst_r, const std::string &scratch_rd, const std::string &reg_r,
+                                      const std::string &lane_r, const std::string &off_r) {
+    emit_line("mul.lo.u32 " + off_r + ", " + reg_r + ", 128;");
+    emit_line("shl.b32 " + r(21) + ", " + lane_r + ", 2;");
+    emit_line("add.u32 " + off_r + ", " + off_r + ", " + r(21) + ";");
+    emit_line("cvt.u64.u32 " + rd(19) + ", " + off_r + ";");
+    emit_line("add.u64 " + rd(19) + ", " + scratch_rd + ", " + rd(19) + ";");
+    emit_line("ld.shared.u32 " + dst_r + ", [" + rd(19) + "];");
+  }
+
+  void emit_store_u32_to_mma_scratch(const std::string &scratch_rd, const std::string &reg_r, const std::string &lane_r,
+                                     const std::string &src_r, const std::string &off_r) {
+    emit_line("mul.lo.u32 " + off_r + ", " + reg_r + ", 128;");
+    emit_line("shl.b32 " + r(21) + ", " + lane_r + ", 2;");
+    emit_line("add.u32 " + off_r + ", " + off_r + ", " + r(21) + ";");
+    emit_line("cvt.u64.u32 " + rd(19) + ", " + off_r + ";");
+    emit_line("add.u64 " + rd(19) + ", " + scratch_rd + ", " + rd(19) + ";");
+    emit_line("st.shared.u32 [" + rd(19) + "], " + src_r + ";");
+  }
+
+  void emit_spill_v_window_to_mma_scratch(const std::string &scratch_rd, int base_reg, uint8_t reg_count) {
+    for (uint8_t reg = 0; reg < reg_count; ++reg) {
+      emit_line("mov.u32 " + r(20) + ", " + std::to_string(reg) + ";");
+      emit_line("mov.u32 " + r(22) + ", " + v(base_reg + static_cast<int>(reg)) + ";");
+      emit_store_u32_to_mma_scratch(scratch_rd, r(20), r(0), r(22), r(23));
+    }
+    emit_warp_sync();
+  }
+
+  void emit_reload_v_window_from_mma_scratch(const std::string &scratch_rd, int base_reg, uint8_t reg_count) {
+    for (uint8_t reg = 0; reg < reg_count; ++reg) {
+      emit_line("mov.u32 " + r(20) + ", " + std::to_string(reg) + ";");
+      emit_load_u32_from_mma_scratch(r(22), scratch_rd, r(20), r(0), r(23));
+      emit_line("mov.u32 " + v(base_reg + static_cast<int>(reg)) + ", " + r(22) + ";");
+    }
+  }
+
+  void emit_compute_tuple_logical_coord(const sbt::ptx::mma::ScalarTupleValue &value, const std::string &row_r, const std::string &col_r) {
+    const std::string lane_r = (value.lane_xor_mask == 0u) ? r(0) : col_r;
+    if (value.lane_xor_mask != 0u) emit_line("xor.b32 " + lane_r + ", " + r(0) + ", " + std::to_string(value.lane_xor_mask) + ";");
+    emit_line("shr.u32 " + row_r + ", " + lane_r + ", " + std::to_string(value.lane_row_shift) + ";");
+    if (value.tile_row_base != 0u) emit_line("add.u32 " + row_r + ", " + row_r + ", " + std::to_string(value.tile_row_base) + ";");
+    emit_line("and.b32 " + col_r + ", " + lane_r + ", " + std::to_string(value.lane_col_mask) + ";");
+    if (value.lane_col_shift != 0u) emit_line("shl.b32 " + col_r + ", " + col_r + ", " + std::to_string(value.lane_col_shift) + ";");
+    const uint32_t col_bias = static_cast<uint32_t>(value.tile_col_base) + static_cast<uint32_t>(value.lane_col_bias);
+    if (col_bias != 0u) emit_line("add.u32 " + col_r + ", " + col_r + ", " + std::to_string(col_bias) + ";");
+  }
+
+  void emit_compute_window_index_from_logical_coord(const sbt::DecodedInst &di, sbt::ptx::mma::OperandRole role, uint8_t slice_col_offset,
+                                                    const std::string &logical_row_r, const std::string &logical_col_r,
+                                                    const std::string &idx_r, const std::string &tmp_r) {
+    switch (role) {
+    case sbt::ptx::mma::OperandRole::A:
+      if (di.mma.spike_a_column_layout) {
+        emit_line("mul.lo.u32 " + idx_r + ", " + logical_col_r + ", " + std::to_string(sbt::ptx::mma::shape_m(di.mma)) + ";");
+        emit_line("add.u32 " + idx_r + ", " + idx_r + ", " + logical_row_r + ";");
+      } else {
+        emit_line("mul.lo.u32 " + idx_r + ", " + logical_row_r + ", " + std::to_string(sbt::ptx::mma::shape_k(di.mma)) + ";");
+        emit_line("add.u32 " + idx_r + ", " + idx_r + ", " + logical_col_r + ";");
+      }
+      return;
+    case sbt::ptx::mma::OperandRole::C:
+    case sbt::ptx::mma::OperandRole::D:
+      emit_line("mov.u32 " + tmp_r + ", " + logical_col_r + ";");
+      if (slice_col_offset != 0u) emit_line("add.u32 " + tmp_r + ", " + tmp_r + ", " + std::to_string(slice_col_offset) + ";");
+      emit_line("mul.lo.u32 " + idx_r + ", " + logical_row_r + ", " + std::to_string(sbt::ptx::mma::shape_n(di.mma)) + ";");
+      emit_line("add.u32 " + idx_r + ", " + idx_r + ", " + tmp_r + ";");
+      return;
+    case sbt::ptx::mma::OperandRole::B:
+      return;
+    }
+  }
+
+  void emit_compute_b_window_index_from_logical_coord(const sbt::DecodedInst &di, const sbt::ptx::mma::BSourceWindowPlan &plan,
+                                                      const std::string &logical_n_r, const std::string &logical_k_r, const std::string &idx_r,
+                                                      const std::string &tmp_r) {
+    emit_line("mov.u32 " + tmp_r + ", " + logical_n_r + ";");
+    if (plan.logical_n_offset != 0u) emit_line("add.u32 " + tmp_r + ", " + tmp_r + ", " + std::to_string(plan.logical_n_offset) + ";");
+    if (plan.row_layout) {
+      emit_line("mul.lo.u32 " + idx_r + ", " + tmp_r + ", " + std::to_string(plan.source_window_k) + ";");
+      emit_line("add.u32 " + idx_r + ", " + idx_r + ", " + logical_k_r + ";");
+      return;
+    }
+    emit_line("mul.lo.u32 " + idx_r + ", " + logical_k_r + ", " + std::to_string(plan.source_window_n) + ";");
+    emit_line("add.u32 " + idx_r + ", " + idx_r + ", " + tmp_r + ";");
+  }
+
+  void emit_load_scalar_value_from_spilled_window(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi,
+                                                  sbt::ptx::mma::OperandRole role, uint8_t slice_col_offset,
+                                                  const sbt::ptx::mma::ScalarTupleValue &value,
+                                                  const std::string &scratch_rd, const std::string &dst_r, const std::string &row_r,
+                                                  const std::string &col_r, const std::string &idx_r, const std::string &reg_r,
+                                                  const std::string &lane_r, const std::string &tmp_r, const std::string &tmp2_r) {
+    emit_compute_tuple_logical_coord(value, row_r, col_r);
+    emit_compute_window_index_from_logical_coord(di, role, slice_col_offset, row_r, col_r, idx_r, tmp_r);
+
+    if (role == sbt::ptx::mma::OperandRole::A || role == sbt::ptx::mma::OperandRole::B) {
+      if (di.mma.wide_ab) {
+        emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 5;");
+        emit_line("and.b32 " + lane_r + ", " + idx_r + ", 31;");
+        emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
+        return;
+      }
+      emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 6;");
+      emit_line("shr.u32 " + lane_r + ", " + idx_r + ", 1;");
+      emit_line("and.b32 " + lane_r + ", " + lane_r + ", 31;");
+      emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
+      emit_line("and.b32 " + tmp2_r + ", " + idx_r + ", 1;");
+      emit_line("setp.ne.u32 " + p(6) + ", " + tmp2_r + ", 0;");
+      emit_line("@" + p(6) + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
+      emit_line("and.b32 " + dst_r + ", " + dst_r + ", 0xffff;");
+      return;
+    }
+
+    emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 5;");
+    emit_line("and.b32 " + lane_r + ", " + idx_r + ", 31;");
+    emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
+  }
+
+  void emit_load_b_scalar_value_from_spilled_window(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi,
+                                                    const sbt::ptx::mma::BSourceWindowPlan &plan,
+                                                    const sbt::ptx::mma::ScalarTupleValue &value,
+                                                    const std::string &scratch_rd, const std::string &dst_r, const std::string &row_r,
+                                                    const std::string &col_r, const std::string &idx_r, const std::string &reg_r,
+                                                    const std::string &lane_r, const std::string &tmp_r, const std::string &tmp2_r) {
+    emit_compute_tuple_logical_coord(value, row_r, col_r);
+    emit_compute_b_window_index_from_logical_coord(di, plan, row_r, col_r, idx_r, tmp_r);
+
+    if (plan.source_pack == sbt::ptx::mma::PackMode::Wide32) {
+      emit_line("shr.u32 " + reg_r + ", " + idx_r + ", " + std::to_string(plan.reg_shift) + ";");
+      emit_line("and.b32 " + lane_r + ", " + idx_r + ", " + std::to_string(plan.lane_mask) + ";");
+      emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
+      return;
+    }
+
+    emit_line("shr.u32 " + reg_r + ", " + idx_r + ", " + std::to_string(plan.reg_shift) + ";");
+    emit_line("shr.u32 " + lane_r + ", " + idx_r + ", " + std::to_string(plan.lane_shift) + ";");
+    emit_line("and.b32 " + lane_r + ", " + lane_r + ", " + std::to_string(plan.lane_mask) + ";");
+    emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
+    emit_line("and.b32 " + tmp2_r + ", " + idx_r + ", 1;");
+    if (plan.half_xor != 0u) emit_line("xor.b32 " + tmp2_r + ", " + tmp2_r + ", " + std::to_string(plan.half_xor) + ";");
+    emit_line("setp.ne.u32 " + p(6) + ", " + tmp2_r + ", 0;");
+    emit_line("@" + p(6) + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
+    emit_line("and.b32 " + dst_r + ", " + dst_r + ", 0xffff;");
+  }
+
+  void emit_store_scalar_value_to_spilled_cd_window(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi, uint8_t slice_col_offset,
+                                                    const sbt::ptx::mma::ScalarTupleValue &value, const std::string &scratch_rd,
+                                                    const std::string &src_r,
+                                                    const std::string &row_r, const std::string &col_r, const std::string &idx_r,
+                                                    const std::string &reg_r, const std::string &lane_r, const std::string &tmp_r) {
+    emit_compute_tuple_logical_coord(value, row_r, col_r);
+    emit_compute_window_index_from_logical_coord(di, sbt::ptx::mma::OperandRole::D, slice_col_offset, row_r, col_r, idx_r, tmp_r);
+    emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 5;");
+    emit_line("and.b32 " + lane_r + ", " + idx_r + ", 31;");
+    emit_store_u32_to_mma_scratch(scratch_rd, reg_r, lane_r, src_r, tmp_r);
+  }
+
+  void emit_materialize_tuple_regs(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi, sbt::ptx::mma::OperandRole role,
+                                   uint8_t slice_col_offset, const std::string &scratch_rd, const std::vector<std::string> &dst_regs) {
+    const auto pack = sbt::ptx::mma::tuple_pack(abi, role);
+    const uint8_t reg_count = sbt::ptx::mma::tuple_reg_count(abi, role);
+    require(dst_regs.size() == reg_count, EmitError("invalid.mma.abi", func_name, di.pc, mma_detail(di.mma)));
+    require(role != sbt::ptx::mma::OperandRole::B, EmitError("invalid.mma.plan", func_name, di.pc, mma_detail(di.mma)));
+
+    if (pack == sbt::ptx::mma::PackMode::Packed16x2) {
+      for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+        for (uint8_t elem = 0; elem < 2u; ++elem) {
+          const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, role, tuple_reg, elem);
+          const std::string dst_word = (elem == 0u) ? r(16) : r(17);
+          emit_load_scalar_value_from_spilled_window(di, abi, role, slice_col_offset, value, scratch_rd, dst_word, r(14), r(15), r(22), r(23),
+                                                     r(24), r(25), r(13));
+          emit_line("and.b32 " + dst_word + ", " + dst_word + ", 0xffff;");
+        }
+        emit_line("shl.b32 " + r(17) + ", " + r(17) + ", 16;");
+        emit_line("or.b32 " + dst_regs[tuple_reg] + ", " + r(16) + ", " + r(17) + ";");
+      }
+      return;
+    }
+
+    for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+      const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, role, tuple_reg, 0u);
+      emit_load_scalar_value_from_spilled_window(di, abi, role, slice_col_offset, value, scratch_rd, r(16), r(14), r(15), r(22), r(23), r(24),
+                                                 r(25), r(13));
+      if (role == sbt::ptx::mma::OperandRole::C || role == sbt::ptx::mma::OperandRole::D) emit_line("mov.b32 " + dst_regs[tuple_reg] + ", " + r(16) + ";");
+      else emit_line("mov.u32 " + dst_regs[tuple_reg] + ", " + r(16) + ";");
+    }
+  }
+
+  void emit_materialize_b_tuple_regs(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi, const sbt::ptx::mma::BSourceWindowPlan &plan,
+                                     const std::string &scratch_rd, const std::vector<std::string> &dst_regs) {
+    const auto pack = sbt::ptx::mma::tuple_pack(abi, sbt::ptx::mma::OperandRole::B);
+    const uint8_t reg_count = sbt::ptx::mma::tuple_reg_count(abi, sbt::ptx::mma::OperandRole::B);
+    require(dst_regs.size() == reg_count, EmitError("invalid.mma.abi", func_name, di.pc, mma_detail(di.mma)));
+    require(plan.native_window_n == abi.n, EmitError("invalid.mma.b_slice", func_name, di.pc, mma_detail(di.mma)));
+
+    if (pack == sbt::ptx::mma::PackMode::Packed16x2) {
+      for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+        for (uint8_t elem = 0; elem < 2u; ++elem) {
+          const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::B, tuple_reg, elem);
+          const std::string dst_word = (elem == 0u) ? r(16) : r(17);
+          emit_load_b_scalar_value_from_spilled_window(di, abi, plan, value, scratch_rd, dst_word, r(14), r(15), r(22), r(23), r(24), r(25),
+                                                       r(13));
+          emit_line("and.b32 " + dst_word + ", " + dst_word + ", 0xffff;");
+        }
+        emit_line("shl.b32 " + r(17) + ", " + r(17) + ", 16;");
+        emit_line("or.b32 " + dst_regs[tuple_reg] + ", " + r(16) + ", " + r(17) + ";");
+      }
+      return;
+    }
+
+    for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+      const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::B, tuple_reg, 0u);
+      emit_load_b_scalar_value_from_spilled_window(di, abi, plan, value, scratch_rd, r(16), r(14), r(15), r(22), r(23), r(24), r(25), r(13));
+      emit_line("mov.u32 " + dst_regs[tuple_reg] + ", " + r(16) + ";");
+    }
+  }
+
+  void emit_store_d_tuple_to_spilled_cd_window(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi, uint8_t slice_col_offset,
+                                               const std::string &scratch_rd, const std::vector<std::string> &src_regs) {
+    const auto pack = sbt::ptx::mma::tuple_pack(abi, sbt::ptx::mma::OperandRole::D);
+    const uint8_t reg_count = sbt::ptx::mma::tuple_reg_count(abi, sbt::ptx::mma::OperandRole::D);
+    require(src_regs.size() == reg_count, EmitError("invalid.mma.abi", func_name, di.pc, mma_detail(di.mma)));
+
+    if (pack == sbt::ptx::mma::PackMode::Packed16x2) {
+      for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+        emit_line("mov.b32 {" + h(0) + ", " + h(1) + "}, " + src_regs[tuple_reg] + ";");
+        for (uint8_t elem = 0; elem < 2u; ++elem) {
+          const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::D, tuple_reg, elem);
+          emit_line("mov.b16 " + u16(2) + ", " + h(static_cast<int>(elem)) + ";");
+          emit_line("cvt.u32.u16 " + r(16) + ", " + u16(2) + ";");
+          emit_store_scalar_value_to_spilled_cd_window(di, abi, slice_col_offset, value, scratch_rd, r(16),
+                                                       r(14), r(15), r(17), r(18), r(19), r(20));
+        }
+      }
+      return;
+    }
+
+    for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+      const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::D, tuple_reg, 0u);
+      emit_line("mov.b32 " + r(16) + ", " + src_regs[tuple_reg] + ";");
+      emit_store_scalar_value_to_spilled_cd_window(di, abi, slice_col_offset, value, scratch_rd, r(16), r(14), r(15), r(17), r(18), r(19),
+                                                   r(20));
+    }
+  }
+
+  void emit_native_mma_sync(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi, uint8_t slice_col_offset) {
+    std::vector<std::string> a_tuple_regs;
+    a_tuple_regs.reserve(kMmaATupleRegIds.size());
+    for (const int reg_id : kMmaATupleRegIds) a_tuple_regs.push_back(r(reg_id));
+
+    std::vector<std::string> b_tuple_regs;
+    b_tuple_regs.reserve(kMmaBTupleRegIds.size());
+    for (const int reg_id : kMmaBTupleRegIds) b_tuple_regs.push_back(r(reg_id));
+
+    emit_compute_mma_scratch_base(rd(18), di.pc);
+
+    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rs1_base, di.mma.a_regs_per_thread);
+    emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::A, 0u, rd(18), a_tuple_regs);
+
+    const auto b_plan = sbt::ptx::mma::b_source_window_plan(di.mma, abi, slice_col_offset);
+    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rs2_base + static_cast<int>(b_plan.reg_offset), b_plan.reg_count);
+    emit_materialize_b_tuple_regs(di, abi, b_plan, rd(18), b_tuple_regs);
+
+    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rd_base, di.mma.c_regs_per_thread);
+    const bool packed_d = sbt::ptx::mma::tuple_pack(abi, sbt::ptx::mma::OperandRole::D) == sbt::ptx::mma::PackMode::Packed16x2;
+    if (packed_d) {
+      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, rd(18), {r(22), r(23)});
+      emit_line(std::string(abi.ptx_opcode) + " {" + r(24) + ", " + r(25) + "}, {" + a_tuple_regs[0] + ", " + a_tuple_regs[1] + ", " +
+                a_tuple_regs[2] + ", " + a_tuple_regs[3] + "}, {" + b_tuple_regs[0] + ", " + b_tuple_regs[1] + "}, {" + r(22) + ", " + r(23) +
+                "};");
+      emit_store_d_tuple_to_spilled_cd_window(di, abi, slice_col_offset, rd(18), {r(24), r(25)});
+    } else {
+      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, rd(18), {f(0), f(1), f(2), f(3)});
+      emit_line(std::string(abi.ptx_opcode) + " {" + f(4) + ", " + f(5) + ", " + f(6) + ", " + f(7) + "}, {" + a_tuple_regs[0] + ", " +
+                a_tuple_regs[1] + ", " + a_tuple_regs[2] + ", " + a_tuple_regs[3] + "}, {" + b_tuple_regs[0] + ", " + b_tuple_regs[1] + "}, {" +
+                f(0) + ", " + f(1) + ", " + f(2) + ", " + f(3) + "};");
+      emit_store_d_tuple_to_spilled_cd_window(di, abi, slice_col_offset, rd(18), {f(4), f(5), f(6), f(7)});
+    }
+
+    emit_warp_sync();
+    emit_reload_v_window_from_mma_scratch(rd(18), di.mma.rd_base, di.mma.c_regs_per_thread);
+  }
+
+  void emit_mma_inst(const sbt::DecodedInst &di) {
+    require(di.mma.valid, EmitError("invalid.mma.metadata", func_name, di.pc, di.name));
+    const std::string detail = mma_detail(di.mma);
+
+    if (di.mma.cd_type == sbt::MmaCdType::Fp16) {
+      throw EmitError("unsupported.mma.fp16_fp16_contract_pending", func_name, di.pc,
+                      detail + " note=Ventus LLVM/Spike MMA fp16->fp16 ABI/layout contract is not confirmed yet; keep this path fail-fast");
+    }
+
+    const auto *abi = sbt::ptx::mma::find_abi_desc(di.mma);
+
+    if (di.mma.support_class == sbt::FirstBatchMmaClass::Deferred) {
+      throw EmitError("unsupported.mma.deferred", func_name, di.pc, detail);
+    }
+    if (di.mma.support_class == sbt::FirstBatchMmaClass::Research) {
+      throw EmitError("unsupported.mma.research", func_name, di.pc, detail);
+    }
+    if (di.mma.support_class == sbt::FirstBatchMmaClass::Unsupported || abi == nullptr) {
+      throw EmitError("unsupported.mma.family", func_name, di.pc, detail);
+    }
+    if (di.mma.a_layout != sbt::MmaLayout::Row || di.mma.b_layout != sbt::MmaLayout::Col) {
+      throw EmitError("unsupported.mma.layout", func_name, di.pc, detail);
+    }
+
+    switch (di.mma.lowering_class) {
+    case sbt::MmaLoweringClass::NativeMmaSync:
+      emit_native_mma_sync(di, *abi, 0u);
+      return;
+    case sbt::MmaLoweringClass::CompositeLowering:
+      emit_native_mma_sync(di, *abi, 0u);
+      emit_native_mma_sync(di, *abi, 8u);
+      return;
+    case sbt::MmaLoweringClass::NativeWmma:
+      throw EmitError("unsupported.mma.native_wmma", func_name, di.pc, detail);
+    case sbt::MmaLoweringClass::Unsupported:
+      throw EmitError("unsupported.mma.lowering", func_name, di.pc, detail);
+    }
+    throw EmitError("unsupported.mma.lowering", func_name, di.pc, detail);
+  }
+
   void emit_one_inst(const sbt::cfg::BundleInst &bi) {
     const sbt::DecodedInst &di = bi.inst;
     const uint32_t pc = di.pc;
@@ -1704,6 +2046,11 @@ struct EmitCtx final {
       emit_ld_x_u32_all(r(14), di.rs1, pc);
       emit_line("setp.ne.u32 " + p(1) + ", " + v(0) + ", 0;");
       emit_line("selp.u32 " + v(di.rd) + ", " + r(14) + ", " + v(di.rs2) + ", " + p(1) + ";");
+      return;
+    }
+
+    if (di.mma.valid || (di.custom.valid && di.custom.family == sbt::CustomFamily::Mma)) {
+      emit_mma_inst(di);
       return;
     }
 

@@ -28,8 +28,10 @@
 
 - `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：custom 指令拆分阶段留下的 active 共享前置基线；冻结 `.version 7.8` / `sm_89`、family-scoped oracle policy、non-MMA 已落地语义和 MMA 首发批次边界，并明确 `bf16x2` 的 mixed native/composite lowering 边界。
 - `doc/CUSTOM_INSTRUCTION_INPUT.md`：custom 指令输入材料的受管副本；供 shared baseline 与 active changes 引用，但不覆盖 current spec。
-- `doc/mma/LOWERING_ARCHITECTURE.md`：Ventus MMA 的 active lowering 架构文档；冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型、`MmaInstInfo` / native PTX ABI descriptor contract，以及“不干扰既有 non-MMA lowering”的接入约束。
+- `doc/mma/LOWERING_ARCHITECTURE.md`：Ventus MMA 的 active lowering 架构文档；冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型、`MmaInstInfo` / native PTX ABI descriptor contract，以及“不干扰既有 non-MMA lowering”的接入约束。当前已确认受 Ventus LLVM + Spike ABI/metadata mismatch 影响的是 `fp16 -> fp16` MMA 路径，该路径在 sbtsim 中临时显式 fail-fast；其它 MMA 路径仍属于 active 推进范围。
 - `doc/ventus-divergence-sgpr-analysis.md`：基于 `../llvm` 的参考分析，说明 Ventus LLVM 如何处理 `vbranch` / `join` 下的 SGPR/VGPR 有效性问题。
+
+口径提醒：custom 指令里只有 non-MMA 子集属于 `current` 已落地；MMA matrix/映射目前仍是 `active` 设计合同，不能按“当前已支持”解读。仓库已保留 MMA decode/微测例资产；当前仅 `fp16 -> fp16` MMA 路径处于显式 fail-fast 临时阻塞状态，等待 Ventus 工具链澄清后再恢复。
 
 ## 2. 当前事实与 contract
 
@@ -41,8 +43,8 @@
 - `openspec/specs/inst-support/spec.md`：当前指令支持与验证合同。
 - `openspec/specs/sbt-rodinia-bringup/spec.md`：当前 Rodinia bring-up / fail-fast 边界。
 - `openspec/specs/build-time-spike-pattern-subset/spec.md`：当前 Spike pattern 子集生成合同。
-- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：active shared baseline；约束 `support-custom-instructions` / `support-custom-mma` 在 sync spec 前的共同前提。
-- `doc/mma/LOWERING_ARCHITECTURE.md`：active MMA lowering 架构合同；规定 canonical MMA matrix、首批 `row.col` MMA 的分层 lowering 模型、decode metadata contract 和 composite `split-n` 路径。
+- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：`active` shared baseline（非 current as-built）；约束 `support-custom-instructions` / `support-custom-mma` 在 sync spec 前的共同前提。
+- `doc/mma/LOWERING_ARCHITECTURE.md`：`active` MMA lowering 架构合同（非 current as-built）；规定 canonical MMA matrix、首批 `row.col` MMA 的分层 lowering 模型、decode metadata contract 和 composite `split-n` 路径。
 
 ## 3. 历史 PTX 设计/规划（已归档）
 

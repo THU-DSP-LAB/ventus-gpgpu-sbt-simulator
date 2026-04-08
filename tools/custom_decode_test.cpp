@@ -110,19 +110,6 @@ int main() {
   require(decoded[3].custom.subop == sbt::CustomSubOp::Silu, "sfu subop");
   require(decoded[3].custom.dtype == sbt::CustomDataType::F16x2, "sfu dtype");
 
-  // MMA opcode ownership stays outside this change: still unknown under require-known.
-  std::vector<uint8_t> mma_text;
-  const uint32_t w_mma_placeholder = make_custom_word(/*opcode=*/0x0Au, /*funct3=*/0u, /*funct6=*/0u, /*vd=*/1u, /*vs2=*/2u,
-                                                      /*vs1=*/3u, /*vm=*/false);
-  append_u32_le(mma_text, w_mma_placeholder);
-  bool threw = false;
-  try {
-    (void)sbt::decode_text(mma_text, /*text_vaddr=*/0x90000000u, opt, no_spike_patterns);
-  } catch (const std::exception &) {
-    threw = true;
-  }
-  require(threw, "mma opcode remains unsupported in this non-MMA change");
-
   // Decode pollution guard: scalar instructions must not be tagged as custom.
   std::vector<uint8_t> scalar_text;
   const uint32_t w_addi = make_i_word(/*opcode=*/0x13u, /*funct3=*/0x0u, /*rd=*/1u, /*rs1=*/2u, /*imm12=*/123u);
