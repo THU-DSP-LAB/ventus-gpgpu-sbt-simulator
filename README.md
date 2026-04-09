@@ -106,9 +106,11 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 当前实现仍坚持 fail-fast：遇到 unknown/unsupported 指令、不可接受的 CFG 形态、或当前未支持的 `jalr` 用法时直接报错退出，而不是静默降级。
 
-当前 custom non-MMA support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。MMA 仍属于独立的 active change，不在当前 support surface 内。
+当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
+- non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。
+- MMA（要求 `.version 7.8` / `sm_89`）：`row.col` 的 `m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`。其中 `m16n16*` 通过 committed `split-n` composite lowering 落到两个 native `m16n8*` PTX MMA。
 
-当前 MMA 路径的 active 设计与范围边界已冻结在 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 与 `doc/mma/LOWERING_ARCHITECTURE.md`：首批仅承诺 `row.col` 的 direct-native `m16n8*` 与 committed `split-n` `m16n16*`。在这些 active 设计同步为 current contract 前，仓库 current 行为仍是对 MMA 组合保持显式 fail-fast。2026-04-07 的口径修正是：当前确认受 Ventus LLVM + Spike ABI/metadata mismatch 影响的是 `fp16 -> fp16` 路径，这条路径在 sbtsim 中临时显式 fail-fast，等待工具链澄清 contract 后再恢复；其它 MMA 路径仍按 active change 推进，不按“整体暂停”口径处理。
+当前 `fp16 -> fp16` MMA 路径仍受 Ventus LLVM + Spike ABI/metadata mismatch 影响，在 sbtsim 中保持显式 fail-fast/block，不属于当前 landed support subset。除这条 blocked 路径外，其它已承诺的首批 `row.col` MMA 组合已同步为 current 行为；更宽的 MMA matrix、deferred/research families 与剩余架构讨论仍由 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 与 `doc/mma/LOWERING_ARCHITECTURE.md` 继续承载。
 
 `regext/regexti` 默认仍按严格 bundling 处理；若需临时兼容 Spike 对连续前缀的现有行为，可设置环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`。打开后，`sbt_decode` 与 `sbt_ptx` 在遇到连续 `regext`/`regexti` 指向同一条真实指令时，不再报 `nested regext prefix`，而是按 Spike 现有顺序覆盖前缀状态继续解码；这是临时兼容方案，不改变默认 fail-fast 路径。
 

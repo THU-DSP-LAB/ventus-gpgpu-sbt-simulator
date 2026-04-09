@@ -206,3 +206,50 @@ blocked family 不变：
 本轮结论可压缩成一句话：
 
 - `TF32 m16n16k8 split-n` 当前 blocker 更像“非均匀乘法贡献的 slice/分发公式未解”，而不是“中间 C merge 时机错误”。
+
+## 8) 2026-04-09 追加结论（二）（append-only）
+
+本节仅追加，不回写上文原始 handoff 内容。若与前文存在冲突，以本节较新的实验结论为准。
+
+### current（截至 2026-04-09 的最新实现/验证状态）
+
+重新聚焦 `mt_custom_mma_m16n16k8_row_col_f32_tf32_tf32_f32` 后，使用隔离最小复现 `capture_a_only` 证明：
+
+- 在不含 `mma` 的前提下，仅保留 `sample_tf32(seed, salt)` helper + 输出选择，Spike/PTX 仍会分叉。
+- 当 `finite_*` helper 保持 `switch` 形式时，分叉仍可复现。
+- 把同一 helper 改成 branch-free 的只读查表后，Spike/PTX 重新一致。
+
+随后把仓库内 `testcases/ocl_compare/custom_mma_kernels.cl` 的 `finite_f16_bits` / `finite_bf16_bits` / `finite_tf32_word` 统一改成 branch-free lookup table，并重新执行：
+
+- `python3 tools/custom_mma_oracle.py --stage full --sm 89 --spike-compat-nested-regext`
+
+结果变为：
+
+- `full_pass=6`
+- `failures=0`
+- `blocked=1`
+
+当前 full gate 通过 family：
+
+- `mt_custom_mma_m16n8k16_row_col_f32_f16_f16_f32`
+- `mt_custom_mma_m16n8k16_row_col_f32_bf16_bf16_f32`
+- `mt_custom_mma_m16n8k8_row_col_f32_tf32_tf32_f32`
+- `mt_custom_mma_m16n16k16_row_col_f32_f16_f16_f32`
+- `mt_custom_mma_m16n16k16_row_col_f32_bf16_bf16_f32`
+- `mt_custom_mma_m16n16k8_row_col_f32_tf32_tf32_f32`
+
+blocked family 仍只有：
+
+- `mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16_blocked`
+
+### active（对根因判断的更新）
+
+这轮结果表明：
+
+- 当前 `TF32 m16n16k8 split-n` 的主要 gate blocker 不是 MMA split lowering 本体。
+- 更直接的 blocker 是 MMA microtest helper 里的 `switch -> vbranch/join` 控制流路径，把与 MMA 无关的 generic helper lowering / Spike 控制流差异带进了语义 gate。
+- 对当前 change 来说，branch-free 有限值 carrier 更符合 microtest 的真实目标：验证 MMA decode/lowering/oracle，而不是顺带验证另一条未收敛的向量控制流路径。
+
+### historical（避免重复试探）
+
+在这轮 closure 之后，若再次看到基于 `switch` carrier helper 的 TF32/BF16/F16 MMA gate 漂移，不应再优先回到 `C/D merge` 或 `B slice` 猜测；应先确认是否又把 `vbranch/join` helper 路径重新引入了微测例。

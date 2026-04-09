@@ -42,8 +42,8 @@
   - `decode_text(text, vaddr, opt, patterns)`：按 4B 指令解码。
   - 支持 `regext/regexti` 前缀 bundling：前缀只作用下一条指令；CFG 里会把“bundle pc”和“真实指令 pc”区分开。
   - current：默认对连续前缀 fail-fast，报 `nested regext prefix`；若环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1` 打开，则临时按 Spike 现有行为顺序覆盖前缀状态，允许同一条真实指令前出现连续 `regext/regexti`。
-  - Ventus 扩展优先：先走 repository-local custom non-MMA decode（对齐上游 LLVM/Spike 的 `0x42/0x2A/0x5A/0x7A` opcode 口径），再按 `match/mask` 命中 Spike pattern，最后才走 RV32 标量子集解码。
-  - MMA 边界（current）：`CustomFamily::Mma` 仅保留 ownership 位；`opcode=0x0A` 的 MMA decode/lowering 尚未在当前实现落地，`--require-known` 下保持 fail-fast。
+  - Ventus 扩展优先：先走 repository-local custom decode（含已落地的 non-MMA 与 MMA 路径），再按 `match/mask` 命中 Spike pattern，最后才走 RV32 标量子集解码。
+  - MMA 边界（current）：`opcode=0x0A` 现已落地首批 committed `row.col` MMA decode/lowering；`DecodedInst.custom.family = CustomFamily::Mma` 仅承担 family ownership，shape/layout/type/window 信息由独立 `MmaInstInfo` 承载。当前 landed subset 为 `m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`；`fp16 -> fp16` 与其它 deferred/research MMA 组合在 `--require-known` 下仍显式 fail-fast。
   - `DecodedInst` 是当前“最小 IR”：含 `name`、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
 
 - `sbt/cfg.{hpp,cpp}`
@@ -159,9 +159,22 @@
   - current：若当前 custom kernel 编译产物出现连续 `regext/regexti` 指向同一条真实指令，oracle gate 通过显式 `--spike-compat-nested-regext` 仅对该验证链打开 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`；`sbt_decode/sbt_ptx` 默认行为仍保持 fail-fast。
   - 当前 packed SFU microtests 使用 raw packed 输入文件驱动；这是刻意将 “packed 输入构造” 与 “SFU 指令语义” 解耦，避免被 `vcvt_*_fp32 + pack_*x2` 的独立 contract 问题污染结论。
 
+- `tools/mma_decode_test.cpp`
+  - current MMA decode gate，覆盖 `MmaInstInfo`、support-class 边界与首批 committed/deferred/research family 的 repository-local decode 元数据。
+
+- `tools/custom_mma_oracle.py`
+  - MMA 专用 gate：对 `testcases/ocl_compare/custom_mma_kernels.cl` 里的 microtests 逐个执行：
+    - `VENTUS_BACKEND=spike` 的可观察性预检；
+    - 同一 ELF 的 `sbt_decode --require-known`；
+    - 同一 ELF 的 `sbt_ptx --require-known` + `ptxas` compile-first；
+    - 同一 kernel 的 Spike-vs-PTX 语义对照。
+  - current：这条 OpenCL buffer compare 路径就是当前 landed MMA subset 的 canonical semantic oracle。
+  - current：helper carrier 采用 branch-free 的有限值查表，刻意避免把与 MMA 无关的 `switch -> vbranch/join` helper lowering 差异误报成 MMA 语义失败。
+  - current：`fp16 -> fp16` family 仍按显式 blocked 口径保留，不混入已支持子集。
+
 - `tools/custom_decode_test.cpp`
   - current non-MMA decode gate，覆盖 `shuffle/vcvt/packed/SFU` 的 repository-local decode 元数据与污染防护。
-  - current：测试中仍显式断言 MMA placeholder opcode 在 `--require-known` 下必须失败，用于保证 non-MMA 与 MMA active change 的 ownership 边界不被静默打破。
+  - current：该测试继续只覆盖 non-MMA decode；MMA decode/semantic gate 已拆到 `tools/mma_decode_test.cpp` 与 `tools/custom_mma_oracle.py`，避免 non-MMA 与 MMA gate 混淆。
 
 - `tools/regext_bundle_test.cpp` → `build/regext_bundle_test`
   - `regext/regexti` bundling 边界情况的最小回归。
@@ -201,7 +214,7 @@
 
 - **ELF 约束**：要求 `.symtab` 存在，且函数符号覆盖 kernel 入口；不做 relocation；对 strip/无符号的 ELF 不友好。
 - **指令覆盖**：目标集合为 `VentusInst_basic.txt`（减去 `data/inst_exceptions.txt`）；在 `--require-known` 下遇到 unknown/unsupported 仍 fail-fast。
-- **MMA 边界**：MMA 首批 matrix 与 lowering contract 目前属于 `active` 文档（`doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`、`doc/mma/LOWERING_ARCHITECTURE.md`），尚未成为 current as-built 实现。
+- **MMA 边界**：当前 as-built 已支持首批 committed `row.col` MMA 子集（见上文 decode/oracle 入口）；更宽的 MMA matrix、deferred/research families 与剩余架构讨论仍由 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`、`doc/mma/LOWERING_ARCHITECTURE.md` 作为 `active` 文档维护。
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
 - **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
 - **ABI/元数据**：当前 `.entry` 参数为 `(global_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`；helper `runtime_env_blob` 也只携带一个 `global_base`。prologue 仍会初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。

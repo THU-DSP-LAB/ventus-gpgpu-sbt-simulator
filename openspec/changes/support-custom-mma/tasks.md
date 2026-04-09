@@ -29,28 +29,28 @@
 - [x] Run that minimal microtest on the Spike-backed path first and use it to confirm the repository-local input layout / output observation contract before PTX lowering work starts.
 - [x] Reuse the same observable microtest family as the seed of the later Spike-vs-PTX oracle gate rather than creating a disconnected one-off bring-up path.
 
-- [ ] Implement the supported MMA subset only.
+- [x] Implement the supported MMA subset only.
 - [x] Add MMA-specific decode support for the combinations marked supported by the matrix, while keeping ownership of shared custom-decode framework changes explicit.
 - [x] Add dedicated MMA metadata and lowering-plan handling without changing the behavior of already supported non-MMA lowering paths.
-- [ ] Add PTX lowering for the supported combinations.
+- [x] Add PTX lowering for the supported combinations.
 - [x] Keep unsupported combinations on explicit fail-fast diagnostics.
 - [x] Do not expand the first committed batch beyond the `row.col` direct-native `m16n8*` and committed `split-n` `m16n16*` boundary frozen in `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` without first updating that shared baseline.
 
-- [ ] Validate the supported MMA subset.
-- [ ] Add compile-first validation for each supported combination at its required PTX target.
+- [x] Validate the supported MMA subset.
+- [x] Add compile-first validation for each supported combination at its required PTX target.
 - [x] Keep `tools/custom_decode_test.cpp` as the non-MMA gate until MMA decode is actually implemented there, and add a dedicated MMA decode test rather than silently broadening the existing gate.
-- [ ] Extend the front-loaded observable MMA microtests into focused semantic tests that compare the Spike-backed path and the PTX path for each supported combination.
-- [ ] If a repository-local helper model is retained during bring-up, keep it as an explicit cross-check rather than the sole semantic contract.
+- [x] Extend the front-loaded observable MMA microtests into focused semantic tests that compare the Spike-backed path and the PTX path for each supported combination.
+- [x] If a repository-local helper model is retained during bring-up, keep it as an explicit cross-check rather than the sole semantic contract.
 
 Blocked checkpoint (2026-04-07):
 - `fp16 -> fp16` MMA lowering path is temporarily forced to explicit fail-fast due to ABI/metadata mismatch between Ventus LLVM and Spike (`openspec/changes/support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md`). This block does not globally pause all MMA paths.
-- Current `--stage full` semantic failures are not yet single-source actionable because MMA microtests still allow arbitrary `uint` fragment carrier patterns for A/B. Before task-level closure of `32/35`, tighten inputs to controlled finite encodings and rerun full gate (`openspec/changes/support-custom-mma/2026-04-07-mma-full-gate-input-carrier-risk-temp-note.md`).
+- 2026-04-09 update: the earlier helper-carrier ambiguity has been resolved by switching the finite carrier helpers in `testcases/ocl_compare/custom_mma_kernels.cl` to branch-free controlled lookup tables; `python3 tools/custom_mma_oracle.py --stage full --sm 89 --spike-compat-nested-regext` now passes for the full landed MMA subset, and this checkpoint remains only for the explicit `fp16 -> fp16` blocked family.
 - Current handoff snapshot for next assignee is tracked in `openspec/changes/support-custom-mma/2026-04-07-support-custom-mma-handoff-status-temp-note.md` and should be treated as the active execution entry note (not a current spec replacement).
 
-- [ ] Documentation sync:
-- [ ] Update `README.md` with the current MMA support subset and target requirements once implemented.
+- [x] Documentation sync:
+- [x] Update `README.md` with the current MMA support subset and target requirements once implemented.
 - [x] Update `doc/README.md`, `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`, `doc/mma/LOWERING_ARCHITECTURE.md`, and `doc/IMPLEMENTATION_CODEMAP.md` with the MMA matrix and lowering boundary.
-- [ ] Sync the resulting current contract into the relevant `openspec/specs/` files, especially `openspec/specs/inst-support/spec.md`.
+- [x] Sync the resulting current contract into the relevant `openspec/specs/` files, especially `openspec/specs/inst-support/spec.md`.
 - [x] Check `openspec/README.md` index wording if the active change split needs explicit clarification.
 
 - [x] Final consistency check:

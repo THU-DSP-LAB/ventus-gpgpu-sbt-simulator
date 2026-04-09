@@ -23,6 +23,41 @@ typedef uint uint8 __attribute__((ext_vector_type(8)));
 typedef float float4 __attribute__((ext_vector_type(4)));
 typedef float float8 __attribute__((ext_vector_type(8)));
 
+// Keep the MMA microtest input carriers branch-free so the gate exercises MMA
+// lowering rather than unrelated vector branch/join helper lowering.
+__constant uint kFiniteF16Bits[8] = {
+    0x3c00u,
+    0xbc00u,
+    0x3800u,
+    0x4000u,
+    0x3400u,
+    0xc000u,
+    0x3e00u,
+    0xb800u,
+};
+
+__constant uint kFiniteBf16Bits[8] = {
+    0x3f80u,
+    0xbf80u,
+    0x3f00u,
+    0x4000u,
+    0x3e80u,
+    0xc000u,
+    0x3fc0u,
+    0xbf00u,
+};
+
+__constant uint kFiniteTf32Words[8] = {
+    0x3f800000u,
+    0xbf800000u,
+    0x3f000000u,
+    0x40000000u,
+    0x3e800000u,
+    0xc0000000u,
+    0x3fc00000u,
+    0xbf000000u,
+};
+
 static inline uint pack_u16x2(uint lo, uint hi) {
   return (lo & 0xffffu) | ((hi & 0xffffu) << 16);
 }
@@ -32,42 +67,15 @@ static inline uint sample_lane_index(uint seed, uint salt) {
 }
 
 static inline uint finite_f16_bits(uint idx) {
-  switch (idx & 7u) {
-  case 0u: return 0x3c00u; // 1.0
-  case 1u: return 0xbc00u; // -1.0
-  case 2u: return 0x3800u; // 0.5
-  case 3u: return 0x4000u; // 2.0
-  case 4u: return 0x3400u; // 0.25
-  case 5u: return 0xc000u; // -2.0
-  case 6u: return 0x3e00u; // 1.5
-  default: return 0xb800u; // -0.5
-  }
+  return kFiniteF16Bits[idx & 7u];
 }
 
 static inline uint finite_bf16_bits(uint idx) {
-  switch (idx & 7u) {
-  case 0u: return 0x3f80u; // 1.0
-  case 1u: return 0xbf80u; // -1.0
-  case 2u: return 0x3f00u; // 0.5
-  case 3u: return 0x4000u; // 2.0
-  case 4u: return 0x3e80u; // 0.25
-  case 5u: return 0xc000u; // -2.0
-  case 6u: return 0x3fc0u; // 1.5
-  default: return 0xbf00u; // -0.5
-  }
+  return kFiniteBf16Bits[idx & 7u];
 }
 
 static inline uint finite_tf32_word(uint idx) {
-  switch (idx & 7u) {
-  case 0u: return 0x3f800000u; // 1.0
-  case 1u: return 0xbf800000u; // -1.0
-  case 2u: return 0x3f000000u; // 0.5
-  case 3u: return 0x40000000u; // 2.0
-  case 4u: return 0x3e800000u; // 0.25
-  case 5u: return 0xc0000000u; // -2.0
-  case 6u: return 0x3fc00000u; // 1.5
-  default: return 0xbf000000u; // -0.5
-  }
+  return kFiniteTf32Words[idx & 7u];
 }
 
 static inline uint sample_packed_f16(uint seed, uint salt_lo, uint salt_hi) {

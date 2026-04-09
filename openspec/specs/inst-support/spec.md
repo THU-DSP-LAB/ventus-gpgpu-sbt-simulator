@@ -181,20 +181,40 @@ Compile-first success is required but is not sufficient by itself.
 - **THEN** the gate executes the same kernel through both the Spike backend and the PTX backend
 - **AND THEN** it compares observable output buffers with exact comparison for integer/packed arithmetic cases and tolerance-based comparison for floating-point SFU cases
 
-### Requirement: Current contract keeps MMA ownership in the active MMA change
-In the current spec, repository-local custom instruction support MUST keep MMA outside the landed non-MMA surface.
+### Requirement: Current contract supports the landed first-batch MMA subset on `sm_89`
+The current landed custom instruction support surface MUST include the committed `row.col` MMA subset below on the shared `.version 7.8` / `.target sm_89` baseline:
 
-Until `support-custom-mma` is synced into current specs:
-- the non-MMA custom support surface remains the only current landed custom support set,
-- MMA combinations remain governed by the active MMA artifacts (`openspec/changes/support-custom-mma/*` plus active MMA docs),
-- and translation must keep explicit fail-fast behavior for unsupported MMA combinations under `--require-known`.
+- direct-native:
+  - `m16n8k16 row.col f32.f16.f16.f32`
+  - `m16n8k16 row.col f32.bf16.bf16.f32`
+  - `m16n8k8 row.col f32.tf32.tf32.f32`
+- committed `split-n` composite:
+  - `m16n16k16 row.col f32.f16.f16.f32`
+  - `m16n16k16 row.col f32.bf16.bf16.f32`
+  - `m16n16k8 row.col f32.tf32.tf32.f32`
 
-Current active checkpoint refinement:
-- the currently confirmed ABI/metadata mismatch is on the MMA `fp16 -> fp16` path; this path must remain explicit fail-fast in current behavior until the Ventus LLVM + Spike toolchain contract is clarified.
-- this refinement does not mean all MMA paths are globally paused; other MMA paths remain active-change work items until synced into current specs.
+For this landed subset, the project MUST:
+- decode the MMA instruction as known through dedicated MMA metadata,
+- emit PTX through the documented native/composite lowering path,
+- pass compile-first validation with `ptxas -arch=sm_89`,
+- and pass the Spike-vs-PTX semantic oracle based on observable OpenCL output buffers.
 
-#### Scenario: MMA opcode is not silently accepted by the current non-MMA contract
-- **GIVEN** an input kernel includes an MMA instruction combination that has not been landed into current specs
+The currently confirmed Ventus LLVM + Spike ABI/metadata mismatch remains limited to the MMA `fp16 -> fp16` path; this path MUST stay explicit fail-fast / blocked in current behavior until the toolchain contract is clarified.
+
+#### Scenario: Landed MMA kernel translates and passes the oracle
+- **GIVEN** an input kernel uses only the landed current MMA subset
+- **WHEN** `sbt_ptx --require-known --sm 89` translates it and the MMA oracle gate is executed
+- **THEN** decode and PTX emission succeed
+- **AND THEN** `ptxas -arch=sm_89` succeeds
+- **AND THEN** the observable Spike and PTX outputs match under the MMA oracle comparison rules
+
+### Requirement: Unsupported or blocked MMA combinations still fail explicitly
+The current landed MMA support MUST remain limited to the first-batch subset above plus the explicit `fp16 -> fp16` blocked exception.
+
+Any deferred/research MMA family, any non-`row.col` MMA family, and the blocked `fp16 -> fp16` path MUST continue to fail explicitly under `--require-known`; the backend MUST NOT silently reinterpret them as one of the landed current families.
+
+#### Scenario: Unsupported or blocked MMA path does not silently lower
+- **GIVEN** an input kernel includes an MMA combination outside the landed current subset, or the blocked `fp16 -> fp16` family
 - **WHEN** `sbt_ptx --require-known` or `sbt_decode --require-known` is executed
-- **THEN** translation fails explicitly (`unknown`/`unsupported`) instead of silently lowering through a non-MMA path
-- **AND THEN** the current `inst-support` contract and the active MMA change do not claim overlapping implementation ownership
+- **THEN** translation fails explicitly (`unknown` / `unsupported` / blocked diagnostic)
+- **AND THEN** the current `inst-support` contract keeps the landed MMA subset and the remaining active/deferred MMA work clearly separated
