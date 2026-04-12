@@ -110,7 +110,7 @@ class KernelSpec:
 
 
 KERNELS: list[KernelSpec] = [
-    KernelSpec("mt_custom_mma_m16n8k16_row_col_f32_f16_f16_f32", "f32_tol", "pass", "", ""),
+    KernelSpec("mt_custom_mma_m16n8k16_row_col_f32_f16_f16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_F16_M16N8K16"),
     KernelSpec("mt_custom_mma_m16n8k16_row_col_f32_bf16_bf16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_BF16_M16N8K16"),
     KernelSpec("mt_custom_mma_m16n8k8_row_col_f32_tf32_tf32_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_TF32_M16N8K8"),
     KernelSpec("mt_custom_mma_m16n16k16_row_col_f32_f16_f16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_F16_M16N16K16"),

@@ -9,6 +9,7 @@
 // fp16->fp16 blocked probe kernel.
 //
 // Optional feature macros (enabled by tools/custom_mma_oracle.py per-kernel):
+// - SBT_MMA_ENABLE_F16_M16N8K16
 // - SBT_MMA_ENABLE_BF16_M16N8K16
 // - SBT_MMA_ENABLE_TF32_M16N8K8
 // - SBT_MMA_ENABLE_F16_M16N16K16
@@ -95,9 +96,11 @@ static inline float signed_sample(uint gid, uint salt, float scale) {
   return ((float)s) * scale;
 }
 
+#if defined(SBT_MMA_ENABLE_F16_M16N8K16)
 static inline float4 mma_m16n8k16_row_col_f32_f16_f16_f32(uint4 a, uint2 b, float4 c) {
   return __builtin_riscv_ventus_mma_m16n8k16_row_col_f32_f16_f16_f32(a, b, c);
 }
+#endif
 
 #if defined(SBT_MMA_ENABLE_BF16_M16N8K16)
 static inline float4 mma_m16n8k16_row_col_f32_bf16_bf16_f32(uint4 a, uint2 b, float4 c) {
@@ -135,6 +138,7 @@ static inline uint2 mma_m16n8k16_row_col_f16_f16_f16_f16(uint4 a, uint2 b, uint2
 }
 #endif
 
+#if defined(SBT_MMA_ENABLE_F16_M16N8K16)
 __kernel void mt_custom_mma_m16n8k16_row_col_f32_f16_f16_f32(__global const uint *A, __global uint *B) {
   const uint gid = (uint)get_global_id(0);
   const uint seed = A[gid] ^ (gid * 0x9e3779b9u);
@@ -154,6 +158,7 @@ __kernel void mt_custom_mma_m16n8k16_row_col_f32_f16_f16_f32(__global const uint
   else if ((gid & 3u) == 3u) out = d.w;
   B[gid] = as_uint(out);
 }
+#endif
 
 #if defined(SBT_MMA_ENABLE_BF16_M16N8K16)
 __kernel void mt_custom_mma_m16n8k16_row_col_f32_bf16_bf16_f32(__global const uint *A, __global uint *B) {
