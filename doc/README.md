@@ -26,12 +26,12 @@
 
 若你要看仍然活跃的前瞻专项，再读：
 
-- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：custom 指令拆分阶段留下的 active 共享前置基线；冻结 `.version 7.8` / `sm_89`、family-scoped oracle policy、non-MMA 已落地语义和 MMA 首发批次边界，并明确 `bf16x2` 的 mixed native/composite lowering 边界。
-- `doc/CUSTOM_INSTRUCTION_INPUT.md`：custom 指令输入材料的受管副本；供 shared baseline 与 active changes 引用，但不覆盖 current spec。
-- `doc/mma/LOWERING_ARCHITECTURE.md`：Ventus MMA 的 active lowering 架构文档；冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型、`MmaInstInfo` / native PTX ABI descriptor contract，以及“不干扰既有 non-MMA lowering”的接入约束。当前首批 committed `row.col` MMA 子集已作为 current 行为落地；该文档继续承担 deferred/research families 与剩余架构边界的 active 入口。当前仍显式 blocked 的只有 `fp16 -> fp16` MMA 路径。
+- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：custom 指令拆分阶段留下的 active 共享前置基线；冻结 `.version 7.8` / `sm_89`、family-scoped oracle policy、non-MMA 已落地语义和 MMA 首发批次边界，并明确 `bf16x2` 的 mixed native/composite lowering 边界。相关 split changes 已归档，但该文档仍作为后续 blocked/deferred MMA 扩展的长期前置参考。
+- `doc/CUSTOM_INSTRUCTION_INPUT.md`：custom 指令输入材料的受管副本；供 shared baseline 与 MMA 架构文档引用，但不覆盖 current spec。
+- `doc/mma/LOWERING_ARCHITECTURE.md`：Ventus MMA 的 active lowering 架构文档；冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型、`MmaInstInfo` / native PTX ABI descriptor contract，以及“不干扰既有 non-MMA lowering”的接入约束。当前首批 committed `row.col` MMA 子集已作为 current 行为落地；该文档继续承担 blocked/deferred/research MMA families 与剩余架构边界的 active 入口。当前仍显式 blocked 的只有 `fp16 -> fp16` MMA 路径。
 - `doc/ventus-divergence-sgpr-analysis.md`：基于 `../llvm` 的参考分析，说明 Ventus LLVM 如何处理 `vbranch` / `join` 下的 SGPR/VGPR 有效性问题。
 
-口径提醒：custom 指令当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；deferred/research MMA families 及更宽的矩阵/架构讨论仍是 `active`。仓库当前仅 `fp16 -> fp16` MMA 路径处于显式 fail-fast 临时阻塞状态，等待 Ventus 工具链澄清后再恢复。
+口径提醒：custom 指令当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；deferred/research MMA families 及更宽的矩阵/架构讨论仍保留在 `active` 长期文档中，而不再由单独 active change 承载。仓库当前仅 `fp16 -> fp16` MMA 路径处于显式 fail-fast 临时阻塞状态，等待 Ventus 工具链澄清后再恢复。
 
 ## 2. 当前事实与 contract
 
@@ -43,8 +43,8 @@
 - `openspec/specs/inst-support/spec.md`：当前指令支持与验证合同。
 - `openspec/specs/sbt-rodinia-bringup/spec.md`：当前 Rodinia bring-up / fail-fast 边界。
 - `openspec/specs/build-time-spike-pattern-subset/spec.md`：当前 Spike pattern 子集生成合同。
-- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：`active` shared baseline（非 current as-built）；约束 `support-custom-instructions` / `support-custom-mma` 在 sync spec 前的共同前提。
-- `doc/mma/LOWERING_ARCHITECTURE.md`：`active` MMA lowering 架构合同（非 current as-built）；规定 canonical MMA matrix、首批 `row.col` MMA 的分层 lowering 模型、decode metadata contract 和 composite `split-n` 路径。
+- `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：`active` shared baseline（非 current as-built）；保留 custom split 的共享前提，并继续约束后续 blocked/deferred MMA 扩展的基线选择。
+- `doc/mma/LOWERING_ARCHITECTURE.md`：`active` MMA lowering 架构合同（非 current as-built）；规定 canonical MMA matrix、首批 `row.col` MMA 的分层 lowering 模型、decode metadata contract 和 composite `split-n` 路径，并为后续 blocked/deferred/research family 保留统一架构入口。
 
 ## 3. 历史 PTX 设计/规划（已归档）
 

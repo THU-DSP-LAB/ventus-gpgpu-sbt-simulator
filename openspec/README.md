@@ -26,18 +26,17 @@
 
 - `build-time-spike-pattern-subset`：构建期 Spike pattern 子集生成合同
 - `global-address-space`：当前 PTX ordinary address mapping / single-Global / VMM backing 合同
-- `inst-support`：指令支持与语义验证合同（当前已落地边界以 non-MMA 为主；MMA 仍在 active change 轨道）
+- `inst-support`：指令支持与语义验证合同（当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；`fp16 -> fp16` 仍为显式 blocked 路径）
 - `ptx-call-prototype`：多函数 PTX helper prototype / value ABI 合同
 - `replicated-scalar-state`：当前 PTX lowering 主线合同
 - `sbt-rodinia-bringup`：Rodinia bring-up / fail-fast 边界
 
-## 当前 active changes（与 custom split 相关）
+## 近期 historical changes（与 custom split 相关）
 
-- `support-custom-mma`：仍在推进中的 MMA 专项 change；负责 MMA support matrix、decode/lowering 设计与验证闭环。当前已确认受 ABI/metadata mismatch 影响的是 `fp16 -> fp16` 路径，该路径在 sbtsim 中临时显式 fail-fast，等待 Ventus LLVM + Spike 工具链澄清后再恢复收敛。
-
-对应历史轨道：
-
+- `openspec/changes/archive/2026-04-13-support-custom-mma`：已归档的 MMA change；其结果已同步进 current spec，当前 landed 首批 `row.col` MMA 子集成为 current contract，而 `fp16 -> fp16` 仍保持显式 blocked。
 - `openspec/changes/archive/2026-04-05-support-custom-instructions`：已归档的 non-MMA custom change（historical）。
+
+当前 custom 指令主题不再有并行 active change；若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract。
 
 ## Legacy specs
 

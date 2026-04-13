@@ -43,7 +43,7 @@
   - 支持 `regext/regexti` 前缀 bundling：前缀只作用下一条指令；CFG 里会把“bundle pc”和“真实指令 pc”区分开。
   - current：默认对连续前缀 fail-fast，报 `nested regext prefix`；若环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1` 打开，则临时按 Spike 现有行为顺序覆盖前缀状态，允许同一条真实指令前出现连续 `regext/regexti`。
   - Ventus 扩展优先：先走 repository-local custom decode（含已落地的 non-MMA 与 MMA 路径），再按 `match/mask` 命中 Spike pattern，最后才走 RV32 标量子集解码。
-  - MMA 边界（current）：`opcode=0x0A` 现已落地首批 committed `row.col` MMA decode/lowering；`DecodedInst.custom.family = CustomFamily::Mma` 仅承担 family ownership，shape/layout/type/window 信息由独立 `MmaInstInfo` 承载。当前 landed subset 为 `m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`；`fp16 -> fp16` 与其它 deferred/research MMA 组合在 `--require-known` 下仍显式 fail-fast。
+  - MMA 边界（current）：`opcode=0x0A` 现已落地首批 committed `row.col` MMA decode/lowering；`DecodedInst.custom.family = CustomFamily::Mma` 仅承担 family ownership，shape/layout/type/window 信息由独立 `MmaInstInfo` 承载。当前 landed subset 为 `m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`；deferred/research MMA 组合在 `--require-known` 下显式 fail-fast，`fp16 -> fp16` 则可被 decode 为已知 MMA，但会在 PTX lowering / compile-first 路径显式 blocked。
   - `DecodedInst` 是当前“最小 IR”：含 `name`、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
 
 - `sbt/cfg.{hpp,cpp}`
@@ -170,6 +170,7 @@
     - 同一 kernel 的 Spike-vs-PTX 语义对照。
   - current：这条 OpenCL buffer compare 路径就是当前 landed MMA subset 的 canonical semantic oracle。
   - current：helper carrier 采用 branch-free 的有限值查表，刻意避免把与 MMA 无关的 `switch -> vbranch/join` helper lowering 差异误报成 MMA 语义失败。
+  - current：gate 会先按目标 feature macro materialize 单-kernel 源文件，避免 Ventus PoCL 在多-kernel OpenCL 源上把首个 kernel 错当成 `--init` 入口。
   - current：`fp16 -> fp16` family 仍按显式 blocked 口径保留，不混入已支持子集。
 
 - `tools/custom_decode_test.cpp`

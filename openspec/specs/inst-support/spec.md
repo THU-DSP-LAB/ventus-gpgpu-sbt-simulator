@@ -199,7 +199,7 @@ For this landed subset, the project MUST:
 - pass compile-first validation with `ptxas -arch=sm_89`,
 - and pass the Spike-vs-PTX semantic oracle based on observable OpenCL output buffers.
 
-The currently confirmed Ventus LLVM + Spike ABI/metadata mismatch remains limited to the MMA `fp16 -> fp16` path; this path MUST stay explicit fail-fast / blocked in current behavior until the toolchain contract is clarified.
+The currently confirmed Ventus LLVM + Spike ABI/metadata mismatch remains limited to the MMA `fp16 -> fp16` path; this path MUST stay explicit fail-fast / blocked in PTX lowering and end-to-end validation until the toolchain contract is clarified.
 
 #### Scenario: Landed MMA kernel translates and passes the oracle
 - **GIVEN** an input kernel uses only the landed current MMA subset
@@ -211,10 +211,12 @@ The currently confirmed Ventus LLVM + Spike ABI/metadata mismatch remains limite
 ### Requirement: Unsupported or blocked MMA combinations still fail explicitly
 The current landed MMA support MUST remain limited to the first-batch subset above plus the explicit `fp16 -> fp16` blocked exception.
 
-Any deferred/research MMA family, any non-`row.col` MMA family, and the blocked `fp16 -> fp16` path MUST continue to fail explicitly under `--require-known`; the backend MUST NOT silently reinterpret them as one of the landed current families.
+Any deferred/research MMA family and any non-`row.col` MMA family MUST continue to fail explicitly under `--require-known`.
+
+The blocked `fp16 -> fp16` path MAY still decode as known through dedicated MMA metadata, but it MUST fail explicitly before PTX compile-first or semantic validation proceeds; the backend MUST NOT silently reinterpret it as one of the landed current families.
 
 #### Scenario: Unsupported or blocked MMA path does not silently lower
 - **GIVEN** an input kernel includes an MMA combination outside the landed current subset, or the blocked `fp16 -> fp16` family
-- **WHEN** `sbt_ptx --require-known` or `sbt_decode --require-known` is executed
-- **THEN** translation fails explicitly (`unknown` / `unsupported` / blocked diagnostic)
-- **AND THEN** the current `inst-support` contract keeps the landed MMA subset and the remaining active/deferred MMA work clearly separated
+- **WHEN** `sbt_decode --require-known` or `sbt_ptx --require-known` is executed for a deferred/research/non-`row.col` family, or `sbt_ptx --require-known` enters lowering for the blocked `fp16 -> fp16` family
+- **THEN** translation or lowering fails explicitly (`unknown` / `unsupported` / blocked diagnostic)
+- **AND THEN** the current `inst-support` contract keeps the landed MMA subset and the remaining blocked/deferred/research MMA work clearly separated

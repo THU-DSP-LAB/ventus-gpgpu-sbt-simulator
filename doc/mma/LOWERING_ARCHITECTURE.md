@@ -4,7 +4,7 @@
 >
 > Role: active design contract for the repository-local Ventus MMA lowering path in `sbtsim`.
 >
-> This document is not a `current` implementation truth. It defines the intended lowering architecture, support partition, and mapping contract for Ventus MMA while `support-custom-mma` remains in progress. After the MMA path lands and the resulting behavior is synced into `openspec/specs/`, this document should either be downgraded to `historical` or rewritten as a short `current` pointer to the synced spec.
+> This document is not a `current` implementation truth. The landed first-batch MMA subset is already synced into `openspec/specs/inst-support/spec.md`; this document remains `active` as the long-lived architecture reference for blocked/deferred/research MMA work beyond that current subset.
 
 ## Purpose
 
@@ -27,24 +27,24 @@ It complements, but does not replace:
 - `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`
 - `doc/IMPLEMENTATION_CODEMAP.md`
 - `openspec/specs/inst-support/spec.md`
-- `openspec/changes/support-custom-mma/*`
+- archived change `openspec/changes/archive/2026-04-13-support-custom-mma/*`
 
 Responsibility split:
 
 - `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` freezes cross-change prerequisites and shared baseline decisions.
-- this document freezes the MMA-specific lowering architecture that is expected to remain useful even after the active change artifacts evolve.
-- `openspec/changes/support-custom-mma/*` keeps the change-local proposal/design/tasks/spec delta.
+- this document freezes the MMA-specific lowering architecture that remains useful after the landed subset was synced into current specs.
+- `openspec/changes/archive/2026-04-13-support-custom-mma/*` keeps the historical proposal/design/tasks/spec delta that led to the current first-batch MMA contract.
 
-## Current As-Built Boundary Check (2026-04-07)
+## Current As-Built Boundary Check (2026-04-13)
 
-This document stays `active` because MMA PTX lowering is not fully landed as a `current` supported path.
+This document stays `active` because the repository still carries blocked/deferred/research MMA families beyond the landed current subset.
 
 Current implementation checkpoints:
 
 - `sbt/riscv_decode.cpp` now includes repository-local MMA decode metadata (`MmaInstInfo`) with explicit support-class partitioning for committed/deferred/research families.
 - dedicated MMA decode and microtest assets are landed (`tools/mma_decode_test.cpp`, `testcases/ocl_compare/custom_mma_kernels.cl`, `tools/custom_mma_oracle.py`).
-- the confirmed toolchain mismatch currently blocks the MMA `fp16 -> fp16` path, which must remain explicit fail-fast in current behavior (see `openspec/changes/support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md`).
-- therefore this document remains an active architecture contract for continued MMA lowering work, while the `fp16 -> fp16` path stays temporarily fail-fast until toolchain alignment.
+- the confirmed toolchain mismatch currently blocks the MMA `fp16 -> fp16` path, which must remain explicit fail-fast in current PTX lowering behavior (see `openspec/changes/archive/2026-04-13-support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md`).
+- therefore this document remains an active architecture contract for future MMA extension work, while the `fp16 -> fp16` path stays temporarily fail-fast until toolchain alignment.
 
 ## Design Goals
 
@@ -157,7 +157,7 @@ Lowering class:
 
 ### Explicitly deferred in the first batch
 
-The following families are deferred and must fail fast under `--require-known` until a later revision updates this document and the active change artifacts:
+The following families are deferred and must fail fast under `--require-known` until a later revision updates this document and the next MMA change artifacts:
 
 - all `m8*` shapes,
 - all non-`row.col` layout combinations,
@@ -169,8 +169,8 @@ The following families are deferred and must fail fast under `--require-known` u
 The canonical MMA support matrix is recorded here, next to the lowering-family
 and mapping rules it depends on.
 
-`openspec/changes/support-custom-mma/*` must summarize and depend on this
-matrix. They must not carry a divergent second copy.
+The archived `support-custom-mma` change summarized and depended on this
+matrix. Any future MMA change must continue to treat this document as the canonical matrix source unless it updates the matrix here first.
 
 ### Committed first-batch matrix
 
@@ -692,14 +692,14 @@ Expected direction:
 Expected touch points:
 
 - `doc/IMPLEMENTATION_CODEMAP.md`
-- `openspec/changes/support-custom-mma/*`
-- eventually `openspec/specs/inst-support/spec.md`
+- `openspec/changes/archive/2026-04-13-support-custom-mma/*`
+- `openspec/specs/inst-support/spec.md`
 
 Expected direction:
 
-- this document stays `active` while implementation is in progress,
-- the code map must describe the as-built MMA lowering stack once it exists,
-- and the synced spec must later carry the `current` support contract after implementation lands.
+- this document stays `active` as a long-lived architecture reference for future MMA extensions,
+- the code map describes the current as-built MMA lowering stack,
+- and the synced spec carries the current landed support contract.
 
 ## Deferred Mapping Classes
 

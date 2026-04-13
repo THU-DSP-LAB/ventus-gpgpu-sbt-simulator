@@ -2,9 +2,9 @@
 
 > Status: `active`
 >
-> Role: shared active design baseline originally created for the custom-instruction split, and still required by the remaining `support-custom-mma` track plus the synced non-MMA contract.
+> Role: shared active design baseline originally created for the custom-instruction split, and now retained as the long-lived prerequisite reference for the synced custom contract plus future MMA extensions.
 >
-> This document is not a `current` contract. It freezes the prerequisite decisions that were shared across the custom-instruction split and still constrain the remaining active MMA work. After the active MMA work lands and the resulting contracts are synced into `openspec/specs/`, this document should be archived or downgraded to `historical`.
+> This document is not a `current` contract. It freezes the prerequisite decisions shared across the custom-instruction split. The landed non-MMA subset and first-batch MMA subset are already synced into `openspec/specs/`; this document remains `active` only as a baseline reference for future blocked/deferred MMA work.
 
 ## Purpose
 
@@ -14,9 +14,9 @@ Freeze the shared baseline for:
 - semantic oracle strategy,
 - non-MMA custom canonical semantics,
 - MMA initial support subset and lowering boundary,
-- and the ownership rules between the non-MMA current contract and the remaining active MMA work.
+- and the ownership rules between the synced current contract and future MMA extension work.
 
-Without this shared baseline, the archived non-MMA path and the remaining active MMA path would drift into conflicting assumptions about `sm_XX`, oracle path, packed semantics, and MMA scope.
+Without this shared baseline, the synced current contract and future MMA extensions would drift into conflicting assumptions about `sm_XX`, oracle path, packed semantics, and MMA scope.
 
 ## Inputs and Scope
 
@@ -29,20 +29,20 @@ This document consolidates decisions based on:
 
 This document covers shared prerequisites only. It does not replace:
 
-- `support-custom-instructions` ownership of shared custom decode framework and non-MMA lowering,
-- `support-custom-mma` ownership of MMA-specific decode semantics, support matrix details, and validation closure,
-- or the detailed MMA lowering architecture in `doc/mma/LOWERING_ARCHITECTURE.md`, which freezes the `VGPR window -> logical tile -> PTX fragment tuple` model for the active MMA implementation path.
+- the archived `support-custom-instructions` ownership record for shared custom decode framework and non-MMA lowering,
+- the archived `support-custom-mma` ownership record for the landed MMA-specific decode semantics, support matrix details, and validation closure,
+- or the detailed MMA lowering architecture in `doc/mma/LOWERING_ARCHITECTURE.md`, which freezes the `VGPR window -> logical tile -> PTX fragment tuple` model for future MMA extension work.
 
-## Current Implementation Checkpoint (2026-04-07)
+## Current Implementation Checkpoint (2026-04-13)
 
 This baseline remains an `active` prerequisite document, not an as-built implementation map.
 
-As of 2026-04-07 in the current repository state:
+As of 2026-04-13 in the current repository state:
 
 - repository-local custom decode/lowering is landed for non-MMA families;
-- repository-local MMA decode metadata and front-loaded MMA microtest assets are present as active in-progress assets;
+- repository-local MMA decode metadata and front-loaded MMA microtest assets are present in-tree and are already used by the current landed subset;
 - an ABI/metadata mismatch between Ventus LLVM and Spike is currently confirmed for the MMA `fp16 -> fp16` path, so that path remains explicit fail-fast in sbtsim until toolchain contract is clarified;
-- other MMA paths remain active implementation scope rather than globally paused.
+- other MMA paths remain future extension scope rather than globally paused.
 
 ## Frozen Decisions
 
@@ -252,9 +252,9 @@ This change must treat the following as already frozen by this document:
 
 It must not silently redefine those shared decisions inside its own artifacts or implementation.
 
-### `support-custom-mma`
+### Archived `support-custom-mma` result and future MMA extensions
 
-This change must treat the following as already frozen by this document:
+The archived `support-custom-mma` change treated the following as already frozen by this document, and any future MMA extension work must continue to do so unless this baseline is revised first:
 
 - `.version 7.8` / `sm_89` shared PTX baseline
 - explicit oracle policy, with the committed MMA subset now using Spike-backed OpenCL buffer comparison as the canonical oracle and any repository-local helper model limited to a bring-up cross-check role
@@ -264,26 +264,26 @@ This change must treat the following as already frozen by this document:
 
 It must not silently expand first-phase scope to include `wmma`, `m8*`, non-`row.col`, or composite MMA forms beyond the committed `split-n` `m16n16*` contract without first updating this active baseline.
 
-Current checkpoint note (2026-04-07):
+Current checkpoint note (2026-04-13):
 
-- The repository may keep MMA decode/microtest assets in-tree for active bring-up.
-- Until the mismatch recorded in `openspec/changes/support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md` is resolved, the MMA `fp16 -> fp16` path must fail fast explicitly in current behavior.
+- The repository may keep MMA decode/microtest assets in-tree for future bring-up and regression continuity.
+- Until the mismatch recorded in `openspec/changes/archive/2026-04-13-support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md` is resolved, the MMA `fp16 -> fp16` path must fail fast explicitly in current PTX lowering behavior.
 
 ### Escalation rule
 
-If the remaining active MMA work discovers that this shared baseline is insufficient or wrong, the required order is:
+If future MMA extension work discovers that this shared baseline is insufficient or wrong, the required order is:
 
 1. update this `active` document first
-2. then update the affected change artifacts
+2. then update or create the affected change artifacts
 3. and only then implement against the revised baseline
 
 This prevents the two changes from drifting into incompatible hidden assumptions.
 
 ## Sync and Archive Conditions
 
-This document should stay `active` only while the shared prerequisite decisions remain ahead of current implementation.
+This document should stay `active` only while the shared prerequisite decisions remain useful for work beyond the current landed subset.
 
-After the two active custom-instruction changes land and the resulting contracts are synced into `openspec/specs/`, this document should:
+After this baseline no longer carries unique guidance beyond the synced current specs, this document should:
 
 - either be archived into `doc/archive/`
 - or be rewritten as a short `historical` record pointing readers to the synced current specs
