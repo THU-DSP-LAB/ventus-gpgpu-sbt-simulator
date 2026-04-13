@@ -245,13 +245,14 @@ static Buffers run_once(cl_context ctx, cl_command_queue q, cl_device_id dev, co
 
 static void usage() {
   std::cerr << "Usage:\n";
-  std::cerr << "  ventus_ocl_run --src <kernels.cl> --kernel <name> [--n <elements>] [--in <file>] [--out <file>] [--binary-roundtrip]\n";
+  std::cerr << "  ventus_ocl_run (--src <kernels.cl> | --bin <program.bin>) --kernel <name> [--n <elements>] [--in <file>] [--out <file>] [--binary-roundtrip]\n";
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
   std::string src_path = "testcases/ocl_compare/kernels.cl";
+  std::optional<std::string> bin_path;
   std::string kernel = "test_u32_basic";
   size_t n = 256;
   std::optional<std::string> in_path;
@@ -262,6 +263,8 @@ int main(int argc, char **argv) {
     std::string a = argv[i];
     if (a == "--src" && i + 1 < argc) {
       src_path = argv[++i];
+    } else if (a == "--bin" && i + 1 < argc) {
+      bin_path = argv[++i];
     } else if (a == "--kernel" && i + 1 < argc) {
       kernel = argv[++i];
     } else if (a == "--n" && i + 1 < argc) {
@@ -282,7 +285,14 @@ int main(int argc, char **argv) {
     }
   }
 
-  const std::string src = read_file(src_path);
+  if (bin_path && binary_roundtrip) {
+    std::cerr << "--bin cannot be combined with --binary-roundtrip\n";
+    return 2;
+  }
+
+  const std::string src = bin_path ? std::string() : read_file(src_path);
+  std::optional<std::vector<uint8_t>> program_binary;
+  if (bin_path) program_binary = read_binary_file(*bin_path);
   std::optional<std::vector<uint8_t>> input_override;
   if (in_path) input_override = read_binary_file(*in_path);
 
@@ -312,7 +322,9 @@ int main(int argc, char **argv) {
   cl_command_queue q = clCreateCommandQueue(ctx, dev, 0, &err);
   cl_check(err, "clCreateCommandQueue");
 
-  const Buffers res_src = run_once(ctx, q, dev, src, kernel.c_str(), n, /*force_binary=*/false, std::nullopt, input_override);
+  const bool use_binary = program_binary.has_value();
+  const Buffers res_src =
+      run_once(ctx, q, dev, src, kernel.c_str(), n, use_binary, program_binary, input_override);
 
   std::optional<std::vector<uint8_t>> bin0;
   if (binary_roundtrip) {

@@ -173,6 +173,12 @@
   - current：gate 会先按目标 feature macro materialize 单-kernel 源文件，避免 Ventus PoCL 在多-kernel OpenCL 源上把首个 kernel 错当成 `--init` 入口。
   - current：`fp16 -> fp16` family 仍按显式 blocked 口径保留，不混入已支持子集。
 
+- `tools/fp16_mma_spike_cpu_ref.py`
+  - `fp16 -> fp16` `m16n8k16 row.col` 的 Spike-vs-CPU-reference 独立测例；当前只验证 Ventus LLVM + Spike 软件栈，不经过 sbtsim PTX lowering。
+  - 输入策略：host 侧生成随机 `u32` seed；kernel 再把 seed 映射到有限 `fp16` 值集合，保持输入随机性同时避免 NaN/Inf payload 噪声。
+  - 比较规则：`NaN` 按分类相等，非 `NaN` half lane 按 `fp16` ULP 容差比较，默认要求 `<= 1 ULP`。
+  - current：这是 blocked `fp16 -> fp16` family 的 pre-support 语义测例，不改变 current spec 中“sbtsim PTX lowering 仍显式 blocked”的实现真相。
+
 - `tools/custom_decode_test.cpp`
   - current non-MMA decode gate，覆盖 `shuffle/vcvt/packed/SFU` 的 repository-local decode 元数据与污染防护。
   - current：该测试继续只覆盖 non-MMA decode；MMA decode/semantic gate 已拆到 `tools/mma_decode_test.cpp` 与 `tools/custom_mma_oracle.py`，避免 non-MMA 与 MMA gate 混淆。

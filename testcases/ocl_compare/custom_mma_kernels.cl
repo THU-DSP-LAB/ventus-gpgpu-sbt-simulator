@@ -16,6 +16,7 @@
 // - SBT_MMA_ENABLE_BF16_M16N16K16
 // - SBT_MMA_ENABLE_TF32_M16N16K8
 // - SBT_MMA_ENABLE_FP16_FP16_BLOCKED
+// - SBT_MMA_ENABLE_FP16_FP16_CPU_REF
 
 typedef unsigned int uint;
 typedef uint uint2 __attribute__((ext_vector_type(2)));
@@ -132,7 +133,7 @@ static inline float8 mma_m16n16k8_row_col_f32_tf32_tf32_f32(uint4 a, uint4 b, fl
 }
 #endif
 
-#if defined(SBT_MMA_ENABLE_FP16_FP16_BLOCKED)
+#if defined(SBT_MMA_ENABLE_FP16_FP16_BLOCKED) || defined(SBT_MMA_ENABLE_FP16_FP16_CPU_REF)
 static inline uint2 mma_m16n8k16_row_col_f16_f16_f16_f16(uint4 a, uint2 b, uint2 c) {
   return __builtin_riscv_ventus_mma_m16n8k16_row_col_f16_f16_f16_f16(a, b, c);
 }
@@ -266,6 +267,24 @@ __kernel void mt_custom_mma_m16n16k8_row_col_f32_tf32_tf32_f32(__global const ui
 
   const float8 d = mma_m16n16k8_row_col_f32_tf32_tf32_f32(a, b, c);
   B[gid] = as_uint(pick_float8_lane(d, gid));
+}
+#endif
+
+// Spike-vs-CPU-ref pre-support sanity kernel for the currently blocked
+// fp16->fp16 family. Inputs stay within a finite fp16 pool so the test focuses
+// on MMA semantics rather than NaN/Inf payload choices.
+#if defined(SBT_MMA_ENABLE_FP16_FP16_CPU_REF)
+__kernel void mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16_cpu_ref(__global const uint *A, __global uint *B) {
+  const uint gid = (uint)get_global_id(0);
+  const uint seed = A[gid] ^ (gid * 0x9e3779b9u) ^ 0x5bd1e995u;
+
+  const uint4 a = (uint4)(sample_packed_f16(seed, 0u, 1u), sample_packed_f16(seed, 2u, 3u), sample_packed_f16(seed, 4u, 5u),
+                          sample_packed_f16(seed, 6u, 7u));
+  const uint2 b = (uint2)(sample_packed_f16(seed ^ 0x13579bdfu, 1u, 3u), sample_packed_f16(seed ^ 0x2468ace0u, 5u, 7u));
+  const uint2 c = (uint2)(sample_packed_f16(seed ^ 0xa5a5a5a5u, 0u, 2u), sample_packed_f16(seed ^ 0x5a5a5a5au, 4u, 6u));
+  const uint2 d = mma_m16n8k16_row_col_f16_f16_f16_f16(a, b, c);
+
+  B[gid] = ((gid & 1u) == 0u) ? d.x : d.y;
 }
 #endif
 

@@ -112,6 +112,8 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 当前 `fp16 -> fp16` MMA 路径仍受 Ventus LLVM + Spike ABI/metadata mismatch 影响，在 sbtsim 中保持显式 fail-fast/block，不属于当前 landed support subset。除这条 blocked 路径外，其它已承诺的首批 `row.col` MMA 组合已同步为 current 行为；更宽的 MMA matrix、deferred/research families 与剩余架构讨论仍由 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 与 `doc/mma/LOWERING_ARCHITECTURE.md` 继续承载。
 
+仓库当前另有一个独立的 Spike-vs-CPU-reference 预支持测例，用于单独验证 `m16n8k16 row.col fp16->fp16` 的 Ventus LLVM + Spike 语义；它不代表 sbtsim PTX lowering 已恢复支持。
+
 `regext/regexti` 默认仍按严格 bundling 处理；若需临时兼容 Spike 对连续前缀的现有行为，可设置环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`。打开后，`sbt_decode` 与 `sbt_ptx` 在遇到连续 `regext`/`regexti` 指向同一条真实指令时，不再报 `nested regext prefix`，而是按 Spike 现有顺序覆盖前缀状态继续解码；这是临时兼容方案，不改变默认 fail-fast 路径。
 
 ## 统一回归入口（推荐）
@@ -188,6 +190,10 @@ tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
 # shuffle 类 microtest 需要完整 warp 条件；custom_non_mma_oracle.py 会自动把它们提升到 32-lane 执行。
 # 当前 custom kernels 若出现连续 regext/regexti 前缀，需显式打开 Spike-compatible nested-prefix 兼容模式。
 python3 tools/custom_non_mma_oracle.py --n 8 --spike-compat-nested-regext
+
+# fp16 MMA 的 Spike-vs-CPU-reference 预支持测例：
+# host 随机 seed -> kernel 内有限 fp16 值映射；只验证 Ventus LLVM + Spike，不经过 sbtsim PTX lowering
+python3 tools/fp16_mma_spike_cpu_ref.py --seed 0x20260413 --ulp-tol 1
 
 # ventus_ocl_compare.py 在未显式设置 GPU_SBT_PTX 时，会自动绑定当前树的 build/sbt_ptx，
 # 避免误用 ../install/bin/sbt_ptx 的旧安装产物
