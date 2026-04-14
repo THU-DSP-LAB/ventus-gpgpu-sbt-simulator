@@ -114,7 +114,7 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 - direct-native：`m16n8k16 row.col f16->f16`
 - committed split-`n` composite：`m16n16k16 row.col f16->f16`
 
-这两条 family 的 current gate 已扩展为 `Spike vs PTX vs CPU reference` 三方比较，比较规则为：`NaN` 按分类相等，非 `NaN` half lane 默认要求 `<= 1 fp16 ULP`。其余 non-`row.col` / deferred / research / 非 current `fp16 -> fp16` family 仍保持显式 fail-fast。
+当前已支持的 8 条 MMA family 都接入了 `Spike vs sbtsim PTX vs CPU reference` 三方比较。比较规则为：`fp16` 输出 `NaN` 按分类相等、非 `NaN` half lane 默认要求 `<= 1 fp16 ULP`；`f32` 输出按 gate 文档中的 `atol/rtol` 容差比较。默认 MMA gate 会覆盖至少一组较小随机样本和一组较大随机样本。其余 non-`row.col` / deferred / research / 非 current `fp16 -> fp16` family 仍保持显式 fail-fast。
 
 `regext/regexti` 默认仍按严格 bundling 处理；若需临时兼容 Spike 对连续前缀的现有行为，可设置环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`。打开后，`sbt_decode` 与 `sbt_ptx` 在遇到连续 `regext`/`regexti` 指向同一条真实指令时，不再报 `nested regext prefix`，而是按 Spike 现有顺序覆盖前缀状态继续解码；这是临时兼容方案，不改变默认 fail-fast 路径。
 
@@ -136,7 +136,7 @@ tools/regress.sh --preset quick --workdir /tmp/sbtsim-regress
 tools/regress.sh --preset quick --keep-workdir
 ```
 
-`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。默认 `quick/all` 路径会以 `--mma-stage=full` 执行 custom MMA gate，确保 current `fp16 -> fp16` MMA 的 compile-first 与语义对照默认纳入统一回归。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。
+`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。默认 `quick/all` 路径会以 `--mma-stage=full` 执行 custom MMA gate，确保当前已支持 MMA family 的 compile-first 与三方语义对照默认纳入统一回归。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。
 
 ## PoCL/driver 端到端
 ```bash
@@ -194,8 +194,12 @@ tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
 python3 tools/custom_non_mma_oracle.py --n 8 --spike-compat-nested-regext
 
 # fp16 MMA 的 Spike-vs-CPU-reference 独立语义测例：
-# host 随机 seed -> kernel 内有限 fp16 值映射；用于与 current PTX gate 共享 CPU reference 口径
+# host 随机 seed -> kernel 内有限 fp16 值映射；用于与当前全 MMA gate 共享 CPU reference 口径
 python3 tools/fp16_mma_spike_cpu_ref.py --seed 0x20260413 --ulp-tol 1
+
+# 当前已支持 MMA family 的统一三方 gate：
+# 默认跑较小/较大两档随机样本；对 supported family 做 Spike / sbtsim PTX / CPU reference 三方检查
+python3 tools/custom_mma_oracle.py --stage full --sm 89
 
 # ventus_ocl_compare.py 在未显式设置 GPU_SBT_PTX 时，会自动绑定当前树的 build/sbt_ptx，
 # 避免误用 ../install/bin/sbt_ptx 的旧安装产物

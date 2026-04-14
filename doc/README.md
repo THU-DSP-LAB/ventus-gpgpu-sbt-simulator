@@ -31,7 +31,7 @@
 - `doc/mma/LOWERING_ARCHITECTURE.md`：Ventus MMA 的 active lowering 架构文档；冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型、`MmaInstInfo` / native PTX ABI descriptor contract，以及“不干扰既有 non-MMA lowering”的接入约束。当前首批 committed `row.col` MMA 子集已作为 current 行为落地；该文档继续承担 blocked/deferred/research MMA families 与剩余架构边界的 active 入口。
 - `doc/ventus-divergence-sgpr-analysis.md`：基于 `../llvm` 的参考分析，说明 Ventus LLVM 如何处理 `vbranch` / `join` 下的 SGPR/VGPR 有效性问题。
 
-口径提醒：custom 指令当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集，其中 `fp16 -> fp16` 当前支持族仅限 `m16n8k16 row.col` 与 `m16n16k16 row.col`。deferred/research MMA families、非 current `fp16 -> fp16` 组合及更宽的矩阵/架构讨论仍保留在 `active` 长期文档中，而不再由单独 active change 承载。
+口径提醒：custom 指令当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集，其中 `fp16 -> fp16` 当前支持族仅限 `m16n8k16 row.col` 与 `m16n16k16 row.col`。当前已支持 MMA family 的默认语义 gate 统一为 `Spike / sbtsim PTX / CPU reference` 三方检查，并覆盖较小/较大两档随机样本。deferred/research MMA families、非 current `fp16 -> fp16` 组合及更宽的矩阵/架构讨论仍保留在 `active` 长期文档中，而不再由单独 active change 承载。
 
 ## 2. 当前事实与 contract
 

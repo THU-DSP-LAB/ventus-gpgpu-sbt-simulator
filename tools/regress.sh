@@ -62,7 +62,7 @@ Options:
   --e2e-runner {profile|ventus-env}End-to-end runner (default: profile)
   --timeout-scale <float>          Timeout scale for end-to-end runner (default: 1.0)
   --jobs <int>                     Parallel jobs for ventus-env runner (optional)
-  --mma-stage {spike-precheck|compile-first|full}
+  --mma-stage {compile-first|full}
                                    MMA gate stage (default: full)
   --build                          Force cmake configure/build
   --no-build                       Do not build (error if required binaries missing)
@@ -381,8 +381,8 @@ main() {
     *) die "invalid --e2e-runner: ${E2E_RUNNER} (expect profile|ventus-env)" ;;
   esac
   case "${MMA_STAGE}" in
-    spike-precheck|compile-first|full) ;;
-    *) die "invalid --mma-stage: ${MMA_STAGE} (expect spike-precheck|compile-first|full)" ;;
+    compile-first|full) ;;
+    *) die "invalid --mma-stage: ${MMA_STAGE} (expect compile-first|full)" ;;
   esac
 
   setup_workdir

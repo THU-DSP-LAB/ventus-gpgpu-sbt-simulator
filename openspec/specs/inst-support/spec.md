@@ -201,18 +201,22 @@ For this landed subset, the project MUST:
 - pass compile-first validation with `ptxas -arch=sm_89`,
 - and pass semantic validation using observable outputs.
 
-For the current supported `fp16 -> fp16` families, semantic validation MUST compare observable PTX and Spike outputs against a CPU reference with an explicit fp16-tolerant comparison rule:
+For every current supported MMA family, semantic validation MUST compare observable sbtsim PTX output, observable Spike output, and a repository-managed CPU reference under documented comparison rules:
 
-- finite results use `<= 1 fp16 ULP` or an equivalent documented host-side tolerance,
+- finite `fp16` results use `<= 1 fp16 ULP` or an equivalent documented host-side tolerance,
+- finite `f32` results use documented `atol/rtol` tolerance against the same CPU reference,
 - `NaN` results compare by classification rather than payload,
 - and integer / structural metadata outputs remain exact-match only.
+
+The current MMA oracle MUST exercise at least one smaller warp-multiple random sample batch and one larger warp-multiple random sample batch per supported family, using reproducible finite-value seed generation rather than a single fixed deterministic batch only.
 
 #### Scenario: Landed MMA kernel translates and passes the oracle
 - **GIVEN** an input kernel uses only the landed current MMA subset
 - **WHEN** `sbt_ptx --require-known --sm 89` translates it and the MMA oracle gate is executed
 - **THEN** decode and PTX emission succeed
 - **AND THEN** `ptxas -arch=sm_89` succeeds
-- **AND THEN** the observable Spike and PTX outputs match the CPU reference under the documented MMA comparison rules
+- **AND THEN** the observable sbtsim PTX output and Spike output both match the CPU reference under the documented MMA comparison rules
+- **AND THEN** the gate reports both a smaller random batch and a larger random batch for that supported family
 
 ### Requirement: Unsupported or blocked MMA combinations still fail explicitly
 The current landed MMA support MUST remain limited to the first-batch subset above.

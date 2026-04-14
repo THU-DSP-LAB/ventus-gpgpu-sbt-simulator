@@ -1,42 +1,44 @@
 #!/usr/bin/env python3
 """
 背景
-- custom MMA 首批 `row.col` 子集已作为 current 行为落地；当前 gate 需要同时覆盖非-`fp16->fp16` family，
-  以及新放开的两条 `fp16 -> fp16` family。
-- 对 current supported `fp16 -> fp16` family，semantic gate 不能只看 Spike-vs-PTX 现象，还要显式对齐
-  repository-managed CPU reference 与文档化的 `fp16` 容差规则。
+- custom MMA 首批 `row.col` 子集已经成为 current 行为；当前回归需要把所有已支持 family 统一到同一条
+  `sbtsim / Spike / CPU reference` 三方语义检查路径上。
+- 旧 gate 把 non-`fp16 -> fp16` family 留在 Spike-vs-PTX 二方比较，并保留了单独的 `spike-precheck`
+  stage；这会让 current MMA oracle 强度不一致，也让 sample 多样性不足。
 
 需求/作用
-- 执行 `testcases/ocl_compare/custom_mma_kernels.cl` 的最小 MMA microtest family。
-- 支持分阶段 gate：
-  1) `spike-precheck`：跑 Spike 路径；非-`fp16->fp16` family 检查输出可观察性，`fp16 -> fp16` family 直接对齐 CPU reference；
-  2) `compile-first`：在 spike-precheck 基础上运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`；
-  3) `full`：在 compile-first 基础上增加 `PTX vs Spike vs CPU reference` 输出比较。
-- 不做静默降级：未启用的阶段会显式打印 `SKIP`；启用后任一步失败直接返回非 0。
+- 执行 `testcases/ocl_compare/custom_mma_kernels.cl` 的 MMA microtest family。
+- 支持两档 gate：
+  1) `compile-first`：materialize ELF 后运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`；
+  2) `full`：在 compile-first 基础上，对所有已支持 MMA family 执行 `Spike / sbtsim PTX / CPU reference`
+     三方一致性检查，并覆盖至少一个较小样本和一个稍大样本。
+- 不做静默降级：任何启用的步骤失败都显式报 `FAIL`；blocked family 必须显式报 `BLOCK`。
 
 用法
 - `python3 tools/custom_mma_oracle.py`
 - `python3 tools/custom_mma_oracle.py --stage compile-first --sm sm_89`
-- `python3 tools/custom_mma_oracle.py --stage full --sm 89`
+- `python3 tools/custom_mma_oracle.py --stage full --sizes 32 128 --seed 0x20260414`
 
 实现原理/处理步骤
-1) 通过 `source ../env.sh` + `VENTUS_BACKEND=spike` 跑 MMA kernel，检查输出字节规模与可观察性。
-2) 当 stage >= compile-first 时，基于同次编译产物 `object0.riscv` 运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`。
-3) 当 stage = full 时，再运行 `VENTUS_BACKEND=ptx`；非-`fp16->fp16` family 继续对比 Spike 与 PTX，`fp16 -> fp16` family 则同时对比 `Spike/PTX/CPU reference`。
+1) 为每个 kernel materialize 单-kernel OpenCL 源文件，并先通过一次 Spike 运行生成 `object0.riscv`。
+2) 对当前 kernel 运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`。
+3) 若为 supported family 且 stage=`full`，则对多组随机有限值样本分别执行：
+   - Spike 输出 vs CPU reference
+   - sbtsim PTX 输出 vs CPU reference
+4) blocked family 只验证 compile-first 阶段继续显式 blocked。
 """
 
 from __future__ import annotations
 
 import argparse
-import math
+from dataclasses import dataclass
+from pathlib import Path
 import shlex
 import struct
 import subprocess
 import tempfile
-from dataclasses import dataclass
-from pathlib import Path
 
-import fp16_mma_spike_cpu_ref as fp16_ref
+import mma_cpu_ref as mma_ref
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -46,55 +48,80 @@ DEFAULT_SBT_DECODE = REPO_ROOT / "build/sbt_decode"
 DEFAULT_SBT_PTX = REPO_ROOT / "build/sbt_ptx"
 DEFAULT_SRC = REPO_ROOT / "testcases/ocl_compare/custom_mma_kernels.cl"
 DEFAULT_ENV_SH = (REPO_ROOT / ".." / "env.sh").resolve()
-WARP_LANES = 32
 
-STAGE_SPIKE_PRECHECK = "spike-precheck"
 STAGE_COMPILE_FIRST = "compile-first"
 STAGE_FULL = "full"
-ALL_STAGES = (STAGE_SPIKE_PRECHECK, STAGE_COMPILE_FIRST, STAGE_FULL)
-def u32_to_f32(x: int) -> float:
-    return struct.unpack("<f", struct.pack("<I", x & 0xFFFFFFFF))[0]
+ALL_STAGES = (STAGE_COMPILE_FIRST, STAGE_FULL)
+DEFAULT_SIZES = (32, 128)
 
 
-def parse_u32_array(blob: bytes) -> list[int]:
-    if len(blob) % 4 != 0:
-        raise RuntimeError(f"invalid output byte size: {len(blob)}")
-    return list(struct.unpack("<" + ("I" * (len(blob) // 4)), blob))
+@dataclass(frozen=True)
+class KernelSpec:
+    name: str
+    feature_define: str
+    compile_expect: str
+    block_code: str = ""
+    supported: bool = True
 
 
-def write_u32_words(path: Path, words: list[int]) -> None:
-    path.write_bytes(struct.pack("<" + ("I" * len(words)), *words))
+@dataclass(frozen=True)
+class CaseSpec:
+    label: str
+    n: int
+    seed: int
+
+
+SUPPORTED_KERNELS = tuple(
+    KernelSpec(name=spec.kernel_name, feature_define=spec.feature_define, compile_expect="pass")
+    for spec in mma_ref.KERNEL_SPECS.values()
+)
+
+BLOCKED_KERNEL = KernelSpec(
+    name="mt_custom_mma_m16n8k16_row_row_f16_f16_f16_f16_blocked",
+    feature_define="SBT_MMA_ENABLE_FP16_FP16_NONCURRENT_BLOCKED",
+    compile_expect="blocked",
+    block_code="unsupported.mma.deferred",
+    supported=False,
+)
+
+KERNELS = (*SUPPORTED_KERNELS, BLOCKED_KERNEL)
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--exe", type=Path, default=DEFAULT_EXE)
+    ap.add_argument("--sbt-decode", type=Path, default=DEFAULT_SBT_DECODE)
+    ap.add_argument("--sbt-ptx", type=Path, default=DEFAULT_SBT_PTX)
+    ap.add_argument("--src", type=Path, default=DEFAULT_SRC)
+    ap.add_argument("--env-sh", type=Path, default=DEFAULT_ENV_SH)
+    ap.add_argument("--sm", type=str, default="89")
+    ap.add_argument("--ptxas", type=str, default="ptxas")
+    ap.add_argument("--stage", choices=ALL_STAGES, default=STAGE_FULL)
+    ap.add_argument("--sizes", nargs="+", type=int, default=list(DEFAULT_SIZES))
+    ap.add_argument("--seed", type=lambda s: int(s, 0), default=0x20260414)
+    ap.add_argument("--mma-atol", type=float, default=1e-3)
+    ap.add_argument("--mma-rtol", type=float, default=1e-3)
+    ap.add_argument("--fp16-ulp-tol", type=int, default=1)
+    ap.add_argument(
+        "--spike-compat-nested-regext",
+        action="store_true",
+        help="对本 gate 内部调用的 sbt_decode/sbt_ptx 与 PTX backend 显式打开 Spike-compatible nested regext 兼容模式",
+    )
+    return ap.parse_args()
 
 
 def normalize_sm(sm: str) -> int:
-    s = sm.strip()
-    if s.startswith("sm_"):
-        s = s[3:]
-    v = int(s)
-    if v <= 0:
+    value = sm[3:] if sm.startswith("sm_") else sm
+    sm_num = int(value)
+    if sm_num <= 0:
         raise ValueError(f"invalid sm: {sm}")
-    return v
+    return sm_num
 
 
-def approx_equal(a: float, b: float, *, atol: float, rtol: float) -> bool:
-    if a == b:
-        return True
-    if math.isinf(a) or math.isinf(b):
-        return False
-    if a != a and b != b:
-        return True
-    if a != a or b != b:
-        return False
-    diff = abs(a - b)
-    limit = atol + rtol * abs(b)
-    return diff <= limit
-
-
-def run_checked(cmd: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    p = subprocess.run(["bash", "-lc", cmd], cwd=str(cwd), text=True, capture_output=True)
-    if p.returncode != 0:
-        raise RuntimeError(f"command failed rc={p.returncode}\ncmd: {cmd}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}")
-    return p
+def run_checked(cmd: str, cwd: Path) -> None:
+    proc = subprocess.run(["bash", "-lc", cmd], cwd=str(cwd), text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"command failed rc={proc.returncode}\ncmd: {cmd}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
 
 
 def maybe_prefix_nested_regext_env(cmd: str, enabled: bool) -> str:
@@ -103,62 +130,20 @@ def maybe_prefix_nested_regext_env(cmd: str, enabled: bool) -> str:
     return f"SBT_COMPAT_SPIKE_NESTED_REGEXT=1 {cmd}"
 
 
-@dataclass(frozen=True)
-class KernelSpec:
-    name: str
-    mode: str
-    compile_expect: str
-    block_code: str = ""
-    source_define: str = ""
-    fp16_shape: str = ""
-
-
-KERNELS: list[KernelSpec] = [
-    KernelSpec("mt_custom_mma_m16n8k16_row_col_f32_f16_f16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_F16_M16N8K16"),
-    KernelSpec("mt_custom_mma_m16n8k16_row_col_f32_bf16_bf16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_BF16_M16N8K16"),
-    KernelSpec("mt_custom_mma_m16n8k8_row_col_f32_tf32_tf32_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_TF32_M16N8K8"),
-    KernelSpec("mt_custom_mma_m16n16k16_row_col_f32_f16_f16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_F16_M16N16K16"),
-    KernelSpec("mt_custom_mma_m16n16k16_row_col_f32_bf16_bf16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_BF16_M16N16K16"),
-    KernelSpec("mt_custom_mma_m16n16k8_row_col_f32_tf32_tf32_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_TF32_M16N16K8"),
-    KernelSpec(
-        "mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16",
-        "fp16_cpu_ref",
-        "pass",
-        "",
-        "SBT_MMA_ENABLE_FP16_FP16_M16N8K16",
-        fp16_ref.SHAPE_M16N8K16,
-    ),
-    KernelSpec(
-        "mt_custom_mma_m16n16k16_row_col_f16_f16_f16_f16",
-        "fp16_cpu_ref",
-        "pass",
-        "",
-        "SBT_MMA_ENABLE_FP16_FP16_M16N16K16",
-        fp16_ref.SHAPE_M16N16K16,
-    ),
-    KernelSpec(
-        "mt_custom_mma_m16n8k16_row_row_f16_f16_f16_f16_blocked",
-        "u32_exact",
-        "blocked",
-        "unsupported.mma.deferred",
-        "SBT_MMA_ENABLE_FP16_FP16_NONCURRENT_BLOCKED",
-    ),
-]
-
-
-def build_input_words(n: int) -> list[int]:
-    out: list[int] = []
-    for gid in range(n):
-        out.append(((gid * 2654435761) ^ 0x6A09E667) & 0xFFFFFFFF)
-    return out
-
-
 def materialize_kernel_source(base_src: Path, dst_src: Path, define_name: str) -> Path:
-    if not define_name:
-        return base_src
     text = base_src.read_text(encoding="utf-8")
     dst_src.write_text(f"#define {define_name} 1\n{text}", encoding="utf-8")
     return dst_src
+
+
+def write_u32_words(path: Path, words: list[int]) -> None:
+    path.write_bytes(struct.pack("<" + ("I" * len(words)), *words))
+
+
+def parse_u32_array(blob: bytes) -> list[int]:
+    if len(blob) % 4 != 0:
+        raise RuntimeError(f"invalid output byte size: {len(blob)}")
+    return list(struct.unpack("<" + ("I" * (len(blob) // 4)), blob))
 
 
 def run_backend(
@@ -173,9 +158,9 @@ def run_backend(
     n: int,
     out_path: Path,
     sm_num: int,
-    in_path: Path | None,
+    in_path: Path,
     compat_nested_regext: bool,
-) -> None:
+) -> list[int]:
     env_parts = [f"VENTUS_BACKEND={backend}"]
     if backend == "ptx":
         env_parts.append(f"GPU_SBT_PTX={shlex.quote(str(sbt_ptx))}")
@@ -188,114 +173,206 @@ def run_backend(
         + " "
         + f"{shlex.quote(str(exe))} --src {shlex.quote(str(src))} "
         + f"--kernel {shlex.quote(kernel)} --n {n} "
-        + (f"--in {shlex.quote(str(in_path))} " if in_path is not None else "")
-        + f"--out {shlex.quote(str(out_path))}"
+        + f"--in {shlex.quote(str(in_path))} --out {shlex.quote(str(out_path))}"
     )
     run_checked(cmd, workdir)
+    return parse_u32_array(out_path.read_bytes())
 
 
-def check_spike_observable(name: str, words: list[int]) -> None:
-    if not words:
-        raise RuntimeError(f"{name}: empty output")
-    if all(v == 0 for v in words):
-        raise RuntimeError(f"{name}: output is all zeros, observable contract is suspicious")
-    uniq = len(set(words))
-    if uniq < 2:
-        raise RuntimeError(f"{name}: output has no variance (unique={uniq})")
+def run_compile_first(
+    *,
+    sbt_decode: Path,
+    sbt_ptx: Path,
+    ptxas: str,
+    workdir: Path,
+    kernel_name: str,
+    sm_num: int,
+    compat_nested_regext: bool,
+) -> None:
+    elf = workdir / "object0.riscv"
+    if not elf.exists():
+        raise RuntimeError(f"{kernel_name}: missing generated ELF at {elf}")
+
+    decode_cmd = (
+        f"{shlex.quote(str(sbt_decode))} decode {shlex.quote(str(elf))} "
+        f"--func {shlex.quote(kernel_name)} --require-known >/dev/null"
+    )
+    emit_cmd = (
+        f"{shlex.quote(str(sbt_ptx))} {shlex.quote(str(elf))} "
+        f"--func {shlex.quote(kernel_name)} --require-known --sm {sm_num} "
+        f"--out {shlex.quote(str(workdir / (kernel_name + '.ptx')))}"
+    )
+    ptxas_cmd = (
+        f"{shlex.quote(ptxas)} -arch=sm_{sm_num} "
+        f"{shlex.quote(str(workdir / (kernel_name + '.ptx')))} "
+        f"-o {shlex.quote(str(workdir / (kernel_name + '.cubin')))}"
+    )
+    run_checked(maybe_prefix_nested_regext_env(decode_cmd, compat_nested_regext), workdir)
+    run_checked(maybe_prefix_nested_regext_env(emit_cmd, compat_nested_regext), workdir)
+    run_checked(ptxas_cmd, workdir)
 
 
-def compare_f32_bits_tol(name: str, got: list[int], exp: list[int], atol: float, rtol: float) -> None:
-    if len(got) != len(exp):
-        raise RuntimeError(f"{name}: size mismatch got={len(got)} expected={len(exp)}")
-    for i, (g, e) in enumerate(zip(got, exp)):
-        gf = u32_to_f32(g)
-        ef = u32_to_f32(e)
-        if not approx_equal(gf, ef, atol=atol, rtol=rtol):
-            raise RuntimeError(f"{name}: mismatch i={i} got={gf} expected={ef} atol={atol} rtol={rtol}")
-
-
-def compare_u32_exact(name: str, got: list[int], exp: list[int]) -> None:
-    if len(got) != len(exp):
-        raise RuntimeError(f"{name}: size mismatch got={len(got)} expected={len(exp)}")
-    for i, (g, e) in enumerate(zip(got, exp)):
-        if g != e:
-            raise RuntimeError(f"{name}: mismatch i={i} got=0x{g:08x} expected=0x{e:08x}")
-
-
-def compare_fp16_words(name: str, got: list[int], exp: list[int], ulp_tol: int) -> str:
-    nan_pairs, finite_pairs, finite_pass, max_abs_err, max_ulp_err, failures = fp16_ref.compare_words(got, exp, ulp_tol)
-    if failures:
-        raise RuntimeError(
-            f"{name}: fp16 mismatch_count={len(failures)} first={failures[0]} "
-            f"policy=NaN classify-equal; finite<={ulp_tol}ULP"
+def validate_sizes(stage: str, sizes: list[int]) -> list[int]:
+    if not sizes:
+        raise SystemExit("at least one --sizes entry is required")
+    normalized = sorted(set(sizes))
+    for n in normalized:
+        if n < mma_ref.WARP_LANES:
+            raise SystemExit(f"size must be >= {mma_ref.WARP_LANES} for warp-level MMA kernels (got {n})")
+        if n % mma_ref.WARP_LANES != 0:
+            raise SystemExit(f"size must be a multiple of {mma_ref.WARP_LANES} for warp-scoped MMA validation (got {n})")
+    if stage == STAGE_FULL and len(normalized) < 2:
+        raise SystemExit(
+            "full MMA validation requires at least two distinct --sizes values "
+            "(one smaller batch and one larger batch)"
         )
-    return (
-        f"nan_pairs={nan_pairs} finite_pairs={finite_pairs} finite_pass={finite_pass} "
-        f"max_abs_err={max_abs_err} max_ulp_err={max_ulp_err}"
-    )
+    return normalized
 
 
-def stage_requires_compile_first(stage: str) -> bool:
-    return stage in (STAGE_COMPILE_FIRST, STAGE_FULL)
+def build_cases(sizes: list[int], base_seed: int) -> list[CaseSpec]:
+    labels = []
+    for idx, n in enumerate(sizes):
+        label = "small" if idx == 0 else "large" if idx == len(sizes) - 1 else f"case{idx + 1}"
+        case_seed = (base_seed ^ ((idx + 1) * 0x9E3779B1) ^ (n << 12)) & 0xFFFFFFFF
+        labels.append(CaseSpec(label=label, n=n, seed=case_seed))
+    return labels
 
 
-def stage_requires_ptx_compare(stage: str) -> bool:
-    return stage == STAGE_FULL
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--exe", type=Path, default=DEFAULT_EXE)
-    ap.add_argument("--sbt-decode", type=Path, default=DEFAULT_SBT_DECODE)
-    ap.add_argument("--sbt-ptx", type=Path, default=DEFAULT_SBT_PTX)
-    ap.add_argument("--src", type=Path, default=DEFAULT_SRC)
-    ap.add_argument("--env-sh", type=Path, default=DEFAULT_ENV_SH)
-    ap.add_argument("--n", type=int, default=64)
-    ap.add_argument("--sm", type=str, default="89")
-    ap.add_argument("--ptxas", type=str, default="ptxas")
-    ap.add_argument("--mma-atol", type=float, default=1e-3)
-    ap.add_argument("--mma-rtol", type=float, default=1e-3)
-    ap.add_argument("--fp16-ulp-tol", type=int, default=1)
-    ap.add_argument("--stage", choices=ALL_STAGES, default=STAGE_SPIKE_PRECHECK)
-    ap.add_argument(
-        "--spike-compat-nested-regext",
-        action="store_true",
-        help="对本 gate 内部调用的 sbt_decode/sbt_ptx 与 PTX backend 显式打开 Spike-compatible nested regext 兼容模式",
-    )
-    args = ap.parse_args()
-
-    if args.n < WARP_LANES:
-        raise SystemExit(f"--n must be >= {WARP_LANES} for warp-level MMA kernels (got {args.n})")
-    if args.n % WARP_LANES != 0:
-        raise SystemExit(f"--n must be a multiple of {WARP_LANES} for warp-scoped MMA validation (got {args.n})")
-
+def ensure_required_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path, Path]:
     exe = args.exe.resolve()
     sbt_decode = args.sbt_decode.resolve()
     sbt_ptx = args.sbt_ptx.resolve()
     src = args.src.resolve()
     env_sh = args.env_sh.resolve()
+    for path in (exe, sbt_decode, sbt_ptx, src, env_sh):
+        if not path.exists():
+            raise SystemExit(f"missing required path: {path}")
+    check = subprocess.run(["bash", "-lc", f"command -v {shlex.quote(args.ptxas)} >/dev/null 2>&1"], check=False)
+    if check.returncode != 0:
+        raise SystemExit(f"missing command: {args.ptxas}")
+    return exe, sbt_decode, sbt_ptx, src, env_sh
+
+
+def bootstrap_spike_case(
+    *,
+    kernel_name: str,
+    case: CaseSpec,
+    exe: Path,
+    sbt_ptx: Path,
+    src_path: Path,
+    env_sh: Path,
+    workdir: Path,
+    sm_num: int,
+    compat_nested_regext: bool,
+) -> list[int]:
+    input_words = mma_ref.build_seed_words(case.n, case.seed)
+    input_path = workdir / f"{kernel_name}.{case.label}.bootstrap.in.bin"
+    output_path = workdir / f"{kernel_name}.{case.label}.bootstrap.spike.bin"
+    write_u32_words(input_path, input_words)
+    return run_backend(
+        backend="spike",
+        exe=exe,
+        sbt_ptx=sbt_ptx,
+        src=src_path,
+        env_sh=env_sh,
+        workdir=workdir,
+        kernel=kernel_name,
+        n=case.n,
+        out_path=output_path,
+        sm_num=sm_num,
+        in_path=input_path,
+        compat_nested_regext=compat_nested_regext,
+    )
+
+
+def run_full_case(
+    *,
+    kernel: KernelSpec,
+    case: CaseSpec,
+    exe: Path,
+    sbt_ptx: Path,
+    src_path: Path,
+    env_sh: Path,
+    workdir: Path,
+    sm_num: int,
+    compat_nested_regext: bool,
+    fp16_ulp_tol: int,
+    f32_atol: float,
+    f32_rtol: float,
+) -> None:
+    input_words = mma_ref.build_seed_words(case.n, case.seed)
+    expected_words = mma_ref.compute_cpu_reference(input_words, kernel.name)
+    input_path = workdir / f"{kernel.name}.{case.label}.in.bin"
+    spike_path = workdir / f"{kernel.name}.{case.label}.spike.bin"
+    ptx_path = workdir / f"{kernel.name}.{case.label}.ptx.bin"
+    write_u32_words(input_path, input_words)
+
+    spike_words = run_backend(
+        backend="spike",
+        exe=exe,
+        sbt_ptx=sbt_ptx,
+        src=src_path,
+        env_sh=env_sh,
+        workdir=workdir,
+        kernel=kernel.name,
+        n=case.n,
+        out_path=spike_path,
+        sm_num=sm_num,
+        in_path=input_path,
+        compat_nested_regext=compat_nested_regext,
+    )
+    spike_stats = mma_ref.compare_outputs(
+        spike_words,
+        expected_words,
+        kernel.name,
+        fp16_ulp_tol=fp16_ulp_tol,
+        f32_atol=f32_atol,
+        f32_rtol=f32_rtol,
+    )
+    if spike_stats.failures:
+        raise RuntimeError(
+            f"Spike-vs-CPU-ref case={case.label} mismatch_count={len(spike_stats.failures)} first={spike_stats.failures[0]}"
+        )
+    print(f"PASS spike-vs-cpu-ref kernel={kernel.name} case={case.label} n={case.n} {mma_ref.format_compare_stats(spike_stats)}")
+
+    ptx_words = run_backend(
+        backend="ptx",
+        exe=exe,
+        sbt_ptx=sbt_ptx,
+        src=src_path,
+        env_sh=env_sh,
+        workdir=workdir,
+        kernel=kernel.name,
+        n=case.n,
+        out_path=ptx_path,
+        sm_num=sm_num,
+        in_path=input_path,
+        compat_nested_regext=compat_nested_regext,
+    )
+    ptx_stats = mma_ref.compare_outputs(
+        ptx_words,
+        expected_words,
+        kernel.name,
+        fp16_ulp_tol=fp16_ulp_tol,
+        f32_atol=f32_atol,
+        f32_rtol=f32_rtol,
+    )
+    if ptx_stats.failures:
+        raise RuntimeError(
+            f"sbtsim-vs-CPU-ref case={case.label} mismatch_count={len(ptx_stats.failures)} first={ptx_stats.failures[0]}"
+        )
+    print(f"PASS sbtsim-vs-cpu-ref kernel={kernel.name} case={case.label} n={case.n} {mma_ref.format_compare_stats(ptx_stats)}")
+
+
+def main() -> int:
+    args = parse_args()
+    sizes = validate_sizes(args.stage, args.sizes)
+    cases = build_cases(sizes, args.seed)
+    exe, sbt_decode, sbt_ptx, src, env_sh = ensure_required_paths(args)
     sm_num = normalize_sm(args.sm)
 
-    required_paths = [exe, src, env_sh]
-    if stage_requires_compile_first(args.stage):
-        required_paths.extend([sbt_decode, sbt_ptx])
-    for p in required_paths:
-        if not p.exists():
-            raise SystemExit(f"missing required path: {p}")
+    print(f"[INFO] MMA oracle stage={args.stage} sm=sm_{sm_num} sizes={','.join(str(case.n) for case in cases)} seed=0x{args.seed:08x}")
 
-    if stage_requires_compile_first(args.stage) or stage_requires_ptx_compare(args.stage):
-        p = subprocess.run(["bash", "-lc", f"command -v {shlex.quote(args.ptxas)} >/dev/null 2>&1"], check=False)
-        if p.returncode != 0:
-            raise SystemExit(f"missing command: {args.ptxas}")
-
-    print(f"[INFO] MMA oracle stage={args.stage} sm=sm_{sm_num} n={args.n}")
-    if not stage_requires_compile_first(args.stage):
-        print("[SKIP] compile-first stage disabled (use --stage compile-first/full)")
-    if not stage_requires_ptx_compare(args.stage):
-        print("[SKIP] Spike-vs-PTX compare stage disabled (use --stage full)")
-
-    spike_pass = 0
-    spike_block = 0
     compile_pass = 0
     compile_block = 0
     full_pass = 0
@@ -304,166 +381,87 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="custom_mma_oracle_") as td:
         workdir = Path(td)
-        input_words = build_input_words(args.n)
+        bootstrap_case = cases[0]
 
-        for spec in KERNELS:
-            out_spike = workdir / f"{spec.name}.spike.bin"
-            out_ptx = workdir / f"{spec.name}.ptx.bin"
-            ptx_path = workdir / f"{spec.name}.ptx"
-            cubin_path = workdir / f"{spec.name}.cubin"
-            input_path = workdir / f"{spec.name}.in.bin"
-            src_path = materialize_kernel_source(src, workdir / f"{spec.name}.cl", spec.source_define)
-            write_u32_words(input_path, input_words)
-
-            blocked_compile = False
-            blocked_by_precheck = False
-            spike_words: list[int] = []
-            fp16_expected_words = (
-                fp16_ref.compute_cpu_reference(input_words, shape=spec.fp16_shape) if spec.mode == "fp16_cpu_ref" else []
-            )
-
+        for kernel in KERNELS:
+            src_path = materialize_kernel_source(src, workdir / f"{kernel.name}.cl", kernel.feature_define)
             try:
-                run_backend(
-                    backend="spike",
+                bootstrap_spike_case(
+                    kernel_name=kernel.name,
+                    case=bootstrap_case,
                     exe=exe,
                     sbt_ptx=sbt_ptx,
-                    src=src_path,
+                    src_path=src_path,
                     env_sh=env_sh,
                     workdir=workdir,
-                    kernel=spec.name,
-                    n=args.n,
-                    out_path=out_spike,
                     sm_num=sm_num,
-                    in_path=input_path,
                     compat_nested_regext=args.spike_compat_nested_regext,
                 )
-                spike_words = parse_u32_array(out_spike.read_bytes())
-                if spec.mode == "fp16_cpu_ref":
-                    details = compare_fp16_words(f"{spec.name}: spike-vs-cpu-ref", spike_words, fp16_expected_words, args.fp16_ulp_tol)
-                    print(f"PASS spike-vs-cpu-ref kernel={spec.name} {details}")
-                else:
-                    check_spike_observable(spec.name, spike_words)
-                    print(f"PASS spike observable kernel={spec.name} words={len(spike_words)}")
-                spike_pass += 1
             except Exception as ex:  # pylint: disable=broad-except
-                if spec.compile_expect == "blocked":
-                    blocked_compile = True
-                    if spec.mode == "fp16_cpu_ref":
-                        failures.append(f"{spec.name}: spike-vs-cpu-ref failed: {ex}")
-                        print(f"FAIL spike-vs-cpu-ref kernel={spec.name}: {ex}")
-                        continue
-                    blocked_by_precheck = True
-                    spike_block += 1
-                    print(f"BLOCK spike observable kernel={spec.name} reason=blocked-path {ex}")
-                else:
-                    label = "spike-vs-cpu-ref" if spec.mode == "fp16_cpu_ref" else "spike observable"
-                    failures.append(f"{spec.name}: spike-precheck failed: {ex}")
-                    print(f"FAIL {label} kernel={spec.name}: {ex}")
-                    continue
-
-            if blocked_by_precheck:
-                if stage_requires_compile_first(args.stage):
-                    compile_block += 1
-                    print(f"BLOCK compile-first kernel={spec.name} reason=spike-precheck-blocked")
-                if stage_requires_ptx_compare(args.stage):
-                    full_block_skip += 1
-                    print(f"SKIP spike-vs-ptx kernel={spec.name} reason=spike-precheck-blocked")
+                failures.append(f"{kernel.name}: bootstrap spike run failed: {ex}")
+                print(f"FAIL bootstrap kernel={kernel.name}: {ex}")
                 continue
 
-            if stage_requires_compile_first(args.stage):
-                try:
-                    elf = workdir / "object0.riscv"
-                    if not elf.exists():
-                        raise RuntimeError(f"{spec.name}: missing generated ELF at {elf}")
-
-                    decode_cmd = (
-                        f"{shlex.quote(str(sbt_decode))} decode {shlex.quote(str(elf))} "
-                        f"--func {shlex.quote(spec.name)} --require-known >/dev/null"
-                    )
-                    decode_cmd = maybe_prefix_nested_regext_env(decode_cmd, args.spike_compat_nested_regext)
-                    run_checked(decode_cmd, workdir)
-
-                    emit_cmd = (
-                        f"{shlex.quote(str(sbt_ptx))} {shlex.quote(str(elf))} "
-                        f"--func {shlex.quote(spec.name)} --require-known --sm {sm_num} --out {shlex.quote(str(ptx_path))}"
-                    )
-                    emit_cmd = maybe_prefix_nested_regext_env(emit_cmd, args.spike_compat_nested_regext)
-                    run_checked(emit_cmd, workdir)
-
-                    ptxas_cmd = (
-                        f"{shlex.quote(args.ptxas)} -arch=sm_{sm_num} "
-                        f"{shlex.quote(str(ptx_path))} -o {shlex.quote(str(cubin_path))}"
-                    )
-                    run_checked(ptxas_cmd, workdir)
-                except Exception as ex:  # pylint: disable=broad-except
-                    msg = str(ex)
-                    if spec.compile_expect == "blocked" and spec.block_code and spec.block_code in msg:
-                        blocked_compile = True
-                        compile_block += 1
-                        print(f"BLOCK compile-first kernel={spec.name} code={spec.block_code}")
-                    else:
-                        failures.append(f"{spec.name}: compile-first failed: {msg}")
-                        print(f"FAIL compile-first kernel={spec.name}: {msg}")
-                        continue
-                else:
-                    if spec.compile_expect == "blocked":
-                        failures.append(f"{spec.name}: expected blocked but compile-first succeeded")
-                        print(f"FAIL compile-first kernel={spec.name}: expected blocked but passed")
-                        continue
-                    compile_pass += 1
-                    print(f"PASS compile-first kernel={spec.name} sm=sm_{sm_num}")
-
-            if stage_requires_ptx_compare(args.stage):
-                if blocked_compile:
-                    full_block_skip += 1
-                    print(f"SKIP spike-vs-ptx kernel={spec.name} reason=compile-first-blocked")
+            try:
+                run_compile_first(
+                    sbt_decode=sbt_decode,
+                    sbt_ptx=sbt_ptx,
+                    ptxas=args.ptxas,
+                    workdir=workdir,
+                    kernel_name=kernel.name,
+                    sm_num=sm_num,
+                    compat_nested_regext=args.spike_compat_nested_regext,
+                )
+            except Exception as ex:  # pylint: disable=broad-except
+                message = str(ex)
+                if kernel.compile_expect == "blocked" and kernel.block_code and kernel.block_code in message:
+                    compile_block += 1
+                    print(f"BLOCK compile-first kernel={kernel.name} code={kernel.block_code}")
+                    if args.stage == STAGE_FULL:
+                        full_block_skip += 1
+                        print(f"SKIP three-way semantic kernel={kernel.name} reason=compile-first-blocked")
                     continue
-                try:
-                    run_backend(
-                        backend="ptx",
+                failures.append(f"{kernel.name}: compile-first failed: {message}")
+                print(f"FAIL compile-first kernel={kernel.name}: {message}")
+                continue
+
+            if kernel.compile_expect == "blocked":
+                failures.append(f"{kernel.name}: expected blocked but compile-first succeeded")
+                print(f"FAIL compile-first kernel={kernel.name}: expected blocked but passed")
+                continue
+
+            compile_pass += 1
+            print(f"PASS compile-first kernel={kernel.name} sm=sm_{sm_num}")
+
+            if args.stage != STAGE_FULL:
+                continue
+
+            try:
+                for case in cases:
+                    run_full_case(
+                        kernel=kernel,
+                        case=case,
                         exe=exe,
                         sbt_ptx=sbt_ptx,
-                        src=src_path,
+                        src_path=src_path,
                         env_sh=env_sh,
                         workdir=workdir,
-                        kernel=spec.name,
-                        n=args.n,
-                        out_path=out_ptx,
                         sm_num=sm_num,
-                        in_path=input_path,
                         compat_nested_regext=args.spike_compat_nested_regext,
+                        fp16_ulp_tol=args.fp16_ulp_tol,
+                        f32_atol=args.mma_atol,
+                        f32_rtol=args.mma_rtol,
                     )
-                    ptx_words = parse_u32_array(out_ptx.read_bytes())
-                    if spec.mode == "f32_tol":
-                        compare_f32_bits_tol(spec.name, ptx_words, spike_words, atol=args.mma_atol, rtol=args.mma_rtol)
-                        print(f"PASS spike-vs-ptx kernel={spec.name} mode={spec.mode}")
-                    elif spec.mode == "u32_exact":
-                        compare_u32_exact(spec.name, ptx_words, spike_words)
-                        print(f"PASS spike-vs-ptx kernel={spec.name} mode={spec.mode}")
-                    elif spec.mode == "fp16_cpu_ref":
-                        cpu_details = compare_fp16_words(
-                            f"{spec.name}: ptx-vs-cpu-ref", ptx_words, fp16_expected_words, args.fp16_ulp_tol
-                        )
-                        spike_details = compare_fp16_words(
-                            f"{spec.name}: ptx-vs-spike", ptx_words, spike_words, args.fp16_ulp_tol
-                        )
-                        print(
-                            f"PASS ptx-vs-spike-vs-cpu-ref kernel={spec.name} "
-                            f"cpu[{cpu_details}] spike[{spike_details}]"
-                        )
-                    else:
-                        raise RuntimeError(f"unknown compare mode: {spec.mode}")
                     full_pass += 1
-                except Exception as ex:  # pylint: disable=broad-except
-                    failures.append(f"{spec.name}: full compare failed: {ex}")
-                    label = "ptx-vs-spike-vs-cpu-ref" if spec.mode == "fp16_cpu_ref" else "spike-vs-ptx"
-                    print(f"FAIL {label} kernel={spec.name}: {ex}")
+            except Exception as ex:  # pylint: disable=broad-except
+                failures.append(f"{kernel.name}: full compare failed: {ex}")
+                print(f"FAIL three-way semantic kernel={kernel.name}: {ex}")
 
+    expected_supported_cases = len(SUPPORTED_KERNELS) * len(cases) if args.stage == STAGE_FULL else 0
     print(
         "[SUMMARY] "
-        f"spike_pass={spike_pass}/{len(KERNELS)} spike_block={spike_block} "
-        f"compile_pass={compile_pass} compile_block={compile_block} "
-        f"full_pass={full_pass} full_block_skip={full_block_skip} "
+        f"compile_pass={compile_pass}/{len(SUPPORTED_KERNELS)} compile_block={compile_block} "
+        f"full_pass={full_pass}/{expected_supported_cases} full_block_skip={full_block_skip} "
         f"failures={len(failures)}"
     )
     if failures:

@@ -164,20 +164,24 @@
 
 - `tools/custom_mma_oracle.py`
   - MMA 专用 gate：对 `testcases/ocl_compare/custom_mma_kernels.cl` 里的 microtests 逐个执行：
-    - `VENTUS_BACKEND=spike` 的可观察性预检；
+    - 先通过一次 Spike 运行 materialize 同次编译产物 `object0.riscv`；
     - 同一 ELF 的 `sbt_decode --require-known`；
     - 同一 ELF 的 `sbt_ptx --require-known` + `ptxas` compile-first；
-    - 同一 kernel 的 Spike-vs-PTX 语义对照。
+    - 对当前 supported family 的同一 kernel 做 `Spike / sbtsim PTX / CPU reference` 三方语义对照。
   - current：这条 OpenCL buffer compare 路径就是当前 landed MMA subset 的 canonical semantic oracle。
   - current：helper carrier 采用 branch-free 的有限值查表，刻意避免把与 MMA 无关的 `switch -> vbranch/join` helper lowering 差异误报成 MMA 语义失败。
   - current：gate 会先按目标 feature macro materialize 单-kernel 源文件，避免 Ventus PoCL 在多-kernel OpenCL 源上把首个 kernel 错当成 `--init` 入口。
-  - current：已支持的 `fp16 -> fp16` family（`m16n8k16` / `m16n16k16` `row.col`）走 `Spike vs PTX vs CPU reference` 三方 gate；其余 non-current `fp16 -> fp16` family 继续显式 blocked。
+  - current：所有已支持 MMA family 都走 `Spike vs sbtsim PTX vs CPU reference` 三方 gate；默认覆盖一组较小随机样本和一组较大随机样本。其余 non-current MMA family 继续显式 blocked。
+
+- `tools/mma_cpu_ref.py`
+  - current MMA 共享 CPU reference helper，覆盖当前已支持的 8 条 MMA family。
+  - 负责 host 侧随机 seed 生成、kernel 对应的 `A/B/C` 载荷重建、CPU 参考输出计算，以及 `fp16` / `f32` 容差比较统计。
 
 - `tools/fp16_mma_spike_cpu_ref.py`
   - `fp16 -> fp16` 的 `m16n8k16 row.col` / `m16n16k16 row.col` Spike-vs-CPU-reference 独立测例；当前用于与 MMA PTX gate 共享 repository-managed CPU reference。
   - 输入策略：host 侧生成随机 `u32` seed；kernel 再把 seed 映射到有限 `fp16` 值集合，保持输入随机性同时避免 NaN/Inf payload 噪声。
   - 比较规则：`NaN` 按分类相等，非 `NaN` half lane 按 `fp16` ULP 容差比较，默认要求 `<= 1 ULP`。
-  - current：这是 current `fp16 -> fp16` MMA gate 的独立 CPU reference / Spike 交叉验证资产，不直接替代 PTX semantic gate。
+  - current：这是 current 全 MMA CPU reference helper 在 `fp16 -> fp16` 两条 family 上的独立 Spike 交叉验证资产，不直接替代统一三方 semantic gate。
 
 - `tools/custom_decode_test.cpp`
   - current non-MMA decode gate，覆盖 `shuffle/vcvt/packed/SFU` 的 repository-local decode 元数据与污染防护。
