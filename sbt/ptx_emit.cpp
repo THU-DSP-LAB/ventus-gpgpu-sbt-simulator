@@ -50,6 +50,32 @@ static constexpr uint32_t kMachineWarpsPerBlockOffset = 16u;
 static constexpr std::array<int, 4> kMmaATupleRegIds{{3, 4, 5, 6}};
 static constexpr std::array<int, 2> kMmaBTupleRegIds{{7, 8}};
 
+enum class VirtualTempKind : size_t {
+  B32 = 0,
+  B64,
+  Pred,
+  F32,
+  B16,
+  U8,
+  U16,
+  Count,
+};
+
+struct VirtualTempSpec final {
+  const char *ptx_type;
+  const char *name_prefix;
+};
+
+static constexpr std::array<VirtualTempSpec, static_cast<size_t>(VirtualTempKind::Count)> kVirtualTempSpecs{{
+    {".b32", "%tmp_b32_"},
+    {".b64", "%tmp_b64_"},
+    {".pred", "%tmp_p_"},
+    {".f32", "%tmp_f32_"},
+    {".b16", "%tmp_b16_"},
+    {".u8", "%tmp_u8_"},
+    {".u16", "%tmp_u16_"},
+}};
+
 static bool is_scalar_branch(std::string_view name) {
   return name == "beq" || name == "bne" || name == "blt" || name == "bge" || name == "bltu" || name == "bgeu";
 }
@@ -181,23 +207,27 @@ struct EmitCtx final {
   const bool is_entry;
 
   std::ostringstream out;
+  std::ostringstream body;
   int tmp_label_id = 0;
   bool emitted_fp_dyn_note = false;
   bool control_protocol_ready = false;
+  std::array<uint32_t, static_cast<size_t>(VirtualTempKind::Count)> virtual_temp_counts{};
 
   EmitCtx(const sbt::cfg::FunctionCfg &cfg_, const std::unordered_map<uint32_t, std::string> &sym_by_addr_,
           const std::string &func_name_, const std::string &ptx_name_, const Options &opt_, const ModuleInfo &mod_, bool is_entry_)
       : cfg(cfg_), sym_by_addr(sym_by_addr_), func_name(func_name_), ptx_name(ptx_name_), opt(opt_), mod(mod_), is_entry(is_entry_) {}
 
-  // Register assignment conventions (must match PTX declarations).
+  // Fixed register assignment conventions (must match PTX declarations).
+  // Only these slots are part of the current machine/runtime/control contract.
+  // Lowering scratch must use uniquely allocated %tmp* virtual registers.
   // %r0: laneid
   // %r1: use-point activemask scratch
   // %r2: persistent leader_lane
   // %p0: is_leader
   // %rd0: global_base (global)
-  // %rd1: reserved scratch
+  // %rd1: reserved legacy slot (kept stable, not scratch-owned)
   // %rd2: shmem_base (shared)
-  // %rd3: reserved (legacy wctx_ptr slot)
+  // %rd3: reserved legacy slot (kept stable, not scratch-owned)
   // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
   // %r26: pds_bitmap_base_vaddr (u32 Ventus numeric address)
   // %r27: pds_pool_num_blocks (u32)
@@ -220,9 +250,59 @@ struct EmitCtx final {
     return it->second;
   }
 
-  void emit_line(const std::string &s) { out << "  " << s << "\n"; }
-  void emit_raw(const std::string &s) { out << s; }
-  void emit_label(const std::string &name) { out << name << ":\n"; }
+  std::string alloc_virtual_temp(VirtualTempKind kind) {
+    const size_t idx = static_cast<size_t>(kind);
+    return std::string(kVirtualTempSpecs[idx].name_prefix) + std::to_string(virtual_temp_counts[idx]++);
+  }
+
+  std::string tmp_b32() { return alloc_virtual_temp(VirtualTempKind::B32); }
+  std::string tmp_b64() { return alloc_virtual_temp(VirtualTempKind::B64); }
+  std::string tmp_pred() { return alloc_virtual_temp(VirtualTempKind::Pred); }
+  std::string tmp_f32() { return alloc_virtual_temp(VirtualTempKind::F32); }
+  std::string tmp_b16() { return alloc_virtual_temp(VirtualTempKind::B16); }
+  std::string tmp_u8() { return alloc_virtual_temp(VirtualTempKind::U8); }
+  std::string tmp_u16() { return alloc_virtual_temp(VirtualTempKind::U16); }
+
+  void emit_line(const std::string &s) { body << "  " << s << "\n"; }
+  void emit_raw(const std::string &s) { body << s; }
+  void emit_label(const std::string &name) { body << name << ":\n"; }
+
+  void emit_fixed_reg_decls() {
+    out << "  .reg .b32 %r<32>;\n";
+    out << "  .reg .b64 %rd<32>;\n";
+    out << "  .reg .pred %p<16>;\n";
+    out << "  .reg .f32 %f<16>;\n";
+    out << "  .reg .b16 %h<16>;\n";
+    out << "  .reg .u8 %ub<4>;\n";
+    out << "  .reg .u16 %uh<16>;\n";
+    out << "  .reg .b32 %x<256>;\n";
+    out << "  .reg .b32 %v<256>;\n";
+  }
+
+  void emit_virtual_temp_reg_decls() {
+    for (size_t kind = 0; kind < kVirtualTempSpecs.size(); ++kind) {
+      const auto &spec = kVirtualTempSpecs[kind];
+      for (uint32_t idx = 0; idx < virtual_temp_counts[kind]; ++idx) {
+        out << "  .reg " << spec.ptx_type << " " << spec.name_prefix << idx << ";\n";
+      }
+    }
+  }
+
+  void emit_entry_header() {
+    out << ".visible .entry " << ptx_name << "(\n";
+    out << "    .param .u64 global_base,\n";
+    out << "    .param .u32 knl_vaddr,\n";
+    out << "    .param .u32 pds_base_vaddr,\n";
+    out << "    .param .u32 pds_size_per_thread,\n";
+    out << "    .param .u32 pds_bitmap_base_vaddr,\n";
+    out << "    .param .u32 pds_pool_num_blocks\n";
+    out << ")\n{\n";
+  }
+
+  void emit_func_header() {
+    emit_helper_func_signature(out, ptx_name);
+    out << "\n{\n";
+  }
 
   void emit_read_activemask(const std::string &dst_r) { emit_line("activemask.b32 " + dst_r + ";"); }
 
@@ -240,20 +320,38 @@ struct EmitCtx final {
   }
 
   void emit_trap_if_lane_inactive(uint32_t lane) {
+    const std::string active_mask = tmp_b32();
+    const std::string lane_mask = tmp_b32();
+    const std::string inactive = tmp_pred();
     require(lane < 32u, EmitError("unsupported.fixed_lane", func_name, cfg.start, "lane>=32"));
-    emit_read_activemask(r(1));
-    emit_line("and.b32 " + r(14) + ", " + r(1) + ", " + std::to_string(1u << lane) + ";");
-    emit_line("setp.eq.u32 " + p(1) + ", " + r(14) + ", 0;");
-    emit_line("@" + p(1) + " trap;");
+    emit_read_activemask(active_mask);
+    emit_line("and.b32 " + lane_mask + ", " + active_mask + ", " + std::to_string(1u << lane) + ";");
+    emit_line("setp.eq.u32 " + inactive + ", " + lane_mask + ", 0;");
+    emit_line("@" + inactive + " trap;");
   }
 
   void emit_compute_csr_pds_u32(const std::string &dst_r, bool scalar) {
     const std::string pre = scalar ? scalar_prefix() : "";
-    emit_line(pre + "ld.shared.u32 " + r(24) + ", [__sbt_pds_wg_base];");
-    emit_line(pre + "shl.b32 " + r(25) + ", " + r(29) + ", 5;");
-    emit_line(pre + "mul.lo.u32 " + r(23) + ", " + r(10) + ", " + r(25) + ";");
-    emit_line(pre + "add.u32 " + dst_r + ", " + r(24) + ", " + r(23) + ";");
+    const std::string wg_base = tmp_b32();
+    const std::string bytes_per_wave = tmp_b32();
+    const std::string wave_offset = tmp_b32();
+    emit_line(pre + "ld.shared.u32 " + wg_base + ", [__sbt_pds_wg_base];");
+    emit_line(pre + "shl.b32 " + bytes_per_wave + ", " + r(29) + ", 5;");
+    emit_line(pre + "mul.lo.u32 " + wave_offset + ", " + r(10) + ", " + bytes_per_wave + ";");
+    emit_line(pre + "add.u32 " + dst_r + ", " + wg_base + ", " + wave_offset + ";");
   }
+
+  struct AddrMapTemps final {
+    std::string addr;
+    std::string in_shared_lo;
+    std::string in_shared_hi;
+    std::string is_shared;
+    std::string is_global;
+    std::string is_valid;
+    std::string offset_u32;
+    std::string shared_ptr;
+    std::string global_ptr;
+  };
 
   void emit_entry_pds_pool_acquire(uint32_t pc_for_err) {
     const std::string L_thread0_done = new_label("pds_acquire_t0_done");
@@ -456,11 +554,12 @@ struct EmitCtx final {
   }
 
   void emit_store_mutable_state_blob(const std::string &blob_name) {
+    const std::string zero = tmp_b32();
     // Call/ret boundaries must export a warp-consistent leader metadata value, not a stale path-local leader.
     emit_select_leader_from_active_mask();
     emit_store_param_u32(blob_name, kMutableLeaderOffset, r(2));
-    emit_line("mov.u32 " + r(31) + ", 0;");
-    emit_store_param_u32(blob_name, kMutableXOffset, r(31));
+    emit_line("mov.u32 " + zero + ", 0;");
+    emit_store_param_u32(blob_name, kMutableXOffset, zero);
     for (uint32_t i = 1; i < kNumXRegs; ++i) {
       emit_store_param_u32(blob_name, kMutableXOffset + i * kBlobWordBytes, x(static_cast<int>(i)));
     }
@@ -554,6 +653,18 @@ struct EmitCtx final {
     emit_st_x_u32_all(xreg, src_r, pc_for_err);
   }
 
+  std::string emit_ld_x_u32_all_tmp(int xreg, uint32_t pc_for_err) {
+    const std::string dst = tmp_b32();
+    emit_ld_x_u32_all(dst, xreg, pc_for_err);
+    return dst;
+  }
+
+  std::string emit_ld_x_u32_scalar_tmp(int xreg, uint32_t pc_for_err) {
+    const std::string dst = tmp_b32();
+    emit_ld_x_u32_scalar(dst, xreg, pc_for_err);
+    return dst;
+  }
+
   void emit_addr_map_and_ld_u32_scalar(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
     emit_addr_map_and_ld_u32(dst_r, addr_r, pc_for_err);
   }
@@ -584,35 +695,44 @@ struct EmitCtx final {
     emit_warp_sync();
   }
 
-  void emit_prepare_addr_mapping(const std::string &addr_r, uint32_t pc_for_err) {
+  AddrMapTemps emit_prepare_addr_mapping(const std::string &addr_r, uint32_t pc_for_err) {
     (void)pc_for_err;
+    AddrMapTemps temps{
+        .addr = tmp_b32(),
+        .in_shared_lo = tmp_pred(),
+        .in_shared_hi = tmp_pred(),
+        .is_shared = tmp_pred(),
+        .is_global = tmp_pred(),
+        .is_valid = tmp_pred(),
+        .offset_u32 = tmp_b32(),
+        .shared_ptr = tmp_b64(),
+        .global_ptr = tmp_b64(),
+    };
 
-    // Copy to a scratch register to avoid aliasing with r16 temporaries (addr_r can be %r16 in prologue).
-    emit_line("mov.u32 " + r(31) + ", " + addr_r + ";");
+    emit_line("mov.u32 " + temps.addr + ", " + addr_r + ";");
 
     // Shared addresses live in [shared_base_vaddr, global_base_vaddr); everything below shared is invalid.
-    emit_line("setp.ge.u32 " + p(1) + ", " + r(31) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("setp.lt.u32 " + p(2) + ", " + r(31) + ", " + hex_u32(opt.global_base_vaddr) + ";");
-    emit_line("and.pred " + p(3) + ", " + p(1) + ", " + p(2) + ";"); // p3 = is_shared
-    emit_line("setp.ge.u32 " + p(4) + ", " + r(31) + ", " + hex_u32(opt.global_base_vaddr) + ";"); // p4 = is_global
-    emit_line("or.pred " + p(5) + ", " + p(3) + ", " + p(4) + ";");
-    emit_line("@!" + p(5) + " trap;");
+    emit_line("setp.ge.u32 " + temps.in_shared_lo + ", " + temps.addr + ", " + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("setp.lt.u32 " + temps.in_shared_hi + ", " + temps.addr + ", " + hex_u32(opt.global_base_vaddr) + ";");
+    emit_line("and.pred " + temps.is_shared + ", " + temps.in_shared_lo + ", " + temps.in_shared_hi + ";");
+    emit_line("setp.ge.u32 " + temps.is_global + ", " + temps.addr + ", " + hex_u32(opt.global_base_vaddr) + ";");
+    emit_line("or.pred " + temps.is_valid + ", " + temps.is_shared + ", " + temps.is_global + ";");
+    emit_line("@!" + temps.is_valid + " trap;");
 
-    // shared_ptr -> rd17
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(17) + ", " + rd(4) + ", " + rd(16) + ";");
+    emit_line("add.u32 " + temps.offset_u32 + ", " + temps.addr + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + temps.shared_ptr + ", " + temps.offset_u32 + ";");
+    emit_line("add.u64 " + temps.shared_ptr + ", " + rd(4) + ", " + temps.shared_ptr + ";");
 
-    // global_ptr -> rd16
-    emit_line("add.u32 " + r(16) + ", " + r(31) + ", -" + hex_u32(opt.global_base_vaddr) + ";");
-    emit_line("cvt.u64.u32 " + rd(16) + ", " + r(16) + ";");
-    emit_line("add.u64 " + rd(16) + ", " + rd(0) + ", " + rd(16) + ";");
+    emit_line("add.u32 " + temps.offset_u32 + ", " + temps.addr + ", -" + hex_u32(opt.global_base_vaddr) + ";");
+    emit_line("cvt.u64.u32 " + temps.global_ptr + ", " + temps.offset_u32 + ";");
+    emit_line("add.u64 " + temps.global_ptr + ", " + rd(0) + ", " + temps.global_ptr + ";");
+    return temps;
   }
 
   void emit_addr_map_and_ld_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
-    emit_prepare_addr_mapping(addr_r, pc_for_err);
-    emit_line("@" + p(3) + " ld.shared.u32 " + dst_r + ", [" + rd(17) + "];");
-    emit_line("@" + p(4) + " ld.global.u32 " + dst_r + ", [" + rd(16) + "];");
+    const AddrMapTemps temps = emit_prepare_addr_mapping(addr_r, pc_for_err);
+    emit_line("@" + temps.is_shared + " ld.shared.u32 " + dst_r + ", [" + temps.shared_ptr + "];");
+    emit_line("@" + temps.is_global + " ld.global.u32 " + dst_r + ", [" + temps.global_ptr + "];");
   }
 
   void emit_addr_map_and_ld_u32_leader(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
@@ -623,9 +743,9 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_st_u32(const std::string &addr_r, const std::string &src_r, uint32_t pc_for_err) {
-    emit_prepare_addr_mapping(addr_r, pc_for_err);
-    emit_line("@" + p(3) + " st.shared.u32 [" + rd(17) + "], " + src_r + ";");
-    emit_line("@" + p(4) + " st.global.u32 [" + rd(16) + "], " + src_r + ";");
+    const AddrMapTemps temps = emit_prepare_addr_mapping(addr_r, pc_for_err);
+    emit_line("@" + temps.is_shared + " st.shared.u32 [" + temps.shared_ptr + "], " + src_r + ";");
+    emit_line("@" + temps.is_global + " st.global.u32 [" + temps.global_ptr + "], " + src_r + ";");
   }
 
   void emit_addr_map_and_st_u32_leader(const std::string &addr_r, const std::string &src_r, uint32_t pc_for_err) {
@@ -636,17 +756,19 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_ld_u8_zext_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
-    emit_prepare_addr_mapping(addr_r, pc_for_err);
-    emit_line("@" + p(3) + " ld.shared.u8 " + u8(0) + ", [" + rd(17) + "];");
-    emit_line("@" + p(4) + " ld.global.u8 " + u8(0) + ", [" + rd(16) + "];");
-    emit_line("cvt.u32.u8 " + dst_r + ", " + u8(0) + ";");
+    const AddrMapTemps temps = emit_prepare_addr_mapping(addr_r, pc_for_err);
+    const std::string byte_val = tmp_u8();
+    emit_line("@" + temps.is_shared + " ld.shared.u8 " + byte_val + ", [" + temps.shared_ptr + "];");
+    emit_line("@" + temps.is_global + " ld.global.u8 " + byte_val + ", [" + temps.global_ptr + "];");
+    emit_line("cvt.u32.u8 " + dst_r + ", " + byte_val + ";");
   }
 
   void emit_addr_map_and_ld_u16_zext_u32(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
-    emit_prepare_addr_mapping(addr_r, pc_for_err);
-    emit_line("@" + p(3) + " ld.shared.u16 " + u16(0) + ", [" + rd(17) + "];");
-    emit_line("@" + p(4) + " ld.global.u16 " + u16(0) + ", [" + rd(16) + "];");
-    emit_line("cvt.u32.u16 " + dst_r + ", " + u16(0) + ";");
+    const AddrMapTemps temps = emit_prepare_addr_mapping(addr_r, pc_for_err);
+    const std::string half_val = tmp_u16();
+    emit_line("@" + temps.is_shared + " ld.shared.u16 " + half_val + ", [" + temps.shared_ptr + "];");
+    emit_line("@" + temps.is_global + " ld.global.u16 " + half_val + ", [" + temps.global_ptr + "];");
+    emit_line("cvt.u32.u16 " + dst_r + ", " + half_val + ";");
   }
 
   void emit_addr_map_and_ld_u8_zext_u32_leader(const std::string &dst_r, const std::string &addr_r, uint32_t pc_for_err) {
@@ -664,15 +786,15 @@ struct EmitCtx final {
   }
 
   void emit_addr_map_and_st_u8(const std::string &addr_r, const std::string &src_u8, uint32_t pc_for_err) {
-    emit_prepare_addr_mapping(addr_r, pc_for_err);
-    emit_line("@" + p(3) + " st.shared.u8 [" + rd(17) + "], " + src_u8 + ";");
-    emit_line("@" + p(4) + " st.global.u8 [" + rd(16) + "], " + src_u8 + ";");
+    const AddrMapTemps temps = emit_prepare_addr_mapping(addr_r, pc_for_err);
+    emit_line("@" + temps.is_shared + " st.shared.u8 [" + temps.shared_ptr + "], " + src_u8 + ";");
+    emit_line("@" + temps.is_global + " st.global.u8 [" + temps.global_ptr + "], " + src_u8 + ";");
   }
 
   void emit_addr_map_and_st_u16(const std::string &addr_r, const std::string &src_u16, uint32_t pc_for_err) {
-    emit_prepare_addr_mapping(addr_r, pc_for_err);
-    emit_line("@" + p(3) + " st.shared.u16 [" + rd(17) + "], " + src_u16 + ";");
-    emit_line("@" + p(4) + " st.global.u16 [" + rd(16) + "], " + src_u16 + ";");
+    const AddrMapTemps temps = emit_prepare_addr_mapping(addr_r, pc_for_err);
+    emit_line("@" + temps.is_shared + " st.shared.u16 [" + temps.shared_ptr + "], " + src_u16 + ";");
+    emit_line("@" + temps.is_global + " st.global.u16 [" + temps.global_ptr + "], " + src_u16 + ";");
   }
 
   void emit_addr_map_and_st_u8_leader(const std::string &addr_r, const std::string &src_u8, uint32_t pc_for_err) {
@@ -692,20 +814,24 @@ struct EmitCtx final {
   void emit_builtin_get_id(std::string_view kind, uint32_t pc_for_err) {
     // Uses %v0 as "dim" input for get_*_idj; writes result to %v0.
     // kind: "global"|"local"|"group"
+    const std::string dim = tmp_b32();
     emit_line("// builtin: " + std::string(kind) + "_id(dim=v0) -> v0");
-    emit_line("mov.u32 " + r(20) + ", " + v(0) + ";"); // dim
+    emit_line("mov.u32 " + dim + ", " + v(0) + ";"); // dim
 
     const std::string L_dim0 = new_label("dim0");
     const std::string L_dim1 = new_label("dim1");
     const std::string L_dim2 = new_label("dim2");
     const std::string L_done = new_label("dim_done");
 
-    emit_line("setp.eq.u32 " + p(5) + ", " + r(20) + ", 0;");
-    emit_line("@" + p(5) + " bra " + L_dim0 + ";");
-    emit_line("setp.eq.u32 " + p(6) + ", " + r(20) + ", 1;");
-    emit_line("@" + p(6) + " bra " + L_dim1 + ";");
-    emit_line("setp.eq.u32 " + p(7) + ", " + r(20) + ", 2;");
-    emit_line("@" + p(7) + " bra " + L_dim2 + ";");
+    const std::string is_dim0 = tmp_pred();
+    const std::string is_dim1 = tmp_pred();
+    const std::string is_dim2 = tmp_pred();
+    emit_line("setp.eq.u32 " + is_dim0 + ", " + dim + ", 0;");
+    emit_line("@" + is_dim0 + " bra " + L_dim0 + ";");
+    emit_line("setp.eq.u32 " + is_dim1 + ", " + dim + ", 1;");
+    emit_line("@" + is_dim1 + " bra " + L_dim1 + ";");
+    emit_line("setp.eq.u32 " + is_dim2 + ", " + dim + ", 2;");
+    emit_line("@" + is_dim2 + " bra " + L_dim2 + ";");
 
     emit_line("mov.u32 " + v(0) + ", 0;");
     emit_line("bra " + L_done + ";");
@@ -718,12 +844,16 @@ struct EmitCtx final {
         emit_line("mov.u32 " + v(0) + ", " + std::string(ctaid) + ";");
       } else {
         // global
-        emit_line("mov.u32 " + r(21) + ", " + std::string(tid) + ";");
-        emit_line("mov.u32 " + r(22) + ", " + std::string(ntid) + ";");
-        emit_line("mov.u32 " + r(23) + ", " + std::string(ctaid) + ";");
-        emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
-        emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
-        emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+        const std::string tid_r = tmp_b32();
+        const std::string ntid_r = tmp_b32();
+        const std::string ctaid_r = tmp_b32();
+        const std::string gid_r = tmp_b32();
+        emit_line("mov.u32 " + tid_r + ", " + std::string(tid) + ";");
+        emit_line("mov.u32 " + ntid_r + ", " + std::string(ntid) + ";");
+        emit_line("mov.u32 " + ctaid_r + ", " + std::string(ctaid) + ";");
+        emit_line("mul.lo.u32 " + gid_r + ", " + ctaid_r + ", " + ntid_r + ";");
+        emit_line("add.u32 " + gid_r + ", " + gid_r + ", " + tid_r + ";");
+        emit_line("mov.u32 " + v(0) + ", " + gid_r + ";");
       }
       emit_line("bra " + L_done + ";");
     };
@@ -739,31 +869,38 @@ struct EmitCtx final {
   void emit_builtin_get_global_size(uint32_t pc_for_err) {
     // Uses %v0 as "dim" input for get_global_sizej; writes result to %v0.
     // Returns the launched global size, i.e. gridDim * blockDim per dimension.
+    const std::string dim = tmp_b32();
     emit_line("// builtin: global_size(dim=v0) -> v0");
-    emit_line("mov.u32 " + r(20) + ", " + v(0) + ";"); // dim
+    emit_line("mov.u32 " + dim + ", " + v(0) + ";"); // dim
 
     const std::string L_dim0 = new_label("gsize_dim0");
     const std::string L_dim1 = new_label("gsize_dim1");
     const std::string L_dim2 = new_label("gsize_dim2");
     const std::string L_done = new_label("gsize_done");
 
-    emit_line("setp.eq.u32 " + p(5) + ", " + r(20) + ", 0;");
-    emit_line("@" + p(5) + " bra " + L_dim0 + ";");
-    emit_line("setp.eq.u32 " + p(6) + ", " + r(20) + ", 1;");
-    emit_line("@" + p(6) + " bra " + L_dim1 + ";");
-    emit_line("setp.eq.u32 " + p(7) + ", " + r(20) + ", 2;");
-    emit_line("@" + p(7) + " bra " + L_dim2 + ";");
+    const std::string is_dim0 = tmp_pred();
+    const std::string is_dim1 = tmp_pred();
+    const std::string is_dim2 = tmp_pred();
+    emit_line("setp.eq.u32 " + is_dim0 + ", " + dim + ", 0;");
+    emit_line("@" + is_dim0 + " bra " + L_dim0 + ";");
+    emit_line("setp.eq.u32 " + is_dim1 + ", " + dim + ", 1;");
+    emit_line("@" + is_dim1 + " bra " + L_dim1 + ";");
+    emit_line("setp.eq.u32 " + is_dim2 + ", " + dim + ", 2;");
+    emit_line("@" + is_dim2 + " bra " + L_dim2 + ";");
 
     // For out-of-range dims, return 1 (matches typical OpenCL behavior for unused dims).
     emit_line("mov.u32 " + v(0) + ", 1;");
     emit_line("bra " + L_done + ";");
 
     auto emit_dim = [&](const std::string &L, const char *ntid, const char *nctaid) {
+      const std::string ntid_r = tmp_b32();
+      const std::string nctaid_r = tmp_b32();
+      const std::string size_r = tmp_b32();
       emit_label(L);
-      emit_line("mov.u32 " + r(21) + ", " + std::string(ntid) + ";");
-      emit_line("mov.u32 " + r(22) + ", " + std::string(nctaid) + ";");
-      emit_line("mul.lo.u32 " + r(23) + ", " + r(21) + ", " + r(22) + ";");
-      emit_line("mov.u32 " + v(0) + ", " + r(23) + ";");
+      emit_line("mov.u32 " + ntid_r + ", " + std::string(ntid) + ";");
+      emit_line("mov.u32 " + nctaid_r + ", " + std::string(nctaid) + ";");
+      emit_line("mul.lo.u32 " + size_r + ", " + ntid_r + ", " + nctaid_r + ";");
+      emit_line("mov.u32 " + v(0) + ", " + size_r + ";");
       emit_line("bra " + L_done + ";");
     };
 
@@ -779,38 +916,47 @@ struct EmitCtx final {
     // OpenCL/C: float fmax(float a, float b)
     // Calling convention (ventus clc): a=v0, b=v1, ret=v0 (per-thread scalar).
     // Semantics: return the numeric maximum; if exactly one is NaN, return the other; if both NaN, return NaN.
+    const std::string lhs = tmp_f32();
+    const std::string rhs = tmp_f32();
+    const std::string result = tmp_f32();
+    const std::string lhs_nan = tmp_pred();
+    const std::string rhs_nan = tmp_pred();
     emit_line("// builtin: fmax(v0,v1) -> v0 (f32 bits, NaN-safe)");
-    emit_line("mov.b32 " + f(0) + ", " + v(0) + ";");
-    emit_line("mov.b32 " + f(1) + ", " + v(1) + ";");
-    emit_line("setp.nan.f32 " + p(2) + ", " + f(0) + ", " + f(0) + ";");
-    emit_line("setp.nan.f32 " + p(3) + ", " + f(1) + ", " + f(1) + ";");
-    emit_line("max.f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
-    emit_line("selp.b32 " + f(2) + ", " + f(1) + ", " + f(2) + ", " + p(2) + ";"); // if a is NaN => b
-    emit_line("selp.b32 " + f(2) + ", " + f(0) + ", " + f(2) + ", " + p(3) + ";"); // if b is NaN => a
-    emit_line("mov.b32 " + v(0) + ", " + f(2) + ";");
+    emit_line("mov.b32 " + lhs + ", " + v(0) + ";");
+    emit_line("mov.b32 " + rhs + ", " + v(1) + ";");
+    emit_line("setp.nan.f32 " + lhs_nan + ", " + lhs + ", " + lhs + ";");
+    emit_line("setp.nan.f32 " + rhs_nan + ", " + rhs + ", " + rhs + ";");
+    emit_line("max.f32 " + result + ", " + lhs + ", " + rhs + ";");
+    emit_line("selp.b32 " + result + ", " + rhs + ", " + result + ", " + lhs_nan + ";");
+    emit_line("selp.b32 " + result + ", " + lhs + ", " + result + ", " + rhs_nan + ";");
+    emit_line("mov.b32 " + v(0) + ", " + result + ";");
     (void)pc_for_err;
   }
 
   void emit_builtin_sqrtf(uint32_t pc_for_err) {
+    const std::string src = tmp_f32();
+    const std::string dst = tmp_f32();
     emit_line("// builtin: sqrtf(v0) -> v0 (f32 bits)");
-    emit_line("mov.b32 " + f(0) + ", " + v(0) + ";");
-    emit_line("sqrt.rn.f32 " + f(1) + ", " + f(0) + ";");
-    emit_line("mov.b32 " + v(0) + ", " + f(1) + ";");
+    emit_line("mov.b32 " + src + ", " + v(0) + ";");
+    emit_line("sqrt.rn.f32 " + dst + ", " + src + ";");
+    emit_line("mov.b32 " + v(0) + ", " + dst + ";");
     (void)pc_for_err;
   }
 
   void emit_builtin_unary_f32_inplace(std::string_view opname, const std::string &dst_v, uint32_t pc_for_err) {
-    emit_line("mov.b32 " + f(0) + ", " + dst_v + ";");
+    const std::string src = tmp_f32();
+    const std::string dst = tmp_f32();
+    emit_line("mov.b32 " + src + ", " + dst_v + ";");
     if (opname == "sqrt") {
-      emit_line("sqrt.rn.f32 " + f(1) + ", " + f(0) + ";");
+      emit_line("sqrt.rn.f32 " + dst + ", " + src + ";");
     } else if (opname == "cos") {
-      emit_line("cos.approx.f32 " + f(1) + ", " + f(0) + ";");
+      emit_line("cos.approx.f32 " + dst + ", " + src + ";");
     } else if (opname == "sin") {
-      emit_line("sin.approx.f32 " + f(1) + ", " + f(0) + ";");
+      emit_line("sin.approx.f32 " + dst + ", " + src + ";");
     } else {
       throw EmitError("unsupported.call", func_name, pc_for_err, "unary_op=" + std::string(opname));
     }
-    emit_line("mov.b32 " + dst_v + ", " + f(1) + ";");
+    emit_line("mov.b32 " + dst_v + ", " + dst + ";");
   }
 
   void emit_builtin_vec4_cos(uint32_t pc_for_err) {
@@ -837,11 +983,15 @@ struct EmitCtx final {
   void emit_builtin_vec4_tan(uint32_t pc_for_err) {
     emit_line("// builtin: tan(float4) in v0..v3 (approx via sin/cos)");
     for (int i = 0; i < 4; ++i) {
-      emit_line("mov.b32 " + f(0) + ", " + v(i) + ";");
-      emit_line("sin.approx.f32 " + f(1) + ", " + f(0) + ";");
-      emit_line("cos.approx.f32 " + f(2) + ", " + f(0) + ";");
-      emit_line("div.rn.f32 " + f(3) + ", " + f(1) + ", " + f(2) + ";");
-      emit_line("mov.b32 " + v(i) + ", " + f(3) + ";");
+      const std::string src = tmp_f32();
+      const std::string sin_v = tmp_f32();
+      const std::string cos_v = tmp_f32();
+      const std::string tan_v = tmp_f32();
+      emit_line("mov.b32 " + src + ", " + v(i) + ";");
+      emit_line("sin.approx.f32 " + sin_v + ", " + src + ";");
+      emit_line("cos.approx.f32 " + cos_v + ", " + src + ";");
+      emit_line("div.rn.f32 " + tan_v + ", " + sin_v + ", " + cos_v + ";");
+      emit_line("mov.b32 " + v(i) + ", " + tan_v + ";");
     }
     (void)pc_for_err;
   }
@@ -849,17 +999,20 @@ struct EmitCtx final {
   void emit_builtin_mad24iii(uint32_t pc_for_err) {
     // OpenCL: int mad24(int a, int b, int c) => mul24(a,b) + c (signed 24-bit multiply).
     // Calling convention (ventus clc): a=v0, b=v1, c=v2, ret=v0.
+    const std::string lhs = tmp_b32();
+    const std::string rhs = tmp_b32();
+    const std::string acc = tmp_b32();
     emit_line("// builtin: mad24(v0,v1,v2) -> v0 (signed 24-bit)");
-    emit_line("mov.b32 " + r(14) + ", " + v(0) + ";");
-    emit_line("mov.b32 " + r(15) + ", " + v(1) + ";");
-    emit_line("mov.b32 " + r(16) + ", " + v(2) + ";");
+    emit_line("mov.b32 " + lhs + ", " + v(0) + ";");
+    emit_line("mov.b32 " + rhs + ", " + v(1) + ";");
+    emit_line("mov.b32 " + acc + ", " + v(2) + ";");
     // sign-extend low 24 bits: (x << 8) >> 8
-    emit_line("shl.b32 " + r(14) + ", " + r(14) + ", 8;");
-    emit_line("shr.s32 " + r(14) + ", " + r(14) + ", 8;");
-    emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 8;");
-    emit_line("shr.s32 " + r(15) + ", " + r(15) + ", 8;");
-    emit_line("mad.lo.s32 " + r(14) + ", " + r(14) + ", " + r(15) + ", " + r(16) + ";");
-    emit_line("mov.b32 " + v(0) + ", " + r(14) + ";");
+    emit_line("shl.b32 " + lhs + ", " + lhs + ", 8;");
+    emit_line("shr.s32 " + lhs + ", " + lhs + ", 8;");
+    emit_line("shl.b32 " + rhs + ", " + rhs + ", 8;");
+    emit_line("shr.s32 " + rhs + ", " + rhs + ", 8;");
+    emit_line("mad.lo.s32 " + lhs + ", " + lhs + ", " + rhs + ", " + acc + ";");
+    emit_line("mov.b32 " + v(0) + ", " + lhs + ";");
     (void)pc_for_err;
   }
 
@@ -884,40 +1037,52 @@ struct EmitCtx final {
   void emit_scalar_fclass_s(const sbt::DecodedInst &di, uint32_t pc_for_err) {
     // RISC-V FCLASS.S: return a 10-bit class mask in rd (integer bits).
     // Bits: 0..9 = -inf, -norm, -subnorm, -0, +0, +subnorm, +norm, +inf, sNaN, qNaN
-    emit_ld_x_u32_scalar(r(14), di.rs1, pc_for_err); // f32 bits
-    emit_line(scalar_prefix() + "and.b32 " + r(15) + ", " + r(14) + ", 0x80000000;"); // sign bit
-    emit_line(scalar_prefix() + "and.b32 " + r(16) + ", " + r(14) + ", 0x7f800000;"); // exp bits
-    emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(14) + ", 0x007fffff;"); // frac bits
+    const std::string bits = emit_ld_x_u32_scalar_tmp(di.rs1, pc_for_err);
+    const std::string sign_bits = tmp_b32();
+    const std::string exp_bits = tmp_b32();
+    const std::string frac_bits = tmp_b32();
+    const std::string qnan_bit = tmp_b32();
+    const std::string mask = tmp_b32();
+    const std::string bit_mask = tmp_b32();
+    const std::string is_sign = tmp_pred();
+    const std::string is_exp_zero = tmp_pred();
+    const std::string is_exp_all1 = tmp_pred();
+    const std::string is_frac_zero = tmp_pred();
+    const std::string is_zero = tmp_pred();
+    const std::string is_sub = tmp_pred();
+    const std::string is_inf = tmp_pred();
+    const std::string is_nan = tmp_pred();
+    const std::string is_norm = tmp_pred();
+    const std::string is_qnan = tmp_pred();
+    const std::string is_snan = tmp_pred();
+    const std::string neg_class = tmp_pred();
+    const std::string pos_class = tmp_pred();
+    emit_line(scalar_prefix() + "and.b32 " + sign_bits + ", " + bits + ", 0x80000000;");
+    emit_line(scalar_prefix() + "and.b32 " + exp_bits + ", " + bits + ", 0x7f800000;");
+    emit_line(scalar_prefix() + "and.b32 " + frac_bits + ", " + bits + ", 0x007fffff;");
 
-    emit_line(scalar_prefix() + "setp.ne.u32 " + p(1) + ", " + r(15) + ", 0;");          // sign
-    emit_line(scalar_prefix() + "setp.eq.u32 " + p(2) + ", " + r(16) + ", 0;");          // exp==0
-    emit_line(scalar_prefix() + "setp.eq.u32 " + p(3) + ", " + r(16) + ", 0x7f800000;"); // exp==all1
-    emit_line(scalar_prefix() + "setp.eq.u32 " + p(4) + ", " + r(17) + ", 0;");          // frac==0
+    emit_line(scalar_prefix() + "setp.ne.u32 " + is_sign + ", " + sign_bits + ", 0;");
+    emit_line(scalar_prefix() + "setp.eq.u32 " + is_exp_zero + ", " + exp_bits + ", 0;");
+    emit_line(scalar_prefix() + "setp.eq.u32 " + is_exp_all1 + ", " + exp_bits + ", 0x7f800000;");
+    emit_line(scalar_prefix() + "setp.eq.u32 " + is_frac_zero + ", " + frac_bits + ", 0;");
 
-    // is_zero = exp==0 && frac==0
-    emit_line(scalar_prefix() + "and.pred " + p(5) + ", " + p(2) + ", " + p(4) + ";");
-    // is_sub = exp==0 && frac!=0
-    emit_line(scalar_prefix() + "not.pred " + p(6) + ", " + p(4) + ";");
-    emit_line(scalar_prefix() + "and.pred " + p(6) + ", " + p(2) + ", " + p(6) + ";");
-    // is_inf = exp==all1 && frac==0
-    emit_line(scalar_prefix() + "and.pred " + p(7) + ", " + p(3) + ", " + p(4) + ";");
-    // is_nan = exp==all1 && frac!=0
-    emit_line(scalar_prefix() + "not.pred " + p(8) + ", " + p(4) + ";");
-    emit_line(scalar_prefix() + "and.pred " + p(8) + ", " + p(3) + ", " + p(8) + ";");
-    // is_norm = !exp==0 && !exp==all1
-    emit_line(scalar_prefix() + "not.pred " + p(9) + ", " + p(2) + ";");
-    emit_line(scalar_prefix() + "not.pred " + p(10) + ", " + p(3) + ";");
-    emit_line(scalar_prefix() + "and.pred " + p(9) + ", " + p(9) + ", " + p(10) + ";");
+    emit_line(scalar_prefix() + "and.pred " + is_zero + ", " + is_exp_zero + ", " + is_frac_zero + ";");
+    emit_line(scalar_prefix() + "not.pred " + is_sub + ", " + is_frac_zero + ";");
+    emit_line(scalar_prefix() + "and.pred " + is_sub + ", " + is_exp_zero + ", " + is_sub + ";");
+    emit_line(scalar_prefix() + "and.pred " + is_inf + ", " + is_exp_all1 + ", " + is_frac_zero + ";");
+    emit_line(scalar_prefix() + "not.pred " + is_nan + ", " + is_frac_zero + ";");
+    emit_line(scalar_prefix() + "and.pred " + is_nan + ", " + is_exp_all1 + ", " + is_nan + ";");
+    emit_line(scalar_prefix() + "not.pred " + is_norm + ", " + is_exp_zero + ";");
+    emit_line(scalar_prefix() + "not.pred " + is_qnan + ", " + is_exp_all1 + ";");
+    emit_line(scalar_prefix() + "and.pred " + is_norm + ", " + is_norm + ", " + is_qnan + ";");
 
-    // qnan = is_nan && (frac[22]==1)
-    emit_line(scalar_prefix() + "and.b32 " + r(18) + ", " + r(17) + ", 0x00400000;");
-    emit_line(scalar_prefix() + "setp.ne.u32 " + p(10) + ", " + r(18) + ", 0;");
-    emit_line(scalar_prefix() + "and.pred " + p(10) + ", " + p(8) + ", " + p(10) + ";"); // qnan
-    // snan = is_nan && !qnan
-    emit_line(scalar_prefix() + "not.pred " + p(11) + ", " + p(10) + ";");
-    emit_line(scalar_prefix() + "and.pred " + p(11) + ", " + p(8) + ", " + p(11) + ";"); // snan
+    emit_line(scalar_prefix() + "and.b32 " + qnan_bit + ", " + frac_bits + ", 0x00400000;");
+    emit_line(scalar_prefix() + "setp.ne.u32 " + is_qnan + ", " + qnan_bit + ", 0;");
+    emit_line(scalar_prefix() + "and.pred " + is_qnan + ", " + is_nan + ", " + is_qnan + ";");
+    emit_line(scalar_prefix() + "not.pred " + is_snan + ", " + is_qnan + ";");
+    emit_line(scalar_prefix() + "and.pred " + is_snan + ", " + is_nan + ", " + is_snan + ";");
 
-    emit_line(scalar_prefix() + "mov.u32 " + r(19) + ", 0;");
+    emit_line(scalar_prefix() + "mov.u32 " + mask + ", 0;");
 
     // Derive per-class predicates.
     // -inf / +inf
@@ -930,34 +1095,41 @@ struct EmitCtx final {
     emit_line(scalar_prefix() + "and.pred " + p(15) + ", " + p(5) + ", " + p(15) + ";"); // +0
 
     auto or_if = [&](const std::string &pred, uint32_t bit) {
-      emit_line(scalar_prefix() + "selp.u32 " + r(20) + ", " + std::to_string(bit) + ", 0, " + pred + ";");
-      emit_line(scalar_prefix() + "or.b32 " + r(19) + ", " + r(19) + ", " + r(20) + ";");
+      emit_line(scalar_prefix() + "selp.u32 " + bit_mask + ", " + std::to_string(bit) + ", 0, " + pred + ";");
+      emit_line(scalar_prefix() + "or.b32 " + mask + ", " + mask + ", " + bit_mask + ";");
     };
 
-    or_if(p(12), 1u);    // -inf
-    or_if(p(13), 128u);  // +inf
-    or_if(p(14), 8u);    // -0
-    or_if(p(15), 16u);   // +0
+    emit_line(scalar_prefix() + "and.pred " + neg_class + ", " + is_inf + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "not.pred " + pos_class + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "and.pred " + pos_class + ", " + is_inf + ", " + pos_class + ";");
+    or_if(neg_class, 1u);
+    or_if(pos_class, 128u);
+
+    emit_line(scalar_prefix() + "and.pred " + neg_class + ", " + is_zero + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "not.pred " + pos_class + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "and.pred " + pos_class + ", " + is_zero + ", " + pos_class + ";");
+    or_if(neg_class, 8u);
+    or_if(pos_class, 16u);
 
     // -sub / +sub
-    emit_line(scalar_prefix() + "and.pred " + p(12) + ", " + p(6) + ", " + p(1) + ";"); // -sub
-    emit_line(scalar_prefix() + "not.pred " + p(13) + ", " + p(1) + ";");
-    emit_line(scalar_prefix() + "and.pred " + p(13) + ", " + p(6) + ", " + p(13) + ";"); // +sub
-    or_if(p(12), 4u);
-    or_if(p(13), 32u);
+    emit_line(scalar_prefix() + "and.pred " + neg_class + ", " + is_sub + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "not.pred " + pos_class + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "and.pred " + pos_class + ", " + is_sub + ", " + pos_class + ";");
+    or_if(neg_class, 4u);
+    or_if(pos_class, 32u);
 
     // -norm / +norm
-    emit_line(scalar_prefix() + "and.pred " + p(12) + ", " + p(9) + ", " + p(1) + ";"); // -norm
-    emit_line(scalar_prefix() + "not.pred " + p(13) + ", " + p(1) + ";");
-    emit_line(scalar_prefix() + "and.pred " + p(13) + ", " + p(9) + ", " + p(13) + ";"); // +norm
-    or_if(p(12), 2u);
-    or_if(p(13), 64u);
+    emit_line(scalar_prefix() + "and.pred " + neg_class + ", " + is_norm + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "not.pred " + pos_class + ", " + is_sign + ";");
+    emit_line(scalar_prefix() + "and.pred " + pos_class + ", " + is_norm + ", " + pos_class + ";");
+    or_if(neg_class, 2u);
+    or_if(pos_class, 64u);
 
     // NaNs
-    or_if(p(11), 256u); // sNaN
-    or_if(p(10), 512u); // qNaN
+    or_if(is_snan, 256u);
+    or_if(is_qnan, 512u);
 
-    emit_st_x_u32_scalar(di.rd, r(19), pc_for_err);
+    emit_st_x_u32_scalar(di.rd, mask, pc_for_err);
   }
 
   bool try_emit_scalar_fp(const sbt::DecodedInst &di) {
@@ -965,40 +1137,45 @@ struct EmitCtx final {
 
     // Bitwise moves (Zfinx: both sides are X regs).
     if (di.name == "fmv_w_x" || di.name == "fmv_x_w") {
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
-      emit_st_x_u32_scalar(di.rd, r(14), pc);
+      emit_st_x_u32_scalar(di.rd, emit_ld_x_u32_scalar_tmp(di.rs1, pc), pc);
       return true;
     }
 
     // Sign injection.
     if (di.name == "fsgnj_s" || di.name == "fsgnjn_s" || di.name == "fsgnjx_s") {
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc); // magnitude source
-      emit_ld_x_u32_scalar(r(15), di.rs2, pc); // sign source
-      emit_line(scalar_prefix() + "and.b32 " + r(16) + ", " + r(14) + ", 0x7fffffff;");
+      const std::string magnitude = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string sign_src = emit_ld_x_u32_scalar_tmp(di.rs2, pc);
+      const std::string result = tmp_b32();
+      const std::string sign_bits = tmp_b32();
+      emit_line(scalar_prefix() + "and.b32 " + result + ", " + magnitude + ", 0x7fffffff;");
       if (di.name == "fsgnj_s") {
-        emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(15) + ", 0x80000000;");
+        emit_line(scalar_prefix() + "and.b32 " + sign_bits + ", " + sign_src + ", 0x80000000;");
       } else if (di.name == "fsgnjn_s") {
-        emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(15) + ", 0x80000000;");
-        emit_line(scalar_prefix() + "xor.b32 " + r(17) + ", " + r(17) + ", 0x80000000;");
+        emit_line(scalar_prefix() + "and.b32 " + sign_bits + ", " + sign_src + ", 0x80000000;");
+        emit_line(scalar_prefix() + "xor.b32 " + sign_bits + ", " + sign_bits + ", 0x80000000;");
       } else { // fsgnjx_s
-        emit_line(scalar_prefix() + "xor.b32 " + r(17) + ", " + r(14) + ", " + r(15) + ";");
-        emit_line(scalar_prefix() + "and.b32 " + r(17) + ", " + r(17) + ", 0x80000000;");
+        emit_line(scalar_prefix() + "xor.b32 " + sign_bits + ", " + magnitude + ", " + sign_src + ";");
+        emit_line(scalar_prefix() + "and.b32 " + sign_bits + ", " + sign_bits + ", 0x80000000;");
       }
-      emit_line(scalar_prefix() + "or.b32 " + r(16) + ", " + r(16) + ", " + r(17) + ";");
-      emit_st_x_u32_scalar(di.rd, r(16), pc);
+      emit_line(scalar_prefix() + "or.b32 " + result + ", " + result + ", " + sign_bits + ";");
+      emit_st_x_u32_scalar(di.rd, result, pc);
       return true;
     }
 
     // Arithmetic.
     auto f32_binop = [&](const char *op) {
       const std::string rm = ptx_rm_f32(di.fp_rm, pc);
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
-      emit_ld_x_u32_scalar(r(15), di.rs2, pc);
-      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
-      emit_line(scalar_prefix() + std::string(op) + rm + ".f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + r(16) + ", " + f(2) + ";");
-      emit_st_x_u32_scalar(di.rd, r(16), pc);
+      const std::string lhs_bits = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string rhs_bits = emit_ld_x_u32_scalar_tmp(di.rs2, pc);
+      const std::string lhs = tmp_f32();
+      const std::string rhs = tmp_f32();
+      const std::string result = tmp_f32();
+      const std::string result_bits = tmp_b32();
+      emit_line(scalar_prefix() + "mov.b32 " + lhs + ", " + lhs_bits + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + rhs + ", " + rhs_bits + ";");
+      emit_line(scalar_prefix() + std::string(op) + rm + ".f32 " + result + ", " + lhs + ", " + rhs + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + result_bits + ", " + result + ";");
+      emit_st_x_u32_scalar(di.rd, result_bits, pc);
     };
     if (di.name == "fadd_s") { f32_binop("add"); return true; }
     if (di.name == "fsub_s") { f32_binop("sub"); return true; }
@@ -1006,76 +1183,98 @@ struct EmitCtx final {
     if (di.name == "fdiv_s") { f32_binop("div"); return true; }
     if (di.name == "fsqrt_s") {
       const std::string rm = ptx_rm_f32(di.fp_rm, pc);
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
-      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
-      emit_line(scalar_prefix() + "sqrt" + rm + ".f32 " + f(1) + ", " + f(0) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + r(15) + ", " + f(1) + ";");
-      emit_st_x_u32_scalar(di.rd, r(15), pc);
+      const std::string src_bits = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string src = tmp_f32();
+      const std::string dst = tmp_f32();
+      const std::string dst_bits = tmp_b32();
+      emit_line(scalar_prefix() + "mov.b32 " + src + ", " + src_bits + ";");
+      emit_line(scalar_prefix() + "sqrt" + rm + ".f32 " + dst + ", " + src + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + dst_bits + ", " + dst + ";");
+      emit_st_x_u32_scalar(di.rd, dst_bits, pc);
       return true;
     }
 
     // FMA family.
     if (di.name == "fmadd_s" || di.name == "fmsub_s" || di.name == "fnmsub_s" || di.name == "fnmadd_s") {
       const std::string rm = ptx_rm_f32(di.fp_rm, pc);
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc); // a
-      emit_ld_x_u32_scalar(r(15), di.rs2, pc); // b
-      emit_ld_x_u32_scalar(r(16), di.rs3, pc); // c
-      if (di.name == "fmsub_s" || di.name == "fnmadd_s") emit_line(scalar_prefix() + "xor.b32 " + r(16) + ", " + r(16) + ", 0x80000000;");
-      if (di.name == "fnmsub_s" || di.name == "fnmadd_s") emit_line(scalar_prefix() + "xor.b32 " + r(14) + ", " + r(14) + ", 0x80000000;");
-      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + f(2) + ", " + r(16) + ";");
-      emit_line(scalar_prefix() + "fma" + rm + ".f32 " + f(3) + ", " + f(0) + ", " + f(1) + ", " + f(2) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + r(17) + ", " + f(3) + ";");
-      emit_st_x_u32_scalar(di.rd, r(17), pc);
+      const std::string a_bits = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string b_bits = emit_ld_x_u32_scalar_tmp(di.rs2, pc);
+      const std::string c_bits = emit_ld_x_u32_scalar_tmp(di.rs3, pc);
+      const std::string a = tmp_f32();
+      const std::string b = tmp_f32();
+      const std::string c = tmp_f32();
+      const std::string dst = tmp_f32();
+      const std::string dst_bits = tmp_b32();
+      if (di.name == "fmsub_s" || di.name == "fnmadd_s") emit_line(scalar_prefix() + "xor.b32 " + c_bits + ", " + c_bits + ", 0x80000000;");
+      if (di.name == "fnmsub_s" || di.name == "fnmadd_s") emit_line(scalar_prefix() + "xor.b32 " + a_bits + ", " + a_bits + ", 0x80000000;");
+      emit_line(scalar_prefix() + "mov.b32 " + a + ", " + a_bits + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + b + ", " + b_bits + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + c + ", " + c_bits + ";");
+      emit_line(scalar_prefix() + "fma" + rm + ".f32 " + dst + ", " + a + ", " + b + ", " + c + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + dst_bits + ", " + dst + ";");
+      emit_st_x_u32_scalar(di.rd, dst_bits, pc);
       return true;
     }
 
     // Min/max (NaN-safe).
     if (di.name == "fmin_s" || di.name == "fmax_s") {
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
-      emit_ld_x_u32_scalar(r(15), di.rs2, pc);
-      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
-      emit_line(scalar_prefix() + "setp.nan.f32 " + p(2) + ", " + f(0) + ", " + f(0) + ";");
-      emit_line(scalar_prefix() + "setp.nan.f32 " + p(3) + ", " + f(1) + ", " + f(1) + ";");
-      emit_line(scalar_prefix() + std::string(di.name == "fmax_s" ? "max" : "min") + ".f32 " + f(2) + ", " + f(0) + ", " + f(1) + ";");
-      emit_line(scalar_prefix() + "selp.b32 " + f(2) + ", " + f(1) + ", " + f(2) + ", " + p(2) + ";"); // if a is NaN => b
-      emit_line(scalar_prefix() + "selp.b32 " + f(2) + ", " + f(0) + ", " + f(2) + ", " + p(3) + ";"); // if b is NaN => a
-      emit_line(scalar_prefix() + "mov.b32 " + r(16) + ", " + f(2) + ";");
-      emit_st_x_u32_scalar(di.rd, r(16), pc);
+      const std::string lhs_bits = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string rhs_bits = emit_ld_x_u32_scalar_tmp(di.rs2, pc);
+      const std::string lhs = tmp_f32();
+      const std::string rhs = tmp_f32();
+      const std::string result = tmp_f32();
+      const std::string lhs_nan = tmp_pred();
+      const std::string rhs_nan = tmp_pred();
+      const std::string result_bits = tmp_b32();
+      emit_line(scalar_prefix() + "mov.b32 " + lhs + ", " + lhs_bits + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + rhs + ", " + rhs_bits + ";");
+      emit_line(scalar_prefix() + "setp.nan.f32 " + lhs_nan + ", " + lhs + ", " + lhs + ";");
+      emit_line(scalar_prefix() + "setp.nan.f32 " + rhs_nan + ", " + rhs + ", " + rhs + ";");
+      emit_line(scalar_prefix() + std::string(di.name == "fmax_s" ? "max" : "min") + ".f32 " + result + ", " + lhs + ", " + rhs + ";");
+      emit_line(scalar_prefix() + "selp.b32 " + result + ", " + rhs + ", " + result + ", " + lhs_nan + ";");
+      emit_line(scalar_prefix() + "selp.b32 " + result + ", " + lhs + ", " + result + ", " + rhs_nan + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + result_bits + ", " + result + ";");
+      emit_st_x_u32_scalar(di.rd, result_bits, pc);
       return true;
     }
 
     // Comparisons: exact 0/1 integer result.
     if (di.name == "feq_s" || di.name == "flt_s" || di.name == "fle_s") {
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
-      emit_ld_x_u32_scalar(r(15), di.rs2, pc);
-      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + f(1) + ", " + r(15) + ";");
-      if (di.name == "feq_s") emit_line(scalar_prefix() + "setp.eq.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
-      else if (di.name == "flt_s") emit_line(scalar_prefix() + "setp.lt.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
-      else emit_line(scalar_prefix() + "setp.le.f32 " + p(1) + ", " + f(0) + ", " + f(1) + ";");
-      emit_line(scalar_prefix() + "selp.u32 " + r(16) + ", 1, 0, " + p(1) + ";");
-      emit_st_x_u32_scalar(di.rd, r(16), pc);
+      const std::string lhs_bits = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string rhs_bits = emit_ld_x_u32_scalar_tmp(di.rs2, pc);
+      const std::string lhs = tmp_f32();
+      const std::string rhs = tmp_f32();
+      const std::string pred = tmp_pred();
+      const std::string result = tmp_b32();
+      emit_line(scalar_prefix() + "mov.b32 " + lhs + ", " + lhs_bits + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + rhs + ", " + rhs_bits + ";");
+      if (di.name == "feq_s") emit_line(scalar_prefix() + "setp.eq.f32 " + pred + ", " + lhs + ", " + rhs + ";");
+      else if (di.name == "flt_s") emit_line(scalar_prefix() + "setp.lt.f32 " + pred + ", " + lhs + ", " + rhs + ";");
+      else emit_line(scalar_prefix() + "setp.le.f32 " + pred + ", " + lhs + ", " + rhs + ";");
+      emit_line(scalar_prefix() + "selp.u32 " + result + ", 1, 0, " + pred + ";");
+      emit_st_x_u32_scalar(di.rd, result, pc);
       return true;
     }
 
     // Conversions.
     if (di.name == "fcvt_s_w" || di.name == "fcvt_s_wu") {
       const std::string rm = ptx_rm_f32(di.fp_rm, pc);
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc);
-      emit_line(scalar_prefix() + "cvt" + rm + ".f32." + (di.name == "fcvt_s_w" ? "s32 " : "u32 ") + f(0) + ", " + r(14) + ";");
-      emit_line(scalar_prefix() + "mov.b32 " + r(15) + ", " + f(0) + ";");
-      emit_st_x_u32_scalar(di.rd, r(15), pc);
+      const std::string src = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string dst = tmp_f32();
+      const std::string dst_bits = tmp_b32();
+      emit_line(scalar_prefix() + "cvt" + rm + ".f32." + (di.name == "fcvt_s_w" ? "s32 " : "u32 ") + dst + ", " + src + ";");
+      emit_line(scalar_prefix() + "mov.b32 " + dst_bits + ", " + dst + ";");
+      emit_st_x_u32_scalar(di.rd, dst_bits, pc);
       return true;
     }
     if (di.name == "fcvt_w_s" || di.name == "fcvt_wu_s") {
       const std::string rm = ptx_rm_cvt_i32(di.fp_rm, pc);
-      emit_ld_x_u32_scalar(r(14), di.rs1, pc); // f32 bits
-      emit_line(scalar_prefix() + "mov.b32 " + f(0) + ", " + r(14) + ";");
-      emit_line(scalar_prefix() + "cvt" + rm + "." + (di.name == "fcvt_w_s" ? "s32" : "u32") + ".f32 " + r(15) + ", " + f(0) + ";");
-      emit_st_x_u32_scalar(di.rd, r(15), pc);
+      const std::string src_bits = emit_ld_x_u32_scalar_tmp(di.rs1, pc);
+      const std::string src = tmp_f32();
+      const std::string dst = tmp_b32();
+      emit_line(scalar_prefix() + "mov.b32 " + src + ", " + src_bits + ";");
+      emit_line(scalar_prefix() + "cvt" + rm + "." + (di.name == "fcvt_w_s" ? "s32" : "u32") + ".f32 " + dst + ", " + src + ";");
+      emit_st_x_u32_scalar(di.rd, dst, pc);
       return true;
     }
 
@@ -1097,45 +1296,57 @@ struct EmitCtx final {
   void emit_compute_mma_scratch_base(const std::string &dst_rd, uint32_t pc_for_err) {
     require(opt.stack_stride_bytes >= 1024u,
             EmitError("unsupported.mma.stack_stride", func_name, pc_for_err, "stack_stride_bytes<1024"));
-    emit_line("mul.lo.u32 " + r(14) + ", " + r(10) + ", " + std::to_string(opt.stack_stride_bytes) + ";");
-    emit_line("cvt.u64.u32 " + rd(19) + ", " + r(14) + ";");
-    emit_line("add.u64 " + dst_rd + ", " + rd(2) + ", " + rd(19) + ";");
+    const std::string scratch_off = tmp_b32();
+    const std::string scratch_off_rd = tmp_b64();
+    emit_line("mul.lo.u32 " + scratch_off + ", " + r(10) + ", " + std::to_string(opt.stack_stride_bytes) + ";");
+    emit_line("cvt.u64.u32 " + scratch_off_rd + ", " + scratch_off + ";");
+    emit_line("add.u64 " + dst_rd + ", " + rd(2) + ", " + scratch_off_rd + ";");
   }
 
   void emit_load_u32_from_mma_scratch(const std::string &dst_r, const std::string &scratch_rd, const std::string &reg_r,
                                       const std::string &lane_r, const std::string &off_r) {
+    const std::string lane_bytes = tmp_b32();
+    const std::string addr_rd = tmp_b64();
     emit_line("mul.lo.u32 " + off_r + ", " + reg_r + ", 128;");
-    emit_line("shl.b32 " + r(21) + ", " + lane_r + ", 2;");
-    emit_line("add.u32 " + off_r + ", " + off_r + ", " + r(21) + ";");
-    emit_line("cvt.u64.u32 " + rd(19) + ", " + off_r + ";");
-    emit_line("add.u64 " + rd(19) + ", " + scratch_rd + ", " + rd(19) + ";");
-    emit_line("ld.shared.u32 " + dst_r + ", [" + rd(19) + "];");
+    emit_line("shl.b32 " + lane_bytes + ", " + lane_r + ", 2;");
+    emit_line("add.u32 " + off_r + ", " + off_r + ", " + lane_bytes + ";");
+    emit_line("cvt.u64.u32 " + addr_rd + ", " + off_r + ";");
+    emit_line("add.u64 " + addr_rd + ", " + scratch_rd + ", " + addr_rd + ";");
+    emit_line("ld.shared.u32 " + dst_r + ", [" + addr_rd + "];");
   }
 
   void emit_store_u32_to_mma_scratch(const std::string &scratch_rd, const std::string &reg_r, const std::string &lane_r,
                                      const std::string &src_r, const std::string &off_r) {
+    const std::string lane_bytes = tmp_b32();
+    const std::string addr_rd = tmp_b64();
     emit_line("mul.lo.u32 " + off_r + ", " + reg_r + ", 128;");
-    emit_line("shl.b32 " + r(21) + ", " + lane_r + ", 2;");
-    emit_line("add.u32 " + off_r + ", " + off_r + ", " + r(21) + ";");
-    emit_line("cvt.u64.u32 " + rd(19) + ", " + off_r + ";");
-    emit_line("add.u64 " + rd(19) + ", " + scratch_rd + ", " + rd(19) + ";");
-    emit_line("st.shared.u32 [" + rd(19) + "], " + src_r + ";");
+    emit_line("shl.b32 " + lane_bytes + ", " + lane_r + ", 2;");
+    emit_line("add.u32 " + off_r + ", " + off_r + ", " + lane_bytes + ";");
+    emit_line("cvt.u64.u32 " + addr_rd + ", " + off_r + ";");
+    emit_line("add.u64 " + addr_rd + ", " + scratch_rd + ", " + addr_rd + ";");
+    emit_line("st.shared.u32 [" + addr_rd + "], " + src_r + ";");
   }
 
   void emit_spill_v_window_to_mma_scratch(const std::string &scratch_rd, int base_reg, uint8_t reg_count) {
     for (uint8_t reg = 0; reg < reg_count; ++reg) {
-      emit_line("mov.u32 " + r(20) + ", " + std::to_string(reg) + ";");
-      emit_line("mov.u32 " + r(22) + ", " + v(base_reg + static_cast<int>(reg)) + ";");
-      emit_store_u32_to_mma_scratch(scratch_rd, r(20), r(0), r(22), r(23));
+      const std::string reg_idx = tmp_b32();
+      const std::string value = tmp_b32();
+      const std::string off = tmp_b32();
+      emit_line("mov.u32 " + reg_idx + ", " + std::to_string(reg) + ";");
+      emit_line("mov.u32 " + value + ", " + v(base_reg + static_cast<int>(reg)) + ";");
+      emit_store_u32_to_mma_scratch(scratch_rd, reg_idx, r(0), value, off);
     }
     emit_warp_sync();
   }
 
   void emit_reload_v_window_from_mma_scratch(const std::string &scratch_rd, int base_reg, uint8_t reg_count) {
     for (uint8_t reg = 0; reg < reg_count; ++reg) {
-      emit_line("mov.u32 " + r(20) + ", " + std::to_string(reg) + ";");
-      emit_load_u32_from_mma_scratch(r(22), scratch_rd, r(20), r(0), r(23));
-      emit_line("mov.u32 " + v(base_reg + static_cast<int>(reg)) + ", " + r(22) + ";");
+      const std::string reg_idx = tmp_b32();
+      const std::string value = tmp_b32();
+      const std::string off = tmp_b32();
+      emit_line("mov.u32 " + reg_idx + ", " + std::to_string(reg) + ";");
+      emit_load_u32_from_mma_scratch(value, scratch_rd, reg_idx, r(0), off);
+      emit_line("mov.u32 " + v(base_reg + static_cast<int>(reg)) + ", " + value + ";");
     }
   }
 
@@ -1200,13 +1411,14 @@ struct EmitCtx final {
 
     if ((role == sbt::ptx::mma::OperandRole::C || role == sbt::ptx::mma::OperandRole::D) &&
         sbt::ptx::mma::tuple_pack(abi, role) == sbt::ptx::mma::PackMode::Packed16x2) {
+      const std::string take_hi = tmp_pred();
       emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 6;");
       emit_line("shr.u32 " + lane_r + ", " + idx_r + ", 1;");
       emit_line("and.b32 " + lane_r + ", " + lane_r + ", 31;");
       emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
       emit_line("and.b32 " + tmp2_r + ", " + idx_r + ", 1;");
-      emit_line("setp.ne.u32 " + p(6) + ", " + tmp2_r + ", 0;");
-      emit_line("@" + p(6) + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
+      emit_line("setp.ne.u32 " + take_hi + ", " + tmp2_r + ", 0;");
+      emit_line("@" + take_hi + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
       emit_line("and.b32 " + dst_r + ", " + dst_r + ", 0xffff;");
       return;
     }
@@ -1223,8 +1435,9 @@ struct EmitCtx final {
       emit_line("and.b32 " + lane_r + ", " + lane_r + ", 31;");
       emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
       emit_line("and.b32 " + tmp2_r + ", " + idx_r + ", 1;");
-      emit_line("setp.ne.u32 " + p(6) + ", " + tmp2_r + ", 0;");
-      emit_line("@" + p(6) + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
+      const std::string take_hi = tmp_pred();
+      emit_line("setp.ne.u32 " + take_hi + ", " + tmp2_r + ", 0;");
+      emit_line("@" + take_hi + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
       emit_line("and.b32 " + dst_r + ", " + dst_r + ", 0xffff;");
       return;
     }
@@ -1256,8 +1469,9 @@ struct EmitCtx final {
     emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
     emit_line("and.b32 " + tmp2_r + ", " + idx_r + ", 1;");
     if (plan.half_xor != 0u) emit_line("xor.b32 " + tmp2_r + ", " + tmp2_r + ", " + std::to_string(plan.half_xor) + ";");
-    emit_line("setp.ne.u32 " + p(6) + ", " + tmp2_r + ", 0;");
-    emit_line("@" + p(6) + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
+    const std::string take_hi = tmp_pred();
+    emit_line("setp.ne.u32 " + take_hi + ", " + tmp2_r + ", 0;");
+    emit_line("@" + take_hi + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
     emit_line("and.b32 " + dst_r + ", " + dst_r + ", 0xffff;");
   }
 
@@ -1270,18 +1484,19 @@ struct EmitCtx final {
     emit_compute_window_index_from_logical_coord(di, sbt::ptx::mma::OperandRole::D, slice_col_offset, row_r, col_r, idx_r, tmp_r);
 
     if (sbt::ptx::mma::tuple_pack(abi, sbt::ptx::mma::OperandRole::D) == sbt::ptx::mma::PackMode::Packed16x2) {
+      const std::string take_hi = tmp_pred();
       emit_line("and.b32 " + src_r + ", " + src_r + ", 0xffff;");
       emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 6;");
       emit_line("shr.u32 " + lane_r + ", " + idx_r + ", 1;");
       emit_line("and.b32 " + lane_r + ", " + lane_r + ", 31;");
       emit_load_u32_from_mma_scratch(tmp_r, scratch_rd, reg_r, lane_r, row_r);
       emit_line("and.b32 " + col_r + ", " + idx_r + ", 1;");
-      emit_line("setp.ne.u32 " + p(6) + ", " + col_r + ", 0;");
-      emit_line("@!" + p(6) + " and.b32 " + tmp_r + ", " + tmp_r + ", 0xffff0000;");
-      emit_line("@!" + p(6) + " or.b32 " + tmp_r + ", " + tmp_r + ", " + src_r + ";");
-      emit_line("@" + p(6) + " and.b32 " + tmp_r + ", " + tmp_r + ", 0x0000ffff;");
-      emit_line("@" + p(6) + " shl.b32 " + row_r + ", " + src_r + ", 16;");
-      emit_line("@" + p(6) + " or.b32 " + tmp_r + ", " + tmp_r + ", " + row_r + ";");
+      emit_line("setp.ne.u32 " + take_hi + ", " + col_r + ", 0;");
+      emit_line("@!" + take_hi + " and.b32 " + tmp_r + ", " + tmp_r + ", 0xffff0000;");
+      emit_line("@!" + take_hi + " or.b32 " + tmp_r + ", " + tmp_r + ", " + src_r + ";");
+      emit_line("@" + take_hi + " and.b32 " + tmp_r + ", " + tmp_r + ", 0x0000ffff;");
+      emit_line("@" + take_hi + " shl.b32 " + row_r + ", " + src_r + ", 16;");
+      emit_line("@" + take_hi + " or.b32 " + tmp_r + ", " + tmp_r + ", " + row_r + ";");
       emit_store_u32_to_mma_scratch(scratch_rd, reg_r, lane_r, tmp_r, row_r);
       return;
     }
@@ -1300,25 +1515,28 @@ struct EmitCtx final {
 
     if (pack == sbt::ptx::mma::PackMode::Packed16x2) {
       for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+        const std::string lo_word = tmp_b32();
+        const std::string hi_word = tmp_b32();
         for (uint8_t elem = 0; elem < 2u; ++elem) {
           const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, role, tuple_reg, elem);
-          const std::string dst_word = (elem == 0u) ? r(16) : r(17);
-          emit_load_scalar_value_from_spilled_window(di, abi, role, slice_col_offset, value, scratch_rd, dst_word, r(14), r(15), r(22), r(23),
-                                                     r(24), r(25), r(13));
+          const std::string dst_word = (elem == 0u) ? lo_word : hi_word;
+          emit_load_scalar_value_from_spilled_window(di, abi, role, slice_col_offset, value, scratch_rd, dst_word, tmp_b32(), tmp_b32(), tmp_b32(),
+                                                     tmp_b32(), tmp_b32(), tmp_b32(), tmp_b32());
           emit_line("and.b32 " + dst_word + ", " + dst_word + ", 0xffff;");
         }
-        emit_line("shl.b32 " + r(17) + ", " + r(17) + ", 16;");
-        emit_line("or.b32 " + dst_regs[tuple_reg] + ", " + r(16) + ", " + r(17) + ";");
+        emit_line("shl.b32 " + hi_word + ", " + hi_word + ", 16;");
+        emit_line("or.b32 " + dst_regs[tuple_reg] + ", " + lo_word + ", " + hi_word + ";");
       }
       return;
     }
 
     for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
       const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, role, tuple_reg, 0u);
-      emit_load_scalar_value_from_spilled_window(di, abi, role, slice_col_offset, value, scratch_rd, r(16), r(14), r(15), r(22), r(23), r(24),
-                                                 r(25), r(13));
-      if (role == sbt::ptx::mma::OperandRole::C || role == sbt::ptx::mma::OperandRole::D) emit_line("mov.b32 " + dst_regs[tuple_reg] + ", " + r(16) + ";");
-      else emit_line("mov.u32 " + dst_regs[tuple_reg] + ", " + r(16) + ";");
+      const std::string value_word = tmp_b32();
+      emit_load_scalar_value_from_spilled_window(di, abi, role, slice_col_offset, value, scratch_rd, value_word, tmp_b32(), tmp_b32(), tmp_b32(),
+                                                 tmp_b32(), tmp_b32(), tmp_b32(), tmp_b32());
+      if (role == sbt::ptx::mma::OperandRole::C || role == sbt::ptx::mma::OperandRole::D) emit_line("mov.b32 " + dst_regs[tuple_reg] + ", " + value_word + ";");
+      else emit_line("mov.u32 " + dst_regs[tuple_reg] + ", " + value_word + ";");
     }
   }
 
@@ -1331,23 +1549,27 @@ struct EmitCtx final {
 
     if (pack == sbt::ptx::mma::PackMode::Packed16x2) {
       for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
+        const std::string lo_word = tmp_b32();
+        const std::string hi_word = tmp_b32();
         for (uint8_t elem = 0; elem < 2u; ++elem) {
           const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::B, tuple_reg, elem);
-          const std::string dst_word = (elem == 0u) ? r(16) : r(17);
-          emit_load_b_scalar_value_from_spilled_window(di, abi, plan, value, scratch_rd, dst_word, r(14), r(15), r(22), r(23), r(24), r(25),
-                                                       r(13));
+          const std::string dst_word = (elem == 0u) ? lo_word : hi_word;
+          emit_load_b_scalar_value_from_spilled_window(di, abi, plan, value, scratch_rd, dst_word, tmp_b32(), tmp_b32(), tmp_b32(), tmp_b32(),
+                                                       tmp_b32(), tmp_b32(), tmp_b32());
           emit_line("and.b32 " + dst_word + ", " + dst_word + ", 0xffff;");
         }
-        emit_line("shl.b32 " + r(17) + ", " + r(17) + ", 16;");
-        emit_line("or.b32 " + dst_regs[tuple_reg] + ", " + r(16) + ", " + r(17) + ";");
+        emit_line("shl.b32 " + hi_word + ", " + hi_word + ", 16;");
+        emit_line("or.b32 " + dst_regs[tuple_reg] + ", " + lo_word + ", " + hi_word + ";");
       }
       return;
     }
 
     for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
       const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::B, tuple_reg, 0u);
-      emit_load_b_scalar_value_from_spilled_window(di, abi, plan, value, scratch_rd, r(16), r(14), r(15), r(22), r(23), r(24), r(25), r(13));
-      emit_line("mov.u32 " + dst_regs[tuple_reg] + ", " + r(16) + ";");
+      const std::string value_word = tmp_b32();
+      emit_load_b_scalar_value_from_spilled_window(di, abi, plan, value, scratch_rd, value_word, tmp_b32(), tmp_b32(), tmp_b32(), tmp_b32(),
+                                                   tmp_b32(), tmp_b32(), tmp_b32());
+      emit_line("mov.u32 " + dst_regs[tuple_reg] + ", " + value_word + ";");
     }
   }
 
@@ -1359,13 +1581,18 @@ struct EmitCtx final {
 
     if (pack == sbt::ptx::mma::PackMode::Packed16x2) {
       for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
-        emit_line("mov.b32 {" + h(0) + ", " + h(1) + "}, " + src_regs[tuple_reg] + ";");
+        const std::string lo_half = tmp_b16();
+        const std::string hi_half = tmp_b16();
+        const std::string half_word = tmp_u16();
+        const std::string src_word = tmp_b32();
+        emit_line("mov.b32 {" + lo_half + ", " + hi_half + "}, " + src_regs[tuple_reg] + ";");
         for (uint8_t elem = 0; elem < 2u; ++elem) {
           const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::D, tuple_reg, elem);
-          emit_line("mov.b16 " + u16(2) + ", " + h(static_cast<int>(elem)) + ";");
-          emit_line("cvt.u32.u16 " + r(16) + ", " + u16(2) + ";");
-          emit_store_scalar_value_to_spilled_cd_window(di, abi, slice_col_offset, value, scratch_rd, r(16),
-                                                       r(14), r(15), r(17), r(18), r(19), r(20));
+          const std::string elem_half = (elem == 0u) ? lo_half : hi_half;
+          emit_line("mov.b16 " + half_word + ", " + elem_half + ";");
+          emit_line("cvt.u32.u16 " + src_word + ", " + half_word + ";");
+          emit_store_scalar_value_to_spilled_cd_window(di, abi, slice_col_offset, value, scratch_rd, src_word, tmp_b32(), tmp_b32(), tmp_b32(),
+                                                       tmp_b32(), tmp_b32(), tmp_b32());
         }
       }
       return;
@@ -1373,9 +1600,10 @@ struct EmitCtx final {
 
     for (uint8_t tuple_reg = 0; tuple_reg < reg_count; ++tuple_reg) {
       const auto value = sbt::ptx::mma::scalar_tuple_plan(abi, sbt::ptx::mma::OperandRole::D, tuple_reg, 0u);
-      emit_line("mov.b32 " + r(16) + ", " + src_regs[tuple_reg] + ";");
-      emit_store_scalar_value_to_spilled_cd_window(di, abi, slice_col_offset, value, scratch_rd, r(16), r(14), r(15), r(17), r(18), r(19),
-                                                   r(20));
+      const std::string src_word = tmp_b32();
+      emit_line("mov.b32 " + src_word + ", " + src_regs[tuple_reg] + ";");
+      emit_store_scalar_value_to_spilled_cd_window(di, abi, slice_col_offset, value, scratch_rd, src_word, tmp_b32(), tmp_b32(), tmp_b32(),
+                                                   tmp_b32(), tmp_b32(), tmp_b32());
     }
   }
 
@@ -1405,41 +1633,53 @@ struct EmitCtx final {
   void emit_native_mma_sync(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi, uint8_t slice_col_offset) {
     std::vector<std::string> a_tuple_regs;
     a_tuple_regs.reserve(kMmaATupleRegIds.size());
-    for (const int reg_id : kMmaATupleRegIds) a_tuple_regs.push_back(r(reg_id));
+    for (size_t i = 0; i < kMmaATupleRegIds.size(); ++i) a_tuple_regs.push_back(tmp_b32());
 
     std::vector<std::string> b_tuple_regs;
     b_tuple_regs.reserve(kMmaBTupleRegIds.size());
-    for (const int reg_id : kMmaBTupleRegIds) b_tuple_regs.push_back(r(reg_id));
+    for (size_t i = 0; i < kMmaBTupleRegIds.size(); ++i) b_tuple_regs.push_back(tmp_b32());
 
-    emit_compute_mma_scratch_base(rd(18), di.pc);
+    const std::string scratch_base = tmp_b64();
+    emit_compute_mma_scratch_base(scratch_base, di.pc);
 
-    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rs1_base, di.mma.a_regs_per_thread);
-    emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::A, 0u, rd(18), a_tuple_regs);
+    emit_spill_v_window_to_mma_scratch(scratch_base, di.mma.rs1_base, di.mma.a_regs_per_thread);
+    emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::A, 0u, scratch_base, a_tuple_regs);
 
     const auto b_plan = sbt::ptx::mma::b_source_window_plan(di.mma, abi, slice_col_offset);
-    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rs2_base + static_cast<int>(b_plan.reg_offset), b_plan.reg_count);
-    emit_materialize_b_tuple_regs(di, abi, b_plan, rd(18), b_tuple_regs);
+    emit_spill_v_window_to_mma_scratch(scratch_base, di.mma.rs2_base + static_cast<int>(b_plan.reg_offset), b_plan.reg_count);
+    emit_materialize_b_tuple_regs(di, abi, b_plan, scratch_base, b_tuple_regs);
 
     const uint8_t cd_carrier_regs =
         (di.mma.cd_type == sbt::MmaCdType::Fp16) ? static_cast<uint8_t>(di.mma.c_regs_per_thread / 2u) : di.mma.c_regs_per_thread;
-    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rd_base, cd_carrier_regs);
+    emit_spill_v_window_to_mma_scratch(scratch_base, di.mma.rd_base, cd_carrier_regs);
     const bool packed_d = sbt::ptx::mma::tuple_pack(abi, sbt::ptx::mma::OperandRole::D) == sbt::ptx::mma::PackMode::Packed16x2;
     if (packed_d) {
-      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, rd(18), {r(20), r(21)});
-      emit_line(std::string(abi.ptx_opcode) + " {" + r(24) + ", " + r(25) + "}, {" + a_tuple_regs[0] + ", " + a_tuple_regs[1] + ", " +
-                a_tuple_regs[2] + ", " + a_tuple_regs[3] + "}, {" + b_tuple_regs[0] + ", " + b_tuple_regs[1] + "}, {" + r(20) + ", " + r(21) +
-                "};");
-      emit_store_d_tuple_to_spilled_cd_window(di, abi, slice_col_offset, rd(18), {r(24), r(25)});
+      const std::string c0 = tmp_b32();
+      const std::string c1 = tmp_b32();
+      const std::string d0 = tmp_b32();
+      const std::string d1 = tmp_b32();
+      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, scratch_base, {c0, c1});
+      emit_line(std::string(abi.ptx_opcode) + " {" + d0 + ", " + d1 + "}, {" + a_tuple_regs[0] + ", " + a_tuple_regs[1] + ", " +
+                a_tuple_regs[2] + ", " + a_tuple_regs[3] + "}, {" + b_tuple_regs[0] + ", " + b_tuple_regs[1] + "}, {" + c0 + ", " + c1 + "};");
+      emit_store_d_tuple_to_spilled_cd_window(di, abi, slice_col_offset, scratch_base, {d0, d1});
     } else {
-      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, rd(18), {f(0), f(1), f(2), f(3)});
-      emit_line(std::string(abi.ptx_opcode) + " {" + f(4) + ", " + f(5) + ", " + f(6) + ", " + f(7) + "}, {" + a_tuple_regs[0] + ", " +
+      const std::string c0 = tmp_f32();
+      const std::string c1 = tmp_f32();
+      const std::string c2 = tmp_f32();
+      const std::string c3 = tmp_f32();
+      const std::string d0 = tmp_f32();
+      const std::string d1 = tmp_f32();
+      const std::string d2 = tmp_f32();
+      const std::string d3 = tmp_f32();
+      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, scratch_base, {c0, c1, c2, c3});
+      emit_line(std::string(abi.ptx_opcode) + " {" + d0 + ", " + d1 + ", " + d2 + ", " + d3 + "}, {" + a_tuple_regs[0] + ", " +
                 a_tuple_regs[1] + ", " + a_tuple_regs[2] + ", " + a_tuple_regs[3] + "}, {" + b_tuple_regs[0] + ", " + b_tuple_regs[1] + "}, {" +
-                f(0) + ", " + f(1) + ", " + f(2) + ", " + f(3) + "};");
-      emit_store_d_tuple_to_spilled_cd_window(di, abi, slice_col_offset, rd(18), {f(4), f(5), f(6), f(7)});
+                c0 + ", " + c1 + ", " + c2 + ", " + c3 + "};");
+      emit_store_d_tuple_to_spilled_cd_window(di, abi, slice_col_offset, scratch_base, {d0, d1, d2, d3});
     }
 
     emit_warp_sync();
-    emit_reload_v_window_from_mma_scratch(rd(18), di.mma.rd_base, cd_carrier_regs);
+    emit_reload_v_window_from_mma_scratch(scratch_base, di.mma.rd_base, cd_carrier_regs);
   }
 
   void emit_mma_inst(const sbt::DecodedInst &di) {
@@ -1515,8 +1755,9 @@ struct EmitCtx final {
       require(it != sym_by_addr.end(), EmitError("unsupported.call", func_name, pc, "target=" + hex_u32(target)));
       const std::string &callee = it->second;
 
-      emit_line("mov.u32 " + r(14) + ", " + hex_u32(inst_pc + 4) + ";");
-      emit_st_x_u32_scalar(di.rd, r(14), pc);
+      const std::string ret_addr = tmp_b32();
+      emit_line("mov.u32 " + ret_addr + ", " + hex_u32(inst_pc + 4) + ";");
+      emit_st_x_u32_scalar(di.rd, ret_addr, pc);
 
       if (is_inlined_builtin_call_name(callee)) {
         if (callee == "_Z13get_global_idj") {
@@ -1556,26 +1797,38 @@ struct EmitCtx final {
         } else if (callee == "__builtin_riscv_workgroup_id_z") {
           emit_line("mov.u32 " + v(0) + ", %ctaid.z;");
         } else if (callee == "__builtin_riscv_global_id_x") {
-          emit_line("mov.u32 " + r(21) + ", %tid.x;");
-          emit_line("mov.u32 " + r(22) + ", %ntid.x;");
-          emit_line("mov.u32 " + r(23) + ", %ctaid.x;");
-          emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
-          emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
-          emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+          const std::string tid = tmp_b32();
+          const std::string ntid = tmp_b32();
+          const std::string ctaid = tmp_b32();
+          const std::string gid = tmp_b32();
+          emit_line("mov.u32 " + tid + ", %tid.x;");
+          emit_line("mov.u32 " + ntid + ", %ntid.x;");
+          emit_line("mov.u32 " + ctaid + ", %ctaid.x;");
+          emit_line("mul.lo.u32 " + gid + ", " + ctaid + ", " + ntid + ";");
+          emit_line("add.u32 " + gid + ", " + gid + ", " + tid + ";");
+          emit_line("mov.u32 " + v(0) + ", " + gid + ";");
         } else if (callee == "__builtin_riscv_global_id_y") {
-          emit_line("mov.u32 " + r(21) + ", %tid.y;");
-          emit_line("mov.u32 " + r(22) + ", %ntid.y;");
-          emit_line("mov.u32 " + r(23) + ", %ctaid.y;");
-          emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
-          emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
-          emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+          const std::string tid = tmp_b32();
+          const std::string ntid = tmp_b32();
+          const std::string ctaid = tmp_b32();
+          const std::string gid = tmp_b32();
+          emit_line("mov.u32 " + tid + ", %tid.y;");
+          emit_line("mov.u32 " + ntid + ", %ntid.y;");
+          emit_line("mov.u32 " + ctaid + ", %ctaid.y;");
+          emit_line("mul.lo.u32 " + gid + ", " + ctaid + ", " + ntid + ";");
+          emit_line("add.u32 " + gid + ", " + gid + ", " + tid + ";");
+          emit_line("mov.u32 " + v(0) + ", " + gid + ";");
         } else if (callee == "__builtin_riscv_global_id_z") {
-          emit_line("mov.u32 " + r(21) + ", %tid.z;");
-          emit_line("mov.u32 " + r(22) + ", %ntid.z;");
-          emit_line("mov.u32 " + r(23) + ", %ctaid.z;");
-          emit_line("mul.lo.u32 " + r(24) + ", " + r(23) + ", " + r(22) + ";");
-          emit_line("add.u32 " + r(24) + ", " + r(24) + ", " + r(21) + ";");
-          emit_line("mov.u32 " + v(0) + ", " + r(24) + ";");
+          const std::string tid = tmp_b32();
+          const std::string ntid = tmp_b32();
+          const std::string ctaid = tmp_b32();
+          const std::string gid = tmp_b32();
+          emit_line("mov.u32 " + tid + ", %tid.z;");
+          emit_line("mov.u32 " + ntid + ", %ntid.z;");
+          emit_line("mov.u32 " + ctaid + ", %ctaid.z;");
+          emit_line("mul.lo.u32 " + gid + ", " + ctaid + ", " + ntid + ";");
+          emit_line("add.u32 " + gid + ", " + gid + ", " + tid + ";");
+          emit_line("mov.u32 " + v(0) + ", " + gid + ";");
         } else {
           throw EmitError("unsupported.call", func_name, pc, "callee=" + callee);
         }
@@ -2107,36 +2360,42 @@ struct EmitCtx final {
       return;
     }
 
-    auto unpack_u32_to_halves = [&](const std::string &src_u32, int lo_h16, int hi_h16) {
-      emit_line("mov.b32 {" + h(lo_h16) + ", " + h(hi_h16) + "}, " + src_u32 + ";");
+    auto unpack_u32_to_halves = [&](const std::string &src_u32, const std::string &lo_h16, const std::string &hi_h16) {
+      emit_line("mov.b32 {" + lo_h16 + ", " + hi_h16 + "}, " + src_u32 + ";");
     };
-    auto pack_halves_to_u32 = [&](const std::string &dst_u32, int lo_h16, int hi_h16) {
-      emit_line("mov.b32 " + dst_u32 + ", {" + h(lo_h16) + ", " + h(hi_h16) + "};");
+    auto pack_halves_to_u32 = [&](const std::string &dst_u32, const std::string &lo_h16, const std::string &hi_h16) {
+      emit_line("mov.b32 " + dst_u32 + ", {" + lo_h16 + ", " + hi_h16 + "};");
     };
     auto emit_tanh_f32 = [&](const std::string &dst_f, const std::string &src_f) {
-      emit_line("mul.rn.f32 " + f(6) + ", " + src_f + ", -2.8853900817779268;");
-      emit_line("ex2.approx.f32 " + f(6) + ", " + f(6) + ";");
-      emit_line("add.rn.f32 " + f(7) + ", " + f(6) + ", 1.0;");
-      emit_line("rcp.approx.f32 " + f(7) + ", " + f(7) + ";");
-      emit_line("mul.rn.f32 " + f(7) + ", " + f(7) + ", 2.0;");
-      emit_line("add.rn.f32 " + dst_f + ", " + f(7) + ", -1.0;");
+      const std::string tmp0 = tmp_f32();
+      const std::string tmp1 = tmp_f32();
+      emit_line("mul.rn.f32 " + tmp0 + ", " + src_f + ", -2.8853900817779268;");
+      emit_line("ex2.approx.f32 " + tmp0 + ", " + tmp0 + ";");
+      emit_line("add.rn.f32 " + tmp1 + ", " + tmp0 + ", 1.0;");
+      emit_line("rcp.approx.f32 " + tmp1 + ", " + tmp1 + ";");
+      emit_line("mul.rn.f32 " + tmp1 + ", " + tmp1 + ", 2.0;");
+      emit_line("add.rn.f32 " + dst_f + ", " + tmp1 + ", -1.0;");
     };
     auto emit_silu_f32 = [&](const std::string &dst_f, const std::string &src_f) {
-      emit_line("mul.rn.f32 " + f(6) + ", " + src_f + ", -1.4426950408889634;");
-      emit_line("ex2.approx.f32 " + f(6) + ", " + f(6) + ";");
-      emit_line("add.rn.f32 " + f(7) + ", " + f(6) + ", 1.0;");
-      emit_line("rcp.approx.f32 " + f(7) + ", " + f(7) + ";");
-      emit_line("mul.rn.f32 " + dst_f + ", " + src_f + ", " + f(7) + ";");
+      const std::string tmp0 = tmp_f32();
+      const std::string tmp1 = tmp_f32();
+      emit_line("mul.rn.f32 " + tmp0 + ", " + src_f + ", -1.4426950408889634;");
+      emit_line("ex2.approx.f32 " + tmp0 + ", " + tmp0 + ";");
+      emit_line("add.rn.f32 " + tmp1 + ", " + tmp0 + ", 1.0;");
+      emit_line("rcp.approx.f32 " + tmp1 + ", " + tmp1 + ";");
+      emit_line("mul.rn.f32 " + dst_f + ", " + src_f + ", " + tmp1 + ";");
     };
     auto emit_gelu_f32 = [&](const std::string &dst_f, const std::string &src_f) {
-      emit_line("mul.rn.f32 " + f(6) + ", " + src_f + ", " + src_f + ";");
-      emit_line("mul.rn.f32 " + f(6) + ", " + f(6) + ", " + src_f + ";");
-      emit_line("mad.rn.f32 " + f(6) + ", " + f(6) + ", 0.044715, " + src_f + ";");
-      emit_line("mul.rn.f32 " + f(6) + ", " + f(6) + ", 0.7978845608028654;");
-      emit_tanh_f32(f(7), f(6));
-      emit_line("add.rn.f32 " + f(7) + ", " + f(7) + ", 1.0;");
-      emit_line("mul.rn.f32 " + f(7) + ", " + f(7) + ", 0.5;");
-      emit_line("mul.rn.f32 " + dst_f + ", " + src_f + ", " + f(7) + ";");
+      const std::string poly = tmp_f32();
+      const std::string tanh_v = tmp_f32();
+      emit_line("mul.rn.f32 " + poly + ", " + src_f + ", " + src_f + ";");
+      emit_line("mul.rn.f32 " + poly + ", " + poly + ", " + src_f + ";");
+      emit_line("mad.rn.f32 " + poly + ", " + poly + ", 0.044715, " + src_f + ";");
+      emit_line("mul.rn.f32 " + poly + ", " + poly + ", 0.7978845608028654;");
+      emit_tanh_f32(tanh_v, poly);
+      emit_line("add.rn.f32 " + tanh_v + ", " + tanh_v + ", 1.0;");
+      emit_line("mul.rn.f32 " + tanh_v + ", " + tanh_v + ", 0.5;");
+      emit_line("mul.rn.f32 " + dst_f + ", " + src_f + ", " + tanh_v + ";");
     };
     auto emit_custom_sfu_f32 = [&](const std::string &dst_f, const std::string &src_f, sbt::CustomSubOp subop) {
       switch (subop) {
@@ -2153,37 +2412,51 @@ struct EmitCtx final {
       default: throw EmitError("unsupported.custom.sfu", func_name, pc, di.name);
       }
     };
-    auto emit_custom_rsqrt_dual_lane = [&](bool bf16_kind, int src_h16, const std::string &src_f32,
-                                           const std::string &dst_f32, int dst_h16) {
+    auto emit_custom_rsqrt_dual_lane = [&](bool bf16_kind, const std::string &src_h16, const std::string &src_f32,
+                                           const std::string &dst_f32, const std::string &dst_h16) {
       const std::string exp_mask = bf16_kind ? "0x7f80" : "0x7c00";
       const std::string frac_mask = bf16_kind ? "0x007f" : "0x03ff";
       const std::string pos_inf = bf16_kind ? "0x7f80" : "0x7c00";
       const std::string convert_to_f32 = bf16_kind ? "cvt.f32.bf16 " : "cvt.f32.f16 ";
       const std::string convert_from_f32 = bf16_kind ? "cvt.rn.bf16.f32 " : "cvt.rn.f16.f32 ";
-      emit_line("mov.b16 " + u16(0) + ", " + h(src_h16) + ";");
-      emit_line("cvt.u32.u16 " + r(20) + ", " + u16(0) + ";");
-      emit_line("and.b32 " + r(21) + ", " + r(20) + ", 0x8000;");
-      emit_line("and.b32 " + r(22) + ", " + r(20) + ", " + exp_mask + ";");
-      emit_line("and.b32 " + r(23) + ", " + r(20) + ", " + frac_mask + ";");
-      emit_line("setp.ne.u32 " + p(2) + ", " + r(21) + ", 0;");
-      emit_line("setp.eq.u32 " + p(3) + ", " + r(22) + ", 0;");
-      emit_line("setp.eq.u32 " + p(4) + ", " + r(22) + ", " + exp_mask + ";");
-      emit_line("setp.eq.u32 " + p(5) + ", " + r(23) + ", 0;");
-      emit_line("and.pred " + p(6) + ", " + p(3) + ", " + p(5) + ";");
-      emit_line("and.pred " + p(7) + ", " + p(4) + ", " + p(5) + ";");
-      emit_line("not.pred " + p(8) + ", " + p(5) + ";");
-      emit_line("and.pred " + p(8) + ", " + p(4) + ", " + p(8) + ";");
-      emit_line("not.pred " + p(9) + ", " + p(6) + ";");
-      emit_line("and.pred " + p(9) + ", " + p(2) + ", " + p(9) + ";");
-      emit_line("not.pred " + p(10) + ", " + p(2) + ";");
-      emit_line("and.pred " + p(10) + ", " + p(7) + ", " + p(10) + ";");
-      emit_line(convert_to_f32 + src_f32 + ", " + h(src_h16) + ";");
+      const std::string src_u16 = tmp_u16();
+      const std::string src_u32 = tmp_b32();
+      const std::string sign_bits = tmp_b32();
+      const std::string exp_bits = tmp_b32();
+      const std::string frac_bits = tmp_b32();
+      const std::string is_sign = tmp_pred();
+      const std::string is_exp_zero = tmp_pred();
+      const std::string is_exp_all1 = tmp_pred();
+      const std::string is_frac_zero = tmp_pred();
+      const std::string is_zero = tmp_pred();
+      const std::string is_inf = tmp_pred();
+      const std::string is_nan = tmp_pred();
+      const std::string is_neg_nonzero = tmp_pred();
+      const std::string is_pos_inf = tmp_pred();
+      emit_line("mov.b16 " + src_u16 + ", " + src_h16 + ";");
+      emit_line("cvt.u32.u16 " + src_u32 + ", " + src_u16 + ";");
+      emit_line("and.b32 " + sign_bits + ", " + src_u32 + ", 0x8000;");
+      emit_line("and.b32 " + exp_bits + ", " + src_u32 + ", " + exp_mask + ";");
+      emit_line("and.b32 " + frac_bits + ", " + src_u32 + ", " + frac_mask + ";");
+      emit_line("setp.ne.u32 " + is_sign + ", " + sign_bits + ", 0;");
+      emit_line("setp.eq.u32 " + is_exp_zero + ", " + exp_bits + ", 0;");
+      emit_line("setp.eq.u32 " + is_exp_all1 + ", " + exp_bits + ", " + exp_mask + ";");
+      emit_line("setp.eq.u32 " + is_frac_zero + ", " + frac_bits + ", 0;");
+      emit_line("and.pred " + is_zero + ", " + is_exp_zero + ", " + is_frac_zero + ";");
+      emit_line("and.pred " + is_inf + ", " + is_exp_all1 + ", " + is_frac_zero + ";");
+      emit_line("not.pred " + is_nan + ", " + is_frac_zero + ";");
+      emit_line("and.pred " + is_nan + ", " + is_exp_all1 + ", " + is_nan + ";");
+      emit_line("not.pred " + is_neg_nonzero + ", " + is_zero + ";");
+      emit_line("and.pred " + is_neg_nonzero + ", " + is_sign + ", " + is_neg_nonzero + ";");
+      emit_line("not.pred " + is_pos_inf + ", " + is_sign + ";");
+      emit_line("and.pred " + is_pos_inf + ", " + is_inf + ", " + is_pos_inf + ";");
+      emit_line(convert_to_f32 + src_f32 + ", " + src_h16 + ";");
       emit_custom_sfu_f32(dst_f32, src_f32, sbt::CustomSubOp::Rsqrt);
-      emit_line(convert_from_f32 + h(dst_h16) + ", " + dst_f32 + ";");
-      emit_line("@" + p(6) + " mov.b16 " + h(dst_h16) + ", " + pos_inf + ";");
-      emit_line("@" + p(9) + " mov.b16 " + h(dst_h16) + ", 0x7fff;");
-      emit_line("@" + p(10) + " mov.b16 " + h(dst_h16) + ", 0;");
-      emit_line("@" + p(8) + " mov.b16 " + h(dst_h16) + ", 0x7fff;");
+      emit_line(convert_from_f32 + dst_h16 + ", " + dst_f32 + ";");
+      emit_line("@" + is_zero + " mov.b16 " + dst_h16 + ", " + pos_inf + ";");
+      emit_line("@" + is_neg_nonzero + " mov.b16 " + dst_h16 + ", 0x7fff;");
+      emit_line("@" + is_pos_inf + " mov.b16 " + dst_h16 + ", 0;");
+      emit_line("@" + is_nan + " mov.b16 " + dst_h16 + ", 0x7fff;");
     };
     auto subop_from_sfu_name = [&]() -> sbt::CustomSubOp {
       if (di.name.rfind("vex2_approx_", 0) == 0) return sbt::CustomSubOp::Ex2;
@@ -2201,123 +2474,173 @@ struct EmitCtx final {
 
     if (di.name == "shuffle_idx" || di.name == "shuffle_up" || di.name == "shuffle_down" || di.name == "shuffle_bfly") {
       emit_read_activemask(r(1));
-      emit_line("mov.u32 " + r(14) + ", " + std::to_string(di.imm & 31) + ";");
-      if (di.name == "shuffle_idx") emit_line("shfl.sync.idx.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x1f, " + r(1) + ";");
-      else if (di.name == "shuffle_up") emit_line("shfl.sync.up.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x0, " + r(1) + ";");
-      else if (di.name == "shuffle_down") emit_line("shfl.sync.down.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x1f, " + r(1) + ";");
-      else emit_line("shfl.sync.bfly.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + r(14) + ", 0x1f, " + r(1) + ";");
+      const std::string shuffle_arg = tmp_b32();
+      emit_line("mov.u32 " + shuffle_arg + ", " + std::to_string(di.imm & 31) + ";");
+      if (di.name == "shuffle_idx") emit_line("shfl.sync.idx.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + shuffle_arg + ", 0x1f, " + r(1) + ";");
+      else if (di.name == "shuffle_up") emit_line("shfl.sync.up.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + shuffle_arg + ", 0x0, " + r(1) + ";");
+      else if (di.name == "shuffle_down") emit_line("shfl.sync.down.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + shuffle_arg + ", 0x1f, " + r(1) + ";");
+      else emit_line("shfl.sync.bfly.b32 " + v(di.rd) + ", " + v(di.rs2) + ", " + shuffle_arg + ", 0x1f, " + r(1) + ";");
       return;
     }
 
     if (di.name == "vcvt_f32_fp16") {
-      unpack_u32_to_halves(v(di.rs2), 0, 1);
-      emit_line("cvt.f32.f16 " + f(0) + ", " + h(0) + ";");
-      emit_line("mov.b32 " + v(di.rd) + ", " + f(0) + ";");
+      const std::string lo_half = tmp_b16();
+      const std::string hi_half = tmp_b16();
+      const std::string dst = tmp_f32();
+      unpack_u32_to_halves(v(di.rs2), lo_half, hi_half);
+      emit_line("cvt.f32.f16 " + dst + ", " + lo_half + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + dst + ";");
       return;
     }
     if (di.name == "vcvt_f16_fp32") {
-      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
-      emit_line("cvt.rn.f16.f32 " + h(0) + ", " + f(0) + ";");
-      emit_line("mov.b16 " + h(1) + ", 0;");
-      pack_halves_to_u32(r(14), 0, 1);
-      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      const std::string src = tmp_f32();
+      const std::string lo_half = tmp_b16();
+      const std::string hi_half = tmp_b16();
+      const std::string packed = tmp_b32();
+      emit_line("mov.b32 " + src + ", " + v(di.rs2) + ";");
+      emit_line("cvt.rn.f16.f32 " + lo_half + ", " + src + ";");
+      emit_line("mov.b16 " + hi_half + ", 0;");
+      pack_halves_to_u32(packed, lo_half, hi_half);
+      emit_line("mov.u32 " + v(di.rd) + ", " + packed + ";");
       return;
     }
     if (di.name == "vcvt_fp32_bf16") {
-      unpack_u32_to_halves(v(di.rs2), 0, 1);
-      emit_line("cvt.f32.bf16 " + f(0) + ", " + h(0) + ";");
-      emit_line("mov.b32 " + v(di.rd) + ", " + f(0) + ";");
+      const std::string lo_half = tmp_b16();
+      const std::string hi_half = tmp_b16();
+      const std::string dst = tmp_f32();
+      unpack_u32_to_halves(v(di.rs2), lo_half, hi_half);
+      emit_line("cvt.f32.bf16 " + dst + ", " + lo_half + ";");
+      emit_line("mov.b32 " + v(di.rd) + ", " + dst + ";");
       return;
     }
     if (di.name == "vcvt_bf16_fp32") {
-      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
-      emit_line("cvt.rn.bf16.f32 " + h(0) + ", " + f(0) + ";");
-      emit_line("mov.b16 " + h(1) + ", 0;");
-      pack_halves_to_u32(r(14), 0, 1);
-      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      const std::string src = tmp_f32();
+      const std::string lo_half = tmp_b16();
+      const std::string hi_half = tmp_b16();
+      const std::string packed = tmp_b32();
+      emit_line("mov.b32 " + src + ", " + v(di.rs2) + ";");
+      emit_line("cvt.rn.bf16.f32 " + lo_half + ", " + src + ";");
+      emit_line("mov.b16 " + hi_half + ", 0;");
+      pack_halves_to_u32(packed, lo_half, hi_half);
+      emit_line("mov.u32 " + v(di.rd) + ", " + packed + ";");
       return;
     }
 
     if (di.name == "vadd_f16x2" || di.name == "vmul_f16x2" || di.name == "vfma_f16x2") {
-      if (di.name == "vadd_f16x2") emit_line("add.rn.f16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
-      else if (di.name == "vmul_f16x2") emit_line("mul.rn.f16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
-      else emit_line("fma.rn.f16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
-      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      const std::string packed = tmp_b32();
+      if (di.name == "vadd_f16x2") emit_line("add.rn.f16x2 " + packed + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
+      else if (di.name == "vmul_f16x2") emit_line("mul.rn.f16x2 " + packed + ", " + v(di.rs1) + ", " + v(di.rs2) + ";");
+      else emit_line("fma.rn.f16x2 " + packed + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
+      emit_line("mov.u32 " + v(di.rd) + ", " + packed + ";");
       return;
     }
 
     if (di.name == "vadd_bf16x2" || di.name == "vmul_bf16x2" || di.name == "vfma_bf16x2") {
       if (di.name == "vfma_bf16x2") {
-        emit_line("fma.rn.bf16x2 " + r(14) + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
-        emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+        const std::string packed = tmp_b32();
+        emit_line("fma.rn.bf16x2 " + packed + ", " + v(di.rs1) + ", " + v(di.rs2) + ", " + v(di.rd) + ";");
+        emit_line("mov.u32 " + v(di.rd) + ", " + packed + ";");
         return;
       }
-      unpack_u32_to_halves(v(di.rs1), 0, 1);
-      unpack_u32_to_halves(v(di.rs2), 2, 3);
-      emit_line("cvt.f32.bf16 " + f(0) + ", " + h(0) + ";");
-      emit_line("cvt.f32.bf16 " + f(1) + ", " + h(1) + ";");
-      emit_line("cvt.f32.bf16 " + f(2) + ", " + h(2) + ";");
-      emit_line("cvt.f32.bf16 " + f(3) + ", " + h(3) + ";");
+      const std::string a0 = tmp_b16();
+      const std::string a1 = tmp_b16();
+      const std::string b0 = tmp_b16();
+      const std::string b1 = tmp_b16();
+      const std::string fa0 = tmp_f32();
+      const std::string fa1 = tmp_f32();
+      const std::string fb0 = tmp_f32();
+      const std::string fb1 = tmp_f32();
+      const std::string out0 = tmp_f32();
+      const std::string out1 = tmp_f32();
+      const std::string packed0 = tmp_b16();
+      const std::string packed1 = tmp_b16();
+      const std::string packed = tmp_b32();
+      unpack_u32_to_halves(v(di.rs1), a0, a1);
+      unpack_u32_to_halves(v(di.rs2), b0, b1);
+      emit_line("cvt.f32.bf16 " + fa0 + ", " + a0 + ";");
+      emit_line("cvt.f32.bf16 " + fa1 + ", " + a1 + ";");
+      emit_line("cvt.f32.bf16 " + fb0 + ", " + b0 + ";");
+      emit_line("cvt.f32.bf16 " + fb1 + ", " + b1 + ";");
       if (di.name == "vadd_bf16x2") {
-        emit_line("add.rn.f32 " + f(4) + ", " + f(0) + ", " + f(2) + ";");
-        emit_line("add.rn.f32 " + f(5) + ", " + f(1) + ", " + f(3) + ";");
+        emit_line("add.rn.f32 " + out0 + ", " + fa0 + ", " + fb0 + ";");
+        emit_line("add.rn.f32 " + out1 + ", " + fa1 + ", " + fb1 + ";");
       } else {
-        emit_line("mul.rn.f32 " + f(4) + ", " + f(0) + ", " + f(2) + ";");
-        emit_line("mul.rn.f32 " + f(5) + ", " + f(1) + ", " + f(3) + ";");
+        emit_line("mul.rn.f32 " + out0 + ", " + fa0 + ", " + fb0 + ";");
+        emit_line("mul.rn.f32 " + out1 + ", " + fa1 + ", " + fb1 + ";");
       }
-      emit_line("cvt.rn.bf16.f32 " + h(4) + ", " + f(4) + ";");
-      emit_line("cvt.rn.bf16.f32 " + h(5) + ", " + f(5) + ";");
-      pack_halves_to_u32(r(14), 4, 5);
-      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      emit_line("cvt.rn.bf16.f32 " + packed0 + ", " + out0 + ";");
+      emit_line("cvt.rn.bf16.f32 " + packed1 + ", " + out1 + ";");
+      pack_halves_to_u32(packed, packed0, packed1);
+      emit_line("mov.u32 " + v(di.rd) + ", " + packed + ";");
       return;
     }
 
     if (di.name.find("_approx_f32") != std::string::npos && di.name.rfind("v", 0) == 0) {
       const sbt::CustomSubOp subop = (di.custom.valid && di.custom.subop != sbt::CustomSubOp::None) ? di.custom.subop : subop_from_sfu_name();
       require(subop != sbt::CustomSubOp::None, EmitError("unsupported.custom.sfu", func_name, pc, di.name));
-      emit_line("mov.b32 " + f(0) + ", " + v(di.rs2) + ";");
-      emit_custom_sfu_f32(f(1), f(0), subop);
-      emit_line("mov.b32 " + v(di.rd) + ", " + f(1) + ";");
+      const std::string src = tmp_f32();
+      const std::string dst = tmp_f32();
+      emit_line("mov.b32 " + src + ", " + v(di.rs2) + ";");
+      emit_custom_sfu_f32(dst, src, subop);
+      emit_line("mov.b32 " + v(di.rd) + ", " + dst + ";");
       return;
     }
 
     if (di.name.find("_approx_f16x2") != std::string::npos) {
       const sbt::CustomSubOp subop = (di.custom.valid && di.custom.subop != sbt::CustomSubOp::None) ? di.custom.subop : subop_from_sfu_name();
       require(subop != sbt::CustomSubOp::None, EmitError("unsupported.custom.sfu", func_name, pc, di.name));
-      unpack_u32_to_halves(v(di.rs2), 0, 1);
+      const std::string in0 = tmp_b16();
+      const std::string in1 = tmp_b16();
+      const std::string out0 = tmp_b16();
+      const std::string out1 = tmp_b16();
+      const std::string f0v = tmp_f32();
+      const std::string f1v = tmp_f32();
+      const std::string f2v = tmp_f32();
+      const std::string f3v = tmp_f32();
+      const std::string packed = tmp_b32();
+      unpack_u32_to_halves(v(di.rs2), in0, in1);
       if (subop == sbt::CustomSubOp::Rsqrt) {
-        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/false, 0, f(0), f(2), 2);
-        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/false, 1, f(1), f(3), 3);
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/false, in0, f0v, f2v, out0);
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/false, in1, f1v, f3v, out1);
       } else {
-        emit_line("cvt.f32.f16 " + f(0) + ", " + h(0) + ";");
-        emit_line("cvt.f32.f16 " + f(1) + ", " + h(1) + ";");
-        emit_custom_sfu_f32(f(2), f(0), subop);
-        emit_custom_sfu_f32(f(3), f(1), subop);
-        emit_line("cvt.rn.f16.f32 " + h(2) + ", " + f(2) + ";");
-        emit_line("cvt.rn.f16.f32 " + h(3) + ", " + f(3) + ";");
+        emit_line("cvt.f32.f16 " + f0v + ", " + in0 + ";");
+        emit_line("cvt.f32.f16 " + f1v + ", " + in1 + ";");
+        emit_custom_sfu_f32(f2v, f0v, subop);
+        emit_custom_sfu_f32(f3v, f1v, subop);
+        emit_line("cvt.rn.f16.f32 " + out0 + ", " + f2v + ";");
+        emit_line("cvt.rn.f16.f32 " + out1 + ", " + f3v + ";");
       }
-      pack_halves_to_u32(r(14), 2, 3);
-      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      pack_halves_to_u32(packed, out0, out1);
+      emit_line("mov.u32 " + v(di.rd) + ", " + packed + ";");
       return;
     }
 
     if (di.name.find("_approx_bf16x2") != std::string::npos) {
       const sbt::CustomSubOp subop = (di.custom.valid && di.custom.subop != sbt::CustomSubOp::None) ? di.custom.subop : subop_from_sfu_name();
       require(subop != sbt::CustomSubOp::None, EmitError("unsupported.custom.sfu", func_name, pc, di.name));
-      unpack_u32_to_halves(v(di.rs2), 0, 1);
+      const std::string in0 = tmp_b16();
+      const std::string in1 = tmp_b16();
+      const std::string out0 = tmp_b16();
+      const std::string out1 = tmp_b16();
+      const std::string f0v = tmp_f32();
+      const std::string f1v = tmp_f32();
+      const std::string f2v = tmp_f32();
+      const std::string f3v = tmp_f32();
+      const std::string packed = tmp_b32();
+      unpack_u32_to_halves(v(di.rs2), in0, in1);
       if (subop == sbt::CustomSubOp::Rsqrt) {
-        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/true, 0, f(0), f(2), 2);
-        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/true, 1, f(1), f(3), 3);
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/true, in0, f0v, f2v, out0);
+        emit_custom_rsqrt_dual_lane(/*bf16_kind=*/true, in1, f1v, f3v, out1);
       } else {
-        emit_line("cvt.f32.bf16 " + f(0) + ", " + h(0) + ";");
-        emit_line("cvt.f32.bf16 " + f(1) + ", " + h(1) + ";");
-        emit_custom_sfu_f32(f(2), f(0), subop);
-        emit_custom_sfu_f32(f(3), f(1), subop);
-        emit_line("cvt.rn.bf16.f32 " + h(2) + ", " + f(2) + ";");
-        emit_line("cvt.rn.bf16.f32 " + h(3) + ", " + f(3) + ";");
+        emit_line("cvt.f32.bf16 " + f0v + ", " + in0 + ";");
+        emit_line("cvt.f32.bf16 " + f1v + ", " + in1 + ";");
+        emit_custom_sfu_f32(f2v, f0v, subop);
+        emit_custom_sfu_f32(f3v, f1v, subop);
+        emit_line("cvt.rn.bf16.f32 " + out0 + ", " + f2v + ";");
+        emit_line("cvt.rn.bf16.f32 " + out1 + ", " + f3v + ";");
       }
-      pack_halves_to_u32(r(14), 2, 3);
-      emit_line("mov.u32 " + v(di.rd) + ", " + r(14) + ";");
+      pack_halves_to_u32(packed, out0, out1);
+      emit_line("mov.u32 " + v(di.rd) + ", " + packed + ";");
       return;
     }
 
@@ -3119,25 +3442,6 @@ struct EmitCtx final {
     //  - pds_size_per_thread: bytes of private memory per thread (u32)
     //  - pds_bitmap_base_vaddr: Ventus numeric address of PDS allocation bitmap (u32)
     //  - pds_pool_num_blocks: number of reusable WG blocks in PDS pool (u32)
-    emit_raw(".visible .entry " + ptx_name + "(\n");
-    emit_raw("    .param .u64 global_base,\n");
-    emit_raw("    .param .u32 knl_vaddr,\n");
-    emit_raw("    .param .u32 pds_base_vaddr,\n");
-    emit_raw("    .param .u32 pds_size_per_thread,\n");
-    emit_raw("    .param .u32 pds_bitmap_base_vaddr,\n");
-    emit_raw("    .param .u32 pds_pool_num_blocks\n");
-    emit_raw(")\n{\n");
-
-    emit_line(".reg .b32 %r<32>;");
-    emit_line(".reg .b64 %rd<32>;");
-    emit_line(".reg .pred %p<16>;");
-    emit_line(".reg .f32 %f<16>;");
-    emit_line(".reg .b16 %h<16>;");
-    emit_line(".reg .u8 %ub<4>;");
-    emit_line(".reg .u16 %uh<16>;");
-    emit_line(".reg .b32 %x<256>;");
-    emit_line(".reg .b32 %v<256>;");
-
     // Load params and compute global/shared base pointers.
     emit_line("ld.param.u64 " + rd(10) + ", [global_base];");
     emit_line("cvta.to.global.u64 " + rd(0) + ", " + rd(10) + ";");
@@ -3230,19 +3534,6 @@ struct EmitCtx final {
 
   void emit_func_prologue() {
     // Pass-through params computed in the caller and required for address mapping / CSR reads.
-    emit_helper_func_signature(out, ptx_name);
-    emit_raw("\n{\n");
-
-    emit_line(".reg .b32 %r<32>;");
-    emit_line(".reg .b64 %rd<32>;");
-    emit_line(".reg .pred %p<16>;");
-    emit_line(".reg .f32 %f<16>;");
-    emit_line(".reg .b16 %h<16>;");
-    emit_line(".reg .u8 %ub<4>;");
-    emit_line(".reg .u16 %uh<16>;");
-    emit_line(".reg .b32 %x<256>;");
-    emit_line(".reg .b32 %v<256>;");
-
     emit_line("mov.u32 " + r(0) + ", %laneid;");
     emit_load_runtime_env_blob("__sbt_runtime_env_in");
     emit_load_machine_ctx_blob("__sbt_machine_ctx_in");
@@ -3280,14 +3571,19 @@ struct EmitCtx final {
     // Emit blocks in address order.
     for (const auto &bb : cfg.blocks) {
       emit_boundary_labels_for_block(bb.start);
-      out << label_bb(bb.start) << ":\n";
+      emit_label(label_bb(bb.start));
       for (size_t idx : bb.inst_indices) {
         emit_one_inst(cfg.insts[idx]);
       }
       emit_fallthrough_edge_if_needed(bb);
     }
 
-    emit_raw("}\n\n");
+    if (is_entry) emit_entry_header();
+    else emit_func_header();
+    emit_fixed_reg_decls();
+    emit_virtual_temp_reg_decls();
+    out << body.str();
+    out << "}\n\n";
   }
 };
 

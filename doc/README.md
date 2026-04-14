@@ -17,9 +17,10 @@
 若你想理解当前 PTX lowering 主线与回归口径，建议按这个顺序读：
 
 - `README.md`：用户入口、构建命令、回归入口、文档导航。
-- `doc/IMPLEMENTATION_CODEMAP.md`：当前实现真相（as-built）。目录/模块职责、关键数据结构与调用链。
+- `doc/IMPLEMENTATION_CODEMAP.md`：当前实现真相（as-built）。目录/模块职责、关键数据结构与调用链，以及 current PTX 固定槽位 / `%tmp*` scratch ownership 口径。
 - `openspec/README.md`：OpenSpec 状态分层、当前 specs 与 archive 的使用方式。
 - `openspec/specs/global-address-space/spec.md`：当前 PTX ordinary address mapping / single-Global / VMM backing contract。
+- `openspec/specs/ptx-temp-register-allocation/spec.md`：当前 PTX emitter 固定槽位与 `%tmp*` scratch ownership contract。
 - `openspec/specs/replicated-scalar-state/spec.md`：当前 PTX lowering contract 的核心规格。
 - `openspec/specs/ptx-call-prototype/spec.md`：多函数 PTX helper prototype / value ABI 合同。
 - `doc/ADDRESS_SPACE_SPECIALIZATION.md`：当前仍活跃的剩余问题说明（问题 2）。
@@ -36,10 +37,12 @@
 ## 2. 当前事实与 contract
 
 - `doc/IMPLEMENTATION_CODEMAP.md`：当前代码口径。
+- 当前 PTX 寄存器 ownership 以 `doc/IMPLEMENTATION_CODEMAP.md` 与 `sbt/ptx_emit.cpp` 为准：固定 machine/runtime/control 槽位与函数级 `%tmp*` scratch 已显式分离。
 - `openspec/specs/global-address-space/spec.md`：当前 Global 地址空间 / driver VMM backing 合同。
 - `doc/ADDRESS_SPACE_SPECIALIZATION.md`：当前仍活跃的地址空间专门化问题说明。
 - `openspec/specs/replicated-scalar-state/spec.md`：当前标量状态/分歧/调用合同。
 - `openspec/specs/ptx-call-prototype/spec.md`：当前 helper prototype 合同。
+- `openspec/specs/ptx-temp-register-allocation/spec.md`：当前 PTX scratch ownership / `%tmp*` virtual temp 合同。
 - `openspec/specs/inst-support/spec.md`：当前指令支持与验证合同。
 - `openspec/specs/sbt-rodinia-bringup/spec.md`：当前 Rodinia bring-up / fail-fast 边界。
 - `openspec/specs/build-time-spike-pattern-subset/spec.md`：当前 Spike pattern 子集生成合同。

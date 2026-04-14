@@ -1,6 +1,9 @@
 #include "sbt/ptx_emit.hpp"
 #include "sbt/ptx_mma.hpp"
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -87,6 +90,42 @@ size_t count_substr(const std::string &haystack, const std::string &needle) {
     pos += needle.size();
   }
   return count;
+}
+
+std::string find_line_containing(const std::string &text, const std::string &needle) {
+  const size_t pos = text.find(needle);
+  require(pos != std::string::npos, "missing expected PTX line");
+  const size_t line_start = text.rfind('\n', pos);
+  const size_t line_end = text.find('\n', pos);
+  const size_t begin = (line_start == std::string::npos) ? 0 : (line_start + 1u);
+  const size_t end = (line_end == std::string::npos) ? text.size() : line_end;
+  return text.substr(begin, end - begin);
+}
+
+void expect_native_mma_tuple_line(const std::string &ptx, const std::string &opcode, size_t expected_b32_temps, size_t expected_f32_temps) {
+  const auto line = find_line_containing(ptx, opcode);
+  require(count_substr(line, "%tmp_b32_") == expected_b32_temps, "unexpected b32 temp tuple width in native mma line");
+  require(count_substr(line, "%tmp_f32_") == expected_f32_temps, "unexpected f32 temp tuple width in native mma line");
+  require(line.find("%r3") == std::string::npos && line.find("%r4") == std::string::npos && line.find("%r7") == std::string::npos,
+          "native mma tuple line must not depend on legacy fixed scratch registers");
+  require(line.find("%f0") == std::string::npos && line.find("%f1") == std::string::npos,
+          "native mma tuple line must not depend on legacy fixed fp scratch registers");
+}
+
+void compile_with_ptxas(const std::string &stem, const std::string &ptx) {
+  const auto ptx_path = std::filesystem::temp_directory_path() / (stem + ".ptx");
+  const auto cubin_path = std::filesystem::temp_directory_path() / (stem + ".cubin");
+  {
+    std::ofstream f(ptx_path);
+    require(static_cast<bool>(f), "open temp PTX output");
+    f << ptx;
+  }
+  const char *ptxas = std::getenv("PTXAS");
+  const std::string ptxas_bin = (ptxas && ptxas[0] != '\0') ? ptxas : "ptxas";
+  const std::string cmd = ptxas_bin + " -arch=sm_89 \"" + ptx_path.string() + "\" -o \"" + cubin_path.string() + "\" >/dev/null 2>&1";
+  require(std::system(cmd.c_str()) == 0, "ptxas compile-first for mma lowering");
+  std::filesystem::remove(ptx_path);
+  std::filesystem::remove(cubin_path);
 }
 
 void expect_emit_error(const sbt::cfg::FunctionCfg &cfg, const std::string &code, const std::string &message_substr) {
@@ -204,10 +243,10 @@ int main() {
                                              sbt::MmaLoweringClass::NativeMmaSync, 4, 2, 4, false),
                                 make_endprg(0x80004004u)}));
     require(ptx.find("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16") != std::string::npos, "missing fp16 native opcode");
-    require(
-        ptx.find("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {%r24, %r25}, {%r3, %r4, %r5, %r6}, {%r7, %r8}, {%r20, %r21};") !=
-            std::string::npos,
-        "fp16 native tuple regs diverged from the direct window-to-tuple contract");
+    require(ptx.find(".reg .b32 %tmp_b32_0;") != std::string::npos, "missing fp16 mma b32 temp declaration");
+    require(ptx.find(".reg .b64 %tmp_b64_0;") != std::string::npos, "missing fp16 mma b64 temp declaration");
+    expect_native_mma_tuple_line(ptx, "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16", 10u, 0u);
+    compile_with_ptxas("mma_ptx_emit_test_fp16_native", ptx);
   }
 
   {
@@ -217,10 +256,10 @@ int main() {
                                              sbt::MmaLoweringClass::NativeMmaSync, 4, 2, 4, false),
                                 make_endprg(0x80004104u)}));
     require(ptx.find("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32") != std::string::npos, "missing expected mma.sync opcode in PTX");
-    require(
-        ptx.find("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%f4, %f5, %f6, %f7}, {%r3, %r4, %r5, %r6}, {%r7, %r8}, {%f0, %f1, %f2, %f3};") !=
-            std::string::npos,
-        "mma tuple regs overlap helper scratch regs");
+    require(ptx.find(".reg .f32 %tmp_f32_0;") != std::string::npos, "missing fp32 mma f32 temp declaration");
+    require(ptx.find(".reg .b32 %tmp_b32_0;") != std::string::npos, "missing fp32 mma b32 temp declaration");
+    expect_native_mma_tuple_line(ptx, "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32", 6u, 8u);
+    compile_with_ptxas("mma_ptx_emit_test_fp32_native", ptx);
   }
 
   {
@@ -231,6 +270,9 @@ int main() {
                                 make_endprg(0x80004184u)}));
     require(count_substr(ptx, "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32") == 2u,
             "split-n fp32 lowering must emit exactly two native m16n8k16 ops");
+    require(ptx.find("%tmp_b32_") != std::string::npos && ptx.find("%tmp_f32_") != std::string::npos,
+            "split-n fp32 lowering should rely on virtual temps");
+    compile_with_ptxas("mma_ptx_emit_test_fp32_split_n", ptx);
   }
 
   {
@@ -241,6 +283,8 @@ int main() {
                                 make_endprg(0x800041c4u)}));
     require(count_substr(ptx, "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16") == 2u,
             "split-n fp16 lowering must emit exactly two native m16n8k16 ops");
+    require(ptx.find("%tmp_b32_") != std::string::npos, "split-n fp16 lowering should rely on virtual temps");
+    compile_with_ptxas("mma_ptx_emit_test_fp16_split_n", ptx);
   }
 
   expect_emit_error(

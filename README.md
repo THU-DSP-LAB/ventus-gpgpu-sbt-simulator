@@ -106,6 +106,10 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 当前实现仍坚持 fail-fast：遇到 unknown/unsupported 指令、不可接受的 CFG 形态、或当前未支持的 `jalr` 用法时直接报错退出，而不是静默降级。
 
+当前 PTX emitter 的寄存器 current 口径是：
+- 固定 machine/runtime/control 槽位继续保留，当前至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`，以及逻辑寄存器文件 `%x<256>` / `%v<256>`。
+- lowering scratch 统一走函数级唯一命名的 `%tmp*` 虚拟临时寄存器，例如 `%tmp_b32_*`、`%tmp_b64_*`、`%tmp_p_*`、`%tmp_f32_*`、`%tmp_b16_*`、`%tmp_u8_*`、`%tmp_u16_*`；这些寄存器在函数头统一 `.reg` 声明，本阶段不要求重排固定槽位编号。
+
 当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
 - non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。
 - MMA（要求 `.version 7.8` / `sm_89`）：`row.col` 的 `m16n8k16 f16->f16`、`m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f16`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`。其中 `m16n16*` 通过 committed `split-n` composite lowering 落到两个 native `m16n8*` PTX MMA。
@@ -224,6 +228,7 @@ python3 tools/ventus_regression_profile.py --clean
 - 当前实现真相（as-built）：[doc/IMPLEMENTATION_CODEMAP.md](doc/IMPLEMENTATION_CODEMAP.md)
 - OpenSpec 入口与状态分层：[openspec/README.md](openspec/README.md)
 - 当前 Global 地址空间 contract：[openspec/specs/global-address-space/spec.md](openspec/specs/global-address-space/spec.md)
+- 当前 PTX temp register allocation contract：[openspec/specs/ptx-temp-register-allocation/spec.md](openspec/specs/ptx-temp-register-allocation/spec.md)
 - 当前仍活跃的 PTX 专项问题：[doc/ADDRESS_SPACE_SPECIALIZATION.md](doc/ADDRESS_SPACE_SPECIALIZATION.md)
 - 工具清单与分层：[tools/README.md](tools/README.md)
 - 历史 PTX 设计/讨论参考：`doc/archive/`

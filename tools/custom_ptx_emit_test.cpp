@@ -129,6 +129,9 @@ int main() {
   require(ptx.find("cvt.f32.bf16") != std::string::npos, "bf16x2 composite convert up");
   require(ptx.find("cvt.rn.bf16.f32") != std::string::npos, "bf16x2 composite convert down");
   require(count_substr(ptx, "ex2.approx.f32") >= 2, "composed SFU path uses ex2");
+  require(ptx.find(".reg .b32 %tmp_b32_0;") != std::string::npos, "virtual temp b32 declaration");
+  require(ptx.find(".reg .pred %tmp_p_0;") != std::string::npos, "virtual temp pred declaration");
+  require(ptx.find("mov.u32 %tmp_b32_0") != std::string::npos, "virtual temp use should appear in PTX body");
   require(ptx.find("unsupported.inst") == std::string::npos, "no unsupported marker in emitted PTX text");
 
   const auto ptx_path = std::filesystem::temp_directory_path() / "custom_ptx_emit_test.ptx";

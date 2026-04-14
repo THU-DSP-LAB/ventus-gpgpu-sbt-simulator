@@ -622,6 +622,12 @@ int main() {
           "entry ABI should expose one global_base parameter");
   require(ptx.find("call.uni (__sbt_call_mutable_out") != std::string::npos,
           "direct call should return mutable-state blob explicitly");
+  require(ptx.find(".reg .b32 %tmp_b32_0;") != std::string::npos,
+          "entry/helper PTX should declare virtual temporary registers at function scope");
+  require(ptx.find(".reg .b64 %tmp_b64_0;") != std::string::npos,
+          "entry/helper PTX should declare virtual 64-bit temporaries at function scope");
+  require(ptx.find("%tmp_b32_0") != std::string::npos,
+          "entry/helper PTX should use %tmp* temporaries in body emission");
 
   require(ptx.find("shfl.sync.idx.b32 %r14") == std::string::npos,
           "scalar branch should not broadcast replicated scalar operands before bra.uni");
