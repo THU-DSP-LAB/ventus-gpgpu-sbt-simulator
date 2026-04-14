@@ -79,7 +79,17 @@ sbt::cfg::FunctionCfg make_cfg(uint32_t start, std::vector<sbt::cfg::BundleInst>
   return cfg;
 }
 
-void expect_emit_error(const sbt::cfg::FunctionCfg &cfg) {
+size_t count_substr(const std::string &haystack, const std::string &needle) {
+  size_t count = 0;
+  size_t pos = 0;
+  while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+    ++count;
+    pos += needle.size();
+  }
+  return count;
+}
+
+void expect_emit_error(const sbt::cfg::FunctionCfg &cfg, const std::string &code, const std::string &message_substr) {
   std::unordered_map<uint32_t, std::string> sym_by_addr;
   sym_by_addr.emplace(cfg.start, "mma_negative");
   sbt::ptx::Options opt;
@@ -88,9 +98,8 @@ void expect_emit_error(const sbt::cfg::FunctionCfg &cfg) {
   try {
     (void)sbt::ptx::emit_kernel(cfg, sym_by_addr, "mma_negative", opt);
   } catch (const sbt::ptx::EmitError &e) {
-    require(e.code == "unsupported.mma.fp16_fp16_contract_pending", "expected fp16->fp16 contract-pending error code");
-    require(std::string(e.what()).find("fp16->fp16 ABI/layout contract is not confirmed yet") != std::string::npos,
-            "missing fp16->fp16 contract-pending diagnostic");
+    require(e.code == code, "unexpected EmitError code");
+    require(std::string(e.what()).find(message_substr) != std::string::npos, "missing expected EmitError diagnostic");
     return;
   }
   throw std::runtime_error("assert: expected EmitError");
@@ -188,11 +197,18 @@ int main() {
   expect_bf16_planner_tracks_bf16_key();
   expect_split_n_b_source_window_is_slice_aware();
 
-  expect_emit_error(
-      make_cfg(0x80004000u, {make_mma_inst(0x80004000u, 32, 64, 80, sbt::MmaShape::M16N8K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp16,
-                                           sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedDirectNative,
-                                           sbt::MmaLoweringClass::NativeMmaSync, 4, 2, 4, false),
-                              make_endprg(0x80004004u)}));
+  {
+    const auto ptx = emit_success_ptx(
+        make_cfg(0x80004000u, {make_mma_inst(0x80004000u, 32, 64, 80, sbt::MmaShape::M16N8K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp16,
+                                             sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedDirectNative,
+                                             sbt::MmaLoweringClass::NativeMmaSync, 4, 2, 4, false),
+                                make_endprg(0x80004004u)}));
+    require(ptx.find("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16") != std::string::npos, "missing fp16 native opcode");
+    require(
+        ptx.find("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {%r24, %r25}, {%r3, %r4, %r5, %r6}, {%r7, %r8}, {%r20, %r21};") !=
+            std::string::npos,
+        "fp16 native tuple regs diverged from the direct window-to-tuple contract");
+  }
 
   {
     const auto ptx = emit_success_ptx(
@@ -207,12 +223,32 @@ int main() {
         "mma tuple regs overlap helper scratch regs");
   }
 
-  expect_emit_success(
-      make_cfg(0x80004180u, {make_mma_inst(0x80004180u, 32, 64, 80, sbt::MmaShape::M16N16K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp32,
-                                           sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedSplitNComposite,
-                                           sbt::MmaLoweringClass::CompositeLowering, 4, 4, 8, false),
-                              make_endprg(0x80004184u)}),
-      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32");
+  {
+    const auto ptx = emit_success_ptx(
+        make_cfg(0x80004180u, {make_mma_inst(0x80004180u, 32, 64, 80, sbt::MmaShape::M16N16K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp32,
+                                             sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedSplitNComposite,
+                                             sbt::MmaLoweringClass::CompositeLowering, 4, 4, 8, false),
+                                make_endprg(0x80004184u)}));
+    require(count_substr(ptx, "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32") == 2u,
+            "split-n fp32 lowering must emit exactly two native m16n8k16 ops");
+  }
+
+  {
+    const auto ptx = emit_success_ptx(
+        make_cfg(0x800041c0u, {make_mma_inst(0x800041c0u, 32, 64, 80, sbt::MmaShape::M16N16K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp16,
+                                             sbt::MmaLayout::Row, sbt::MmaLayout::Col, sbt::FirstBatchMmaClass::CommittedSplitNComposite,
+                                             sbt::MmaLoweringClass::CompositeLowering, 4, 4, 8, false),
+                                make_endprg(0x800041c4u)}));
+    require(count_substr(ptx, "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16") == 2u,
+            "split-n fp16 lowering must emit exactly two native m16n8k16 ops");
+  }
+
+  expect_emit_error(
+      make_cfg(0x800041e0u, {make_mma_inst(0x800041e0u, 32, 64, 80, sbt::MmaShape::M16N8K16, sbt::MmaAbType::Fp16, sbt::MmaCdType::Fp16,
+                                           sbt::MmaLayout::Row, sbt::MmaLayout::Row, sbt::FirstBatchMmaClass::Deferred,
+                                           sbt::MmaLoweringClass::Unsupported, 4, 2, 4, false),
+                              make_endprg(0x800041e4u)}),
+      "unsupported.mma.deferred", "support=deferred");
 
   try {
     std::unordered_map<uint32_t, std::string> sym_by_addr;
@@ -248,6 +284,6 @@ int main() {
     require(e.code == "unsupported.mma.research", "expected research error code");
   }
 
-  std::cout << "ok mma ptx emit selective fail-fast\n";
+  std::cout << "ok mma ptx emit current fp16 support + fail-fast boundaries\n";
   return 0;
 }

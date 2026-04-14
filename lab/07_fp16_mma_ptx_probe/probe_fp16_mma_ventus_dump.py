@@ -20,7 +20,7 @@
 实现原理/处理步骤
 1. 复用 `tools/fp16_mma_spike_cpu_ref.py` 的种子与 Ventus 风格输入窗口生成口径。
 2. 通过 `VENTUS_BACKEND=spike` 运行一个本地材料化的 dump kernel，把 `a/b/c/d` 直接导出到输出缓冲区。
-3. 用导出的 Ventus raw `a/b/c` 作为 PTX 无 `ldmatrix` probe 的输入，逐个 `mma.sync` 变体跑比较。
+3. 用导出的 Ventus raw `a/b/c` 作为当前已跑通的 no-`ldmatrix` direct-raw PTX probe 输入。
 4. 把 PTX 输出和 Ventus dump 的 `d` raw 窗口直接对齐，避免再引入 logical tile 解释层。
 """
 
@@ -39,12 +39,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 HELPER_PATH = REPO_ROOT / "tools" / "fp16_mma_spike_cpu_ref.py"
 DIRECT_PTX_PATH = SCRIPT_DIR / "probe_fp16_mma_ptx.py"
+DIRECT_RAW_PATH = SCRIPT_DIR / "probe_fp16_mma_ptx_direct_raw.py"
 DEFAULT_EXE = REPO_ROOT / "build" / "ventus_ocl_run"
 DEFAULT_SRC = REPO_ROOT / "testcases" / "ocl_compare" / "custom_mma_kernels.cl"
 DEFAULT_ENV_SH = (REPO_ROOT / ".." / "env.sh").resolve()
 WARP_LANES = 32
 RAW_WORDS_PER_LANE = 10
-CPU_REF_KERNEL = "mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16_cpu_ref"
+SHAPE = "m16n8k16"
 DUMP_KERNEL = "mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16_dump"
 DUMP_SLOTS = 10
 
@@ -61,7 +62,7 @@ def load_module(path: Path, name: str):
 
 HELPER = load_module(HELPER_PATH, "fp16_mma_spike_cpu_ref")
 PTX_PROBE = load_module(DIRECT_PTX_PATH, "probe_fp16_mma_ptx")
-LDMATRIX_PROBE = load_module(SCRIPT_DIR / "probe_fp16_mma_ptx_ldmatrix.py", "probe_fp16_mma_ptx_ldmatrix")
+DIRECT_RAW_PROBE = load_module(DIRECT_RAW_PATH, "probe_fp16_mma_ptx_direct_raw")
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,7 +131,7 @@ __kernel void mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16_dump(__global const
 #endif
 """
     dst_src.write_text(
-        "#define SBT_MMA_ENABLE_FP16_FP16_CPU_REF 1\n"
+        f"#define {HELPER.feature_define_for_shape(SHAPE)} 1\n"
         "#define SBT_MMA_ENABLE_FP16_FP16_DUMP 1\n"
         f"#define DUMP_SLOT {slot}\n"
         f"{text}\n{dump_kernel}\n",
@@ -206,8 +207,6 @@ def main() -> int:
     if args.keep_workdir:
         print(f"[INFO] workdir={workdir}")
 
-    cuda: PTX_PROBE.CudaDriver | None = None
-    module = None
     try:
         seed_words = HELPER.build_seed_words(WARP_LANES, args.seed)
         dump_slots: list[list[int]] = []
@@ -215,11 +214,11 @@ def main() -> int:
             dump_slots.append(run_dump_kernel(args.exe.resolve(), args.env_sh.resolve(), args.src.resolve(), workdir, seed_words, slot))
         a_dump, b_dump, c_dump, d_dump = reconstruct_raw_windows(dump_slots)
 
-        a_regs, b_regs, c_regs = HELPER.build_register_windows(seed_words)
+        a_regs, b_regs, c_regs = HELPER.build_register_windows(seed_words, shape=SHAPE)
         helper_a = PTX_PROBE.flatten_lane_regs(a_regs)
         helper_b = PTX_PROBE.flatten_lane_regs(b_regs)
         helper_c = PTX_PROBE.flatten_lane_regs(c_regs)
-        helper_d = HELPER.compute_cpu_reference(seed_words)
+        helper_d = HELPER.compute_cpu_reference(seed_words, shape=SHAPE)
 
         print(f"[INFO] seed=0x{args.seed:08x} dump_slots={len(dump_slots)}")
         compare_raw_words("ventus_a_vs_helper", a_dump, helper_a)
@@ -228,57 +227,20 @@ def main() -> int:
         compare_raw_words("ventus_d_vs_cpu_ref", d_dump, helper_d)
         print("[INFO] Ventus dump matches helper-generated ABI and CPU ref")
 
-        variants = PTX_PROBE.build_variants()
-        ptx_text = PTX_PROBE.render_ptx_module(args.arch, args.ptx_version, variants)
-        ptx_path = workdir / "probe.ptx"
-        ptx_path.write_text(ptx_text, encoding="utf-8")
-
-        cuda = PTX_PROBE.CudaDriver()
-        module = cuda.load_module_from_ptx(ptx_text)
-        try:
-            a_dev = cuda.alloc(len(a_dump) * 4)
-            b_dev = cuda.alloc(len(b_dump) * 4)
-            c_dev = cuda.alloc(len(c_dump) * 4)
-            d_dev = cuda.alloc(16 * 8 * 2)
-            try:
-                cuda.memcpy_htod(a_dev, b"".join(int(w).to_bytes(4, "little") for w in a_dump))
-                cuda.memcpy_htod(b_dev, b"".join(int(w).to_bytes(4, "little") for w in b_dump))
-                cuda.memcpy_htod(c_dev, b"".join(int(w).to_bytes(4, "little") for w in c_dump))
-
-                best = None
-                for variant in variants:
-                    fun = cuda.get_function(module, f"probe_{variant.name}")
-                    cuda.launch(fun, (1, 1, 1), (WARP_LANES, 1, 1), [a_dev, b_dev, c_dev, d_dev])
-                    out = bytearray(16 * 8 * 2)
-                    cuda.memcpy_dtoh(out, d_dev)
-                    actual_tile = LDMATRIX_PROBE.bytes_to_tile_u16(bytes(out), 16, 8)
-                    actual = LDMATRIX_PROBE.pack_ventus_output_words(actual_tile)
-                    nan_pairs, finite_pairs, finite_pass, max_abs_err, max_ulp_err, failures = PTX_PROBE.compare_words(
-                        actual, d_dump, args.ulp_tol
-                    )
-                    print(
-                        f"[INFO] {variant.name} finite_pass={finite_pass}/{finite_pairs} "
-                        f"mismatch={len(failures)} max_abs={max_abs_err} max_ulp={max_ulp_err}"
-                    )
-                    if len(failures) == 0:
-                        best = variant.name
-                        print(f"PASS no-ldmatrix PTX matched Ventus dump: {best}")
-                        break
-
-                if best is None:
-                    print("[SUMMARY] no no-ldmatrix PTX variant matched Ventus dump")
-                    return 1
-                return 0
-            finally:
-                cuda.free(a_dev)
-                cuda.free(b_dev)
-                cuda.free(c_dev)
-                cuda.free(d_dev)
-        finally:
-            if module is not None:
-                cuda.unload_module(module)
-            if cuda is not None:
-                cuda.close()
+        actual_words = DIRECT_RAW_PROBE.run_probe(a_dump, b_dump, c_dump, args.arch, args.ptx_version, "ptx")
+        nan_pairs, finite_pairs, finite_pass, max_abs_err, max_ulp_err, failures = PTX_PROBE.compare_words(
+            actual_words, d_dump, args.ulp_tol
+        )
+        if failures:
+            raise RuntimeError(
+                f"direct-raw PTX vs Ventus dump mismatch_count={len(failures)} "
+                f"first={failures[0]} max_abs={max_abs_err} max_ulp={max_ulp_err}"
+            )
+        print(
+            f"PASS no-ldmatrix PTX matched Ventus dump "
+            f"finite_pass={finite_pass}/{finite_pairs} max_abs={max_abs_err} max_ulp={max_ulp_err}"
+        )
+        return 0
     finally:
         if args.keep_workdir:
             print(f"[INFO] kept workdir={workdir}")

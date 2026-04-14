@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 背景
-- MMA 仍处于独立 active change；当前先保留最小可观察 microtest 资产与 decode scaffolding。
-- 由于 Ventus LLVM frontend builtin ABI 与 Spike shape/window 口径在 `fp16 -> fp16` 路径上尚未确认，
-  sbtsim 当前仅对该受影响路径保持显式 fail-fast；其它已实现的 MMA 路径继续走 compile-first / Spike-vs-PTX gate。
+- custom MMA 首批 `row.col` 子集已作为 current 行为落地；当前 gate 需要同时覆盖非-`fp16->fp16` family，
+  以及新放开的两条 `fp16 -> fp16` family。
+- 对 current supported `fp16 -> fp16` family，semantic gate 不能只看 Spike-vs-PTX 现象，还要显式对齐
+  repository-managed CPU reference 与文档化的 `fp16` 容差规则。
 
 需求/作用
 - 执行 `testcases/ocl_compare/custom_mma_kernels.cl` 的最小 MMA microtest family。
 - 支持分阶段 gate：
-  1) `spike-precheck`：只跑 Spike 路径并验证输出可观察性；
+  1) `spike-precheck`：跑 Spike 路径；非-`fp16->fp16` family 检查输出可观察性，`fp16 -> fp16` family 直接对齐 CPU reference；
   2) `compile-first`：在 spike-precheck 基础上运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`；
-  3) `full`：在 compile-first 基础上增加 Spike-vs-PTX 输出比较。
+  3) `full`：在 compile-first 基础上增加 `PTX vs Spike vs CPU reference` 输出比较。
 - 不做静默降级：未启用的阶段会显式打印 `SKIP`；启用后任一步失败直接返回非 0。
 
 用法
@@ -21,7 +22,7 @@
 实现原理/处理步骤
 1) 通过 `source ../env.sh` + `VENTUS_BACKEND=spike` 跑 MMA kernel，检查输出字节规模与可观察性。
 2) 当 stage >= compile-first 时，基于同次编译产物 `object0.riscv` 运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`。
-3) 当 stage = full 时，再运行 `VENTUS_BACKEND=ptx`，对比 Spike 与 PTX 输出；若未来新增受 `fp16 -> fp16` 临时 fail-fast 影响的 kernel，应对这些 kernel 显式失败或跳过，而不是把全部 MMA 都标成 pending。
+3) 当 stage = full 时，再运行 `VENTUS_BACKEND=ptx`；非-`fp16->fp16` family 继续对比 Spike 与 PTX，`fp16 -> fp16` family 则同时对比 `Spike/PTX/CPU reference`。
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+import fp16_mma_spike_cpu_ref as fp16_ref
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -107,6 +110,7 @@ class KernelSpec:
     compile_expect: str
     block_code: str = ""
     source_define: str = ""
+    fp16_shape: str = ""
 
 
 KERNELS: list[KernelSpec] = [
@@ -117,11 +121,27 @@ KERNELS: list[KernelSpec] = [
     KernelSpec("mt_custom_mma_m16n16k16_row_col_f32_bf16_bf16_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_BF16_M16N16K16"),
     KernelSpec("mt_custom_mma_m16n16k8_row_col_f32_tf32_tf32_f32", "f32_tol", "pass", "", "SBT_MMA_ENABLE_TF32_M16N16K8"),
     KernelSpec(
-        "mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16_blocked",
+        "mt_custom_mma_m16n8k16_row_col_f16_f16_f16_f16",
+        "fp16_cpu_ref",
+        "pass",
+        "",
+        "SBT_MMA_ENABLE_FP16_FP16_M16N8K16",
+        fp16_ref.SHAPE_M16N8K16,
+    ),
+    KernelSpec(
+        "mt_custom_mma_m16n16k16_row_col_f16_f16_f16_f16",
+        "fp16_cpu_ref",
+        "pass",
+        "",
+        "SBT_MMA_ENABLE_FP16_FP16_M16N16K16",
+        fp16_ref.SHAPE_M16N16K16,
+    ),
+    KernelSpec(
+        "mt_custom_mma_m16n8k16_row_row_f16_f16_f16_f16_blocked",
         "u32_exact",
         "blocked",
-        "unsupported.mma.fp16_fp16_contract_pending",
-        "SBT_MMA_ENABLE_FP16_FP16_BLOCKED",
+        "unsupported.mma.deferred",
+        "SBT_MMA_ENABLE_FP16_FP16_NONCURRENT_BLOCKED",
     ),
 ]
 
@@ -202,6 +222,19 @@ def compare_u32_exact(name: str, got: list[int], exp: list[int]) -> None:
             raise RuntimeError(f"{name}: mismatch i={i} got=0x{g:08x} expected=0x{e:08x}")
 
 
+def compare_fp16_words(name: str, got: list[int], exp: list[int], ulp_tol: int) -> str:
+    nan_pairs, finite_pairs, finite_pass, max_abs_err, max_ulp_err, failures = fp16_ref.compare_words(got, exp, ulp_tol)
+    if failures:
+        raise RuntimeError(
+            f"{name}: fp16 mismatch_count={len(failures)} first={failures[0]} "
+            f"policy=NaN classify-equal; finite<={ulp_tol}ULP"
+        )
+    return (
+        f"nan_pairs={nan_pairs} finite_pairs={finite_pairs} finite_pass={finite_pass} "
+        f"max_abs_err={max_abs_err} max_ulp_err={max_ulp_err}"
+    )
+
+
 def stage_requires_compile_first(stage: str) -> bool:
     return stage in (STAGE_COMPILE_FIRST, STAGE_FULL)
 
@@ -222,6 +255,7 @@ def main() -> int:
     ap.add_argument("--ptxas", type=str, default="ptxas")
     ap.add_argument("--mma-atol", type=float, default=1e-3)
     ap.add_argument("--mma-rtol", type=float, default=1e-3)
+    ap.add_argument("--fp16-ulp-tol", type=int, default=1)
     ap.add_argument("--stage", choices=ALL_STAGES, default=STAGE_SPIKE_PRECHECK)
     ap.add_argument(
         "--spike-compat-nested-regext",
@@ -232,6 +266,8 @@ def main() -> int:
 
     if args.n < WARP_LANES:
         raise SystemExit(f"--n must be >= {WARP_LANES} for warp-level MMA kernels (got {args.n})")
+    if args.n % WARP_LANES != 0:
+        raise SystemExit(f"--n must be a multiple of {WARP_LANES} for warp-scoped MMA validation (got {args.n})")
 
     exe = args.exe.resolve()
     sbt_decode = args.sbt_decode.resolve()
@@ -282,6 +318,9 @@ def main() -> int:
             blocked_compile = False
             blocked_by_precheck = False
             spike_words: list[int] = []
+            fp16_expected_words = (
+                fp16_ref.compute_cpu_reference(input_words, shape=spec.fp16_shape) if spec.mode == "fp16_cpu_ref" else []
+            )
 
             try:
                 run_backend(
@@ -299,18 +338,27 @@ def main() -> int:
                     compat_nested_regext=args.spike_compat_nested_regext,
                 )
                 spike_words = parse_u32_array(out_spike.read_bytes())
-                check_spike_observable(spec.name, spike_words)
+                if spec.mode == "fp16_cpu_ref":
+                    details = compare_fp16_words(f"{spec.name}: spike-vs-cpu-ref", spike_words, fp16_expected_words, args.fp16_ulp_tol)
+                    print(f"PASS spike-vs-cpu-ref kernel={spec.name} {details}")
+                else:
+                    check_spike_observable(spec.name, spike_words)
+                    print(f"PASS spike observable kernel={spec.name} words={len(spike_words)}")
                 spike_pass += 1
-                print(f"PASS spike observable kernel={spec.name} words={len(spike_words)}")
             except Exception as ex:  # pylint: disable=broad-except
                 if spec.compile_expect == "blocked":
                     blocked_compile = True
+                    if spec.mode == "fp16_cpu_ref":
+                        failures.append(f"{spec.name}: spike-vs-cpu-ref failed: {ex}")
+                        print(f"FAIL spike-vs-cpu-ref kernel={spec.name}: {ex}")
+                        continue
                     blocked_by_precheck = True
                     spike_block += 1
                     print(f"BLOCK spike observable kernel={spec.name} reason=blocked-path {ex}")
                 else:
+                    label = "spike-vs-cpu-ref" if spec.mode == "fp16_cpu_ref" else "spike observable"
                     failures.append(f"{spec.name}: spike-precheck failed: {ex}")
-                    print(f"FAIL spike observable kernel={spec.name}: {ex}")
+                    print(f"FAIL {label} kernel={spec.name}: {ex}")
                     continue
 
             if blocked_by_precheck:
@@ -388,15 +436,28 @@ def main() -> int:
                     ptx_words = parse_u32_array(out_ptx.read_bytes())
                     if spec.mode == "f32_tol":
                         compare_f32_bits_tol(spec.name, ptx_words, spike_words, atol=args.mma_atol, rtol=args.mma_rtol)
+                        print(f"PASS spike-vs-ptx kernel={spec.name} mode={spec.mode}")
                     elif spec.mode == "u32_exact":
                         compare_u32_exact(spec.name, ptx_words, spike_words)
+                        print(f"PASS spike-vs-ptx kernel={spec.name} mode={spec.mode}")
+                    elif spec.mode == "fp16_cpu_ref":
+                        cpu_details = compare_fp16_words(
+                            f"{spec.name}: ptx-vs-cpu-ref", ptx_words, fp16_expected_words, args.fp16_ulp_tol
+                        )
+                        spike_details = compare_fp16_words(
+                            f"{spec.name}: ptx-vs-spike", ptx_words, spike_words, args.fp16_ulp_tol
+                        )
+                        print(
+                            f"PASS ptx-vs-spike-vs-cpu-ref kernel={spec.name} "
+                            f"cpu[{cpu_details}] spike[{spike_details}]"
+                        )
                     else:
                         raise RuntimeError(f"unknown compare mode: {spec.mode}")
                     full_pass += 1
-                    print(f"PASS spike-vs-ptx kernel={spec.name} mode={spec.mode}")
                 except Exception as ex:  # pylint: disable=broad-except
                     failures.append(f"{spec.name}: full compare failed: {ex}")
-                    print(f"FAIL spike-vs-ptx kernel={spec.name}: {ex}")
+                    label = "ptx-vs-spike-vs-cpu-ref" if spec.mode == "fp16_cpu_ref" else "spike-vs-ptx"
+                    print(f"FAIL {label} kernel={spec.name}: {ex}")
 
     print(
         "[SUMMARY] "

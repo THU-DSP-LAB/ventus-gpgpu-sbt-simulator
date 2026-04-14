@@ -16,18 +16,19 @@
   - shuffle 类 kernel 会自动提升到 32-lane warp 规模执行，避免 `n < 32` 时的伪失败
   - 若当前 custom kernel 产物包含连续 `regext/regexti` 前缀，可显式传 `--spike-compat-nested-regext`；该开关只作用于本 gate 内部调用的 `sbt_decode/sbt_ptx` 与 PTX backend 路径，不改变工具默认 fail-fast 语义
 - `custom_mma_oracle.py`：custom MMA 的分阶段 gate（spike-precheck / compile-first / full）
-  - 当前默认阶段为 `spike-precheck`：先固定 Spike-backed 可观察契约并输出可追踪 PASS/SKIP
+  - 脚本默认阶段仍为 `spike-precheck`：先固定 Spike-backed 可观察契约并输出可追踪 PASS/SKIP
   - `--stage compile-first`：在 Spike 预检查基础上增加 `sbt_decode --require-known` 与 `sbt_ptx + ptxas`
-  - `--stage full`：在 compile-first 基础上增加 Spike-vs-PTX 输出对照（作为后续 lowering 接通后的同一条语义 gate）
+  - `--stage full`：在 compile-first 基础上增加 semantic compare；`fp16 -> fp16` 走 `Spike / PTX / CPU reference` 三方对照，其余 current family 走 Spike-vs-PTX
   - current：gate 会按目标 feature macro 单独 materialize 源文件，只暴露一个 MMA kernel，绕开 Ventus PoCL 在多-kernel OpenCL 源文件上可能误选首个入口的运行时缺陷
-  - 逐 kernel 报告 `PASS` / `BLOCK` / `FAIL`，其中 `fp16 -> fp16` 路径当前按显式 `BLOCK` 处理，不混入成功 gate
-- `fp16_mma_spike_cpu_ref.py`：`fp16 -> fp16` `m16n8k16 row.col` 的 Spike-vs-CPU-reference 独立测例
+  - 逐 kernel 报告 `PASS` / `BLOCK` / `FAIL`；current supported `fp16 -> fp16` family 走 `Spike / PTX / CPU reference` 三方 gate，non-current `fp16 -> fp16` family 继续显式 `BLOCK`
+- `fp16_mma_spike_cpu_ref.py`：`fp16 -> fp16` `m16n8k16 row.col` / `m16n16k16 row.col` 的 Spike-vs-CPU-reference 独立测例
   - 输入由 host 随机 seed 驱动，再在 kernel 内映射到有限 `fp16` 值集合，避免把 NaN/Inf payload 选择混进测例主结论
-  - current：该脚本只验证 Ventus LLVM + Spike 语义，不经过 sbtsim PTX lowering
+  - current：该脚本用于维护 repository-managed CPU reference 与 Spike 语义，不直接替代 PTX semantic gate
   - 比较规则：`NaN` 按分类相等，非 `NaN` half lane 默认要求 `<= 1 ULP`
 - `regress.sh`：统一回归入口（聚合 smoke/gate/端到端；默认临时工作目录执行并自动清理，可用参数覆盖）
+  - current：默认 `--mma-stage=full`，确保统一回归默认覆盖 current `fp16 -> fp16` MMA 的 compile-first 与 semantic gate，而不是只停留在 Spike precheck
   - 端到端阶段会强制使用当前树的 `build/sbt_ptx` 作为 `GPU_SBT_PTX`
-  - `--mma-stage` 控制 `custom_mma_oracle.py` 阶段，默认 `spike-precheck`
+  - `--mma-stage` 控制 `custom_mma_oracle.py` 阶段，默认 `full`
 - `rodinia_ptx_smoke.sh`：Rodinia compile-first smoke（PTX + ptxas）
 - `pds_ptx_smoke.sh`：PDS 参数、single-Global entry ABI 与 PTX 映射 smoke
 - `microtest_coverage_gate.sh`：Spike-vs-PTX 微测例 + 覆盖 gate 入口

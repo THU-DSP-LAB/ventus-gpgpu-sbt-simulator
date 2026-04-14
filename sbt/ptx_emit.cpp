@@ -1198,6 +1198,19 @@ struct EmitCtx final {
     emit_compute_tuple_logical_coord(value, row_r, col_r);
     emit_compute_window_index_from_logical_coord(di, role, slice_col_offset, row_r, col_r, idx_r, tmp_r);
 
+    if ((role == sbt::ptx::mma::OperandRole::C || role == sbt::ptx::mma::OperandRole::D) &&
+        sbt::ptx::mma::tuple_pack(abi, role) == sbt::ptx::mma::PackMode::Packed16x2) {
+      emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 6;");
+      emit_line("shr.u32 " + lane_r + ", " + idx_r + ", 1;");
+      emit_line("and.b32 " + lane_r + ", " + lane_r + ", 31;");
+      emit_load_u32_from_mma_scratch(dst_r, scratch_rd, reg_r, lane_r, tmp_r);
+      emit_line("and.b32 " + tmp2_r + ", " + idx_r + ", 1;");
+      emit_line("setp.ne.u32 " + p(6) + ", " + tmp2_r + ", 0;");
+      emit_line("@" + p(6) + " shr.u32 " + dst_r + ", " + dst_r + ", 16;");
+      emit_line("and.b32 " + dst_r + ", " + dst_r + ", 0xffff;");
+      return;
+    }
+
     if (role == sbt::ptx::mma::OperandRole::A || role == sbt::ptx::mma::OperandRole::B) {
       if (di.mma.wide_ab) {
         emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 5;");
@@ -1255,6 +1268,24 @@ struct EmitCtx final {
                                                     const std::string &reg_r, const std::string &lane_r, const std::string &tmp_r) {
     emit_compute_tuple_logical_coord(value, row_r, col_r);
     emit_compute_window_index_from_logical_coord(di, sbt::ptx::mma::OperandRole::D, slice_col_offset, row_r, col_r, idx_r, tmp_r);
+
+    if (sbt::ptx::mma::tuple_pack(abi, sbt::ptx::mma::OperandRole::D) == sbt::ptx::mma::PackMode::Packed16x2) {
+      emit_line("and.b32 " + src_r + ", " + src_r + ", 0xffff;");
+      emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 6;");
+      emit_line("shr.u32 " + lane_r + ", " + idx_r + ", 1;");
+      emit_line("and.b32 " + lane_r + ", " + lane_r + ", 31;");
+      emit_load_u32_from_mma_scratch(tmp_r, scratch_rd, reg_r, lane_r, row_r);
+      emit_line("and.b32 " + col_r + ", " + idx_r + ", 1;");
+      emit_line("setp.ne.u32 " + p(6) + ", " + col_r + ", 0;");
+      emit_line("@!" + p(6) + " and.b32 " + tmp_r + ", " + tmp_r + ", 0xffff0000;");
+      emit_line("@!" + p(6) + " or.b32 " + tmp_r + ", " + tmp_r + ", " + src_r + ";");
+      emit_line("@" + p(6) + " and.b32 " + tmp_r + ", " + tmp_r + ", 0x0000ffff;");
+      emit_line("@" + p(6) + " shl.b32 " + row_r + ", " + src_r + ", 16;");
+      emit_line("@" + p(6) + " or.b32 " + tmp_r + ", " + tmp_r + ", " + row_r + ";");
+      emit_store_u32_to_mma_scratch(scratch_rd, reg_r, lane_r, tmp_r, row_r);
+      return;
+    }
+
     emit_line("shr.u32 " + reg_r + ", " + idx_r + ", 5;");
     emit_line("and.b32 " + lane_r + ", " + idx_r + ", 31;");
     emit_store_u32_to_mma_scratch(scratch_rd, reg_r, lane_r, src_r, tmp_r);
@@ -1348,6 +1379,29 @@ struct EmitCtx final {
     }
   }
 
+  void validate_native_mma_contract(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi) {
+    require(sbt::ptx::mma::shape_m(di.mma) == abi.m, EmitError("invalid.mma.native_contract", func_name, di.pc, mma_detail(di.mma)));
+    require(sbt::ptx::mma::shape_k(di.mma) == abi.k, EmitError("invalid.mma.native_contract", func_name, di.pc, mma_detail(di.mma)));
+    require(sbt::ptx::mma::shape_n(di.mma) == abi.n, EmitError("invalid.mma.native_contract", func_name, di.pc, mma_detail(di.mma)));
+    const uint8_t cd_carrier_regs =
+        (di.mma.cd_type == sbt::MmaCdType::Fp16) ? static_cast<uint8_t>(di.mma.c_regs_per_thread / 2u) : di.mma.c_regs_per_thread;
+    require(cd_carrier_regs == sbt::ptx::mma::tuple_reg_count(abi, sbt::ptx::mma::OperandRole::C),
+            EmitError("invalid.mma.native_contract", func_name, di.pc, mma_detail(di.mma)));
+  }
+
+  void validate_split_n_contract(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi) {
+    require(sbt::ptx::mma::shape_m(di.mma) == abi.m, EmitError("invalid.mma.composite_contract", func_name, di.pc, mma_detail(di.mma)));
+    require(sbt::ptx::mma::shape_k(di.mma) == abi.k, EmitError("invalid.mma.composite_contract", func_name, di.pc, mma_detail(di.mma)));
+    require(sbt::ptx::mma::shape_n(di.mma) == static_cast<uint8_t>(abi.n * 2u),
+            EmitError("invalid.mma.composite_contract", func_name, di.pc, mma_detail(di.mma)));
+    require(di.mma.b_regs_per_thread == static_cast<uint8_t>(sbt::ptx::mma::tuple_reg_count(abi, sbt::ptx::mma::OperandRole::B) * 2u),
+            EmitError("invalid.mma.composite_contract", func_name, di.pc, mma_detail(di.mma)));
+    const uint8_t cd_carrier_regs =
+        (di.mma.cd_type == sbt::MmaCdType::Fp16) ? static_cast<uint8_t>(di.mma.c_regs_per_thread / 2u) : di.mma.c_regs_per_thread;
+    require(cd_carrier_regs == static_cast<uint8_t>(sbt::ptx::mma::tuple_reg_count(abi, sbt::ptx::mma::OperandRole::C) * 2u),
+            EmitError("invalid.mma.composite_contract", func_name, di.pc, mma_detail(di.mma)));
+  }
+
   void emit_native_mma_sync(const sbt::DecodedInst &di, const sbt::ptx::mma::AbiDesc &abi, uint8_t slice_col_offset) {
     std::vector<std::string> a_tuple_regs;
     a_tuple_regs.reserve(kMmaATupleRegIds.size());
@@ -1366,12 +1420,14 @@ struct EmitCtx final {
     emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rs2_base + static_cast<int>(b_plan.reg_offset), b_plan.reg_count);
     emit_materialize_b_tuple_regs(di, abi, b_plan, rd(18), b_tuple_regs);
 
-    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rd_base, di.mma.c_regs_per_thread);
+    const uint8_t cd_carrier_regs =
+        (di.mma.cd_type == sbt::MmaCdType::Fp16) ? static_cast<uint8_t>(di.mma.c_regs_per_thread / 2u) : di.mma.c_regs_per_thread;
+    emit_spill_v_window_to_mma_scratch(rd(18), di.mma.rd_base, cd_carrier_regs);
     const bool packed_d = sbt::ptx::mma::tuple_pack(abi, sbt::ptx::mma::OperandRole::D) == sbt::ptx::mma::PackMode::Packed16x2;
     if (packed_d) {
-      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, rd(18), {r(22), r(23)});
+      emit_materialize_tuple_regs(di, abi, sbt::ptx::mma::OperandRole::C, slice_col_offset, rd(18), {r(20), r(21)});
       emit_line(std::string(abi.ptx_opcode) + " {" + r(24) + ", " + r(25) + "}, {" + a_tuple_regs[0] + ", " + a_tuple_regs[1] + ", " +
-                a_tuple_regs[2] + ", " + a_tuple_regs[3] + "}, {" + b_tuple_regs[0] + ", " + b_tuple_regs[1] + "}, {" + r(22) + ", " + r(23) +
+                a_tuple_regs[2] + ", " + a_tuple_regs[3] + "}, {" + b_tuple_regs[0] + ", " + b_tuple_regs[1] + "}, {" + r(20) + ", " + r(21) +
                 "};");
       emit_store_d_tuple_to_spilled_cd_window(di, abi, slice_col_offset, rd(18), {r(24), r(25)});
     } else {
@@ -1383,17 +1439,12 @@ struct EmitCtx final {
     }
 
     emit_warp_sync();
-    emit_reload_v_window_from_mma_scratch(rd(18), di.mma.rd_base, di.mma.c_regs_per_thread);
+    emit_reload_v_window_from_mma_scratch(rd(18), di.mma.rd_base, cd_carrier_regs);
   }
 
   void emit_mma_inst(const sbt::DecodedInst &di) {
     require(di.mma.valid, EmitError("invalid.mma.metadata", func_name, di.pc, di.name));
     const std::string detail = mma_detail(di.mma);
-
-    if (di.mma.cd_type == sbt::MmaCdType::Fp16) {
-      throw EmitError("unsupported.mma.fp16_fp16_contract_pending", func_name, di.pc,
-                      detail + " note=Ventus LLVM/Spike MMA fp16->fp16 ABI/layout contract is not confirmed yet; keep this path fail-fast");
-    }
 
     const auto *abi = sbt::ptx::mma::find_abi_desc(di.mma);
 
@@ -1412,11 +1463,13 @@ struct EmitCtx final {
 
     switch (di.mma.lowering_class) {
     case sbt::MmaLoweringClass::NativeMmaSync:
+      validate_native_mma_contract(di, *abi);
       emit_native_mma_sync(di, *abi, 0u);
       return;
     case sbt::MmaLoweringClass::CompositeLowering:
+      validate_split_n_contract(di, *abi);
       emit_native_mma_sync(di, *abi, 0u);
-      emit_native_mma_sync(di, *abi, 8u);
+      emit_native_mma_sync(di, *abi, abi->n);
       return;
     case sbt::MmaLoweringClass::NativeWmma:
       throw EmitError("unsupported.mma.native_wmma", func_name, di.pc, detail);

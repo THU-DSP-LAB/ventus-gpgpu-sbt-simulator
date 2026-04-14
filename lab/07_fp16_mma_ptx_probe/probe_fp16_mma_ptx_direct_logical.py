@@ -255,7 +255,7 @@ def main() -> int:
 
         compare_tile_exact(actual_d_tile, expected_d_tile)
         actual_words = LDMATRIX.pack_ventus_output_words(actual_d_tile)
-        expected_words = HELPER.compute_cpu_reference(seed_words)
+        expected_words = HELPER.compute_cpu_reference(seed_words, shape=PTX.FP16_SHAPE)
         cpu_metrics = HELPER.compare_words(actual_words, expected_words, args.ulp_tol)
         cpu_failures = cpu_metrics[-1]
         if cpu_failures:

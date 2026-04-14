@@ -291,7 +291,7 @@ def main() -> int:
         a_words = flatten_lane_regs(a_regs)
         b_words = flatten_lane_regs(b_regs)
         c_words = flatten_lane_regs(c_regs)
-        expected_words = HELPER.compute_cpu_reference(seed_words)
+        expected_words = HELPER.compute_cpu_reference(seed_words, shape=PTX.FP16_SHAPE)
 
         actual_words = run_probe(a_words, b_words, c_words, args.arch, args.ptx_version, args.load_mode)
         cpu_metrics = HELPER.compare_words(actual_words, expected_words, args.ulp_tol)

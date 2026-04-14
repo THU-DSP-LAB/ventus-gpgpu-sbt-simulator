@@ -28,10 +28,10 @@
 
 - `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：custom 指令拆分阶段留下的 active 共享前置基线；冻结 `.version 7.8` / `sm_89`、family-scoped oracle policy、non-MMA 已落地语义和 MMA 首发批次边界，并明确 `bf16x2` 的 mixed native/composite lowering 边界。相关 split changes 已归档，但该文档仍作为后续 blocked/deferred MMA 扩展的长期前置参考。
 - `doc/CUSTOM_INSTRUCTION_INPUT.md`：custom 指令输入材料的受管副本；供 shared baseline 与 MMA 架构文档引用，但不覆盖 current spec。
-- `doc/mma/LOWERING_ARCHITECTURE.md`：Ventus MMA 的 active lowering 架构文档；冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型、`MmaInstInfo` / native PTX ABI descriptor contract，以及“不干扰既有 non-MMA lowering”的接入约束。当前首批 committed `row.col` MMA 子集已作为 current 行为落地；该文档继续承担 blocked/deferred/research MMA families 与剩余架构边界的 active 入口。当前仍显式 blocked 的只有 `fp16 -> fp16` MMA 路径。
+- `doc/mma/LOWERING_ARCHITECTURE.md`：Ventus MMA 的 active lowering 架构文档；冻结 canonical MMA matrix、`VGPR window -> logical tile -> PTX fragment tuple` 的分层模型、`MmaInstInfo` / native PTX ABI descriptor contract，以及“不干扰既有 non-MMA lowering”的接入约束。当前首批 committed `row.col` MMA 子集已作为 current 行为落地；该文档继续承担 blocked/deferred/research MMA families 与剩余架构边界的 active 入口。
 - `doc/ventus-divergence-sgpr-analysis.md`：基于 `../llvm` 的参考分析，说明 Ventus LLVM 如何处理 `vbranch` / `join` 下的 SGPR/VGPR 有效性问题。
 
-口径提醒：custom 指令当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；deferred/research MMA families 及更宽的矩阵/架构讨论仍保留在 `active` 长期文档中，而不再由单独 active change 承载。仓库当前仅 `fp16 -> fp16` MMA 路径处于显式 fail-fast 临时阻塞状态，等待 Ventus 工具链澄清后再恢复。
+口径提醒：custom 指令当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集，其中 `fp16 -> fp16` 当前支持族仅限 `m16n8k16 row.col` 与 `m16n16k16 row.col`。deferred/research MMA families、非 current `fp16 -> fp16` 组合及更宽的矩阵/架构讨论仍保留在 `active` 长期文档中，而不再由单独 active change 承载。
 
 ## 2. 当前事实与 contract
 
@@ -80,4 +80,5 @@
 
 - `README.md`：项目目标与命令用法（用户入口）。
 - `lab/`：历史归档实验目录（不再作为当前实现入口）。
+- `lab/07_fp16_mma_ptx_probe/`：`historical` 的 `fp16 -> fp16` MMA 前期探针实验；其结论已吸收进 current spec / tests / tooling，不再作为当前 contract 或统一回归入口。
 - `openspec/`：OpenSpec 当前 contract、活跃 change 与历史归档；具体分层见 `openspec/README.md`。

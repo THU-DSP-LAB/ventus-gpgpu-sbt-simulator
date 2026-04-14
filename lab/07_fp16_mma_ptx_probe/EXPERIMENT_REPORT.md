@@ -1,8 +1,12 @@
 # fp16 MMA PTX probe report
 
+> 状态：`historical archived experiment report`
+>
+> 本报告记录 `support-fp16-fp16-mma` change 落地前的 probe 结果。其结论已被吸收进 current spec、current 文档与主线回归；本文件仅保留 historical 证据价值。
+
 ## 结论
 
-`m16n8k16 row.col f16->f16` 现在已经有三条在当前环境下端到端跑通的手写 PTX 路径，且都与 Spike / CPU ref 完全一致：
+归档时，`m16n8k16 row.col f16->f16` 已有三条端到端跑通的手写 PTX 路径，且都与 Spike / CPU ref 完全一致：
 
 - `ldmatrix` 路径：
   - `A` 先转成物理转置布局，再进入 `ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16`
@@ -21,7 +25,7 @@
 关键收敛点有两个：
 
 - 早期 direct-lane probe 的 `D` store 寻址是错的，会发生跨 lane 覆盖，因此才会出现“只剩 33 个 word 非零”的假象
-- 即使修好 `D` store，`A/B` 仍不适合直接从 fragment-packed window 连续 load；当前稳定可复现的 no-`ldmatrix` 方案已经覆盖 raw-window 直接映射和 logical-tile 兼容映射两条路径
+- 即使修好 `D` store，`A/B` 仍不适合直接从 fragment-packed window 连续 load；归档时稳定可复现的 no-`ldmatrix` 方案已经覆盖 raw-window 直接映射和 logical-tile 兼容映射两条路径
 
 ## 已验证命令
 
@@ -111,10 +115,10 @@ Seed `0x20260413` 下，`ldmatrix`、direct-logical 和 direct-raw 三条路径�
 ## 还未验证
 
 - `m16n16k16 f16->f16` 的 `split-n` 扩展还没有在同一 probe 里端到端确认
-- 当前 report 只覆盖 `m16n8k16 row.col f16->f16`
+- 本 report 只覆盖 `m16n8k16 row.col f16->f16`
 - “直接以 Ventus raw window 为 kernel 输入”的正确 no-`ldmatrix` 方案已经得到
 - 仍未得到“直接以 fragment-packed raw window 为 kernel 输入”的正确 no-`ldmatrix` 方案
 
 ## 备注
 
-当前 probe 仍然只在隔离目录内工作，不修改 sbtsim 主线 emitter / decode / tests。
+该 probe 只在隔离目录内工作，不修改 sbtsim 主线 emitter / decode / tests。

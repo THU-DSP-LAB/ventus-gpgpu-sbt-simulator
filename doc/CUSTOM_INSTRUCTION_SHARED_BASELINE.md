@@ -41,8 +41,8 @@ As of 2026-04-13 in the current repository state:
 
 - repository-local custom decode/lowering is landed for non-MMA families;
 - repository-local MMA decode metadata and front-loaded MMA microtest assets are present in-tree and are already used by the current landed subset;
-- an ABI/metadata mismatch between Ventus LLVM and Spike is currently confirmed for the MMA `fp16 -> fp16` path, so that path remains explicit fail-fast in sbtsim until toolchain contract is clarified;
-- other MMA paths remain future extension scope rather than globally paused.
+- the current `fp16 -> fp16` landed subset now includes `m16n8k16 row.col` direct-native and `m16n16k16 row.col` split-`n`, with `Spike / PTX / CPU reference` semantic closure on the shared `sm_89` baseline;
+- other deferred/research/non-current MMA paths remain future extension scope rather than globally paused.
 
 ## Frozen Decisions
 
@@ -267,7 +267,7 @@ It must not silently expand first-phase scope to include `wmma`, `m8*`, non-`row
 Current checkpoint note (2026-04-13):
 
 - The repository may keep MMA decode/microtest assets in-tree for future bring-up and regression continuity.
-- Until the mismatch recorded in `openspec/changes/archive/2026-04-13-support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md` is resolved, the MMA `fp16 -> fp16` path must fail fast explicitly in current PTX lowering behavior.
+- The archived `support-custom-mma` mismatch note is now `historical` background only; current `fp16 -> fp16` support is limited to the landed `m16n8k16 row.col` / `m16n16k16 row.col` families, while the remaining non-current combinations still fail fast explicitly.
 
 ### Escalation rule
 

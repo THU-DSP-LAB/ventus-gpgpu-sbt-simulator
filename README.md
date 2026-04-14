@@ -108,17 +108,19 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
 - non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。
-- MMA（要求 `.version 7.8` / `sm_89`）：`row.col` 的 `m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`。其中 `m16n16*` 通过 committed `split-n` composite lowering 落到两个 native `m16n8*` PTX MMA。
+- MMA（要求 `.version 7.8` / `sm_89`）：`row.col` 的 `m16n8k16 f16->f16`、`m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f16`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`。其中 `m16n16*` 通过 committed `split-n` composite lowering 落到两个 native `m16n8*` PTX MMA。
 
-当前 `fp16 -> fp16` MMA 路径仍受 Ventus LLVM + Spike ABI/metadata mismatch 影响，在 sbtsim 中保持显式 fail-fast/block，不属于当前 landed support subset。除这条 blocked 路径外，其它已承诺的首批 `row.col` MMA 组合已同步为 current 行为；更宽的 MMA matrix、deferred/research families 与剩余架构讨论仍由 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md` 与 `doc/mma/LOWERING_ARCHITECTURE.md` 继续承载。
+当前 `fp16 -> fp16` MMA 已作为 landed current subset 的一部分接入 `sbt_ptx`：
+- direct-native：`m16n8k16 row.col f16->f16`
+- committed split-`n` composite：`m16n16k16 row.col f16->f16`
 
-仓库当前另有一个独立的 Spike-vs-CPU-reference 预支持测例，用于单独验证 `m16n8k16 row.col fp16->fp16` 的 Ventus LLVM + Spike 语义；它不代表 sbtsim PTX lowering 已恢复支持。
+这两条 family 的 current gate 已扩展为 `Spike vs PTX vs CPU reference` 三方比较，比较规则为：`NaN` 按分类相等，非 `NaN` half lane 默认要求 `<= 1 fp16 ULP`。其余 non-`row.col` / deferred / research / 非 current `fp16 -> fp16` family 仍保持显式 fail-fast。
 
 `regext/regexti` 默认仍按严格 bundling 处理；若需临时兼容 Spike 对连续前缀的现有行为，可设置环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`。打开后，`sbt_decode` 与 `sbt_ptx` 在遇到连续 `regext`/`regexti` 指向同一条真实指令时，不再报 `nested regext prefix`，而是按 Spike 现有顺序覆盖前缀状态继续解码；这是临时兼容方案，不改变默认 fail-fast 路径。
 
 ## 统一回归入口（推荐）
 ```bash
-# 快速回归（不含端到端）：decode/emit + ptxas compile-first + PDS smoke + microtest gate
+# 快速回归（不含端到端）：decode/emit + MMA full gate + ptxas compile-first + PDS smoke + microtest gate
 tools/regress.sh --preset quick --arch sm_89
 
 # 全量回归（包含端到端）：在 quick 基础上增加 PoCL/driver 端到端回归
@@ -134,7 +136,7 @@ tools/regress.sh --preset quick --workdir /tmp/sbtsim-regress
 tools/regress.sh --preset quick --keep-workdir
 ```
 
-`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。
+`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。默认 `quick/all` 路径会以 `--mma-stage=full` 执行 custom MMA gate，确保 current `fp16 -> fp16` MMA 的 compile-first 与语义对照默认纳入统一回归。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。
 
 ## PoCL/driver 端到端
 ```bash
@@ -191,8 +193,8 @@ tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
 # 当前 custom kernels 若出现连续 regext/regexti 前缀，需显式打开 Spike-compatible nested-prefix 兼容模式。
 python3 tools/custom_non_mma_oracle.py --n 8 --spike-compat-nested-regext
 
-# fp16 MMA 的 Spike-vs-CPU-reference 预支持测例：
-# host 随机 seed -> kernel 内有限 fp16 值映射；只验证 Ventus LLVM + Spike，不经过 sbtsim PTX lowering
+# fp16 MMA 的 Spike-vs-CPU-reference 独立语义测例：
+# host 随机 seed -> kernel 内有限 fp16 值映射；用于与 current PTX gate 共享 CPU reference 口径
 python3 tools/fp16_mma_spike_cpu_ref.py --seed 0x20260413 --ulp-tol 1
 
 # ventus_ocl_compare.py 在未显式设置 GPU_SBT_PTX 时，会自动绑定当前树的 build/sbt_ptx，

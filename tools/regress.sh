@@ -43,7 +43,7 @@ E2E_RUNNER="profile"
 DO_BUILD="auto" # auto|yes|no
 TIMEOUT_SCALE="1.0"
 JOBS=""
-MMA_STAGE="spike-precheck"
+MMA_STAGE="full"
 WORKDIR_MODE="temp" # temp|inplace|custom
 WORKDIR_OPTION_SET="no"
 WORKDIR_PATH=""
@@ -63,7 +63,7 @@ Options:
   --timeout-scale <float>          Timeout scale for end-to-end runner (default: 1.0)
   --jobs <int>                     Parallel jobs for ventus-env runner (optional)
   --mma-stage {spike-precheck|compile-first|full}
-                                   MMA gate stage (default: spike-precheck)
+                                   MMA gate stage (default: full)
   --build                          Force cmake configure/build
   --no-build                       Do not build (error if required binaries missing)
   --in-place                       Run in current directory (legacy behavior)
@@ -297,7 +297,9 @@ run_regext_bundle_test() {
 
 run_custom_unit_tests() {
   run_step_in_root "custom_decode_test" "${BUILD_DIR}/custom_decode_test"
+  run_step_in_root "mma_decode_test" "${BUILD_DIR}/mma_decode_test"
   run_step_in_root "custom_ptx_emit_test" "${BUILD_DIR}/custom_ptx_emit_test"
+  run_step_in_root "mma_ptx_emit_test" "${BUILD_DIR}/mma_ptx_emit_test"
 }
 
 run_custom_non_mma_oracle_gate() {
@@ -394,7 +396,9 @@ main() {
         "${BUILD_DIR}/gen_spike_encoding_subset" \
         "${BUILD_DIR}/regext_bundle_test" \
         "${BUILD_DIR}/custom_decode_test" \
+        "${BUILD_DIR}/mma_decode_test" \
         "${BUILD_DIR}/custom_ptx_emit_test" \
+        "${BUILD_DIR}/mma_ptx_emit_test" \
         "${BUILD_DIR}/ventus_ocl_run"
     fi
   else
@@ -404,7 +408,9 @@ main() {
       "${BUILD_DIR}/gen_spike_encoding_subset" \
       "${BUILD_DIR}/regext_bundle_test" \
       "${BUILD_DIR}/custom_decode_test" \
+      "${BUILD_DIR}/mma_decode_test" \
       "${BUILD_DIR}/custom_ptx_emit_test" \
+      "${BUILD_DIR}/mma_ptx_emit_test" \
       "${BUILD_DIR}/ventus_ocl_run"
   fi
 

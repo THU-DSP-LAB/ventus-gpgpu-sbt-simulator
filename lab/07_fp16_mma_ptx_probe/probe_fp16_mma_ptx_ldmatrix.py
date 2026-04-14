@@ -67,6 +67,7 @@ def load_helper():
 
 
 HELPER = load_helper()
+FP16_SHAPE = HELPER.SHAPE_M16N8K16
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,7 @@ def build_m16n8_inputs(seed_words: list[int]) -> tuple[list[list[int]], list[lis
     b_regs = [[0] * 2 for _ in range(WARP_LANES)]
     c_regs = [[0] * 2 for _ in range(WARP_LANES)]
     for gid in range(WARP_LANES):
-        seed = HELPER.kernel_seed(seed_words[gid], gid)
+        seed = HELPER.kernel_seed(seed_words[gid], gid, shape=FP16_SHAPE)
         a_regs[gid] = [
             sample_packed_f16(seed, 0, 1),
             sample_packed_f16(seed, 2, 3),
@@ -259,8 +260,8 @@ def run_spike(seed_words: list[int], workdir: Path, src: Path, exe: Path, env_sh
     output_path = spike_dir / "out.bin"
     input_path.write_bytes(b"".join(int(w & 0xFFFFFFFF).to_bytes(4, "little") for w in seed_words))
     helper_src = spike_dir / "kernel.cl"
-    HELPER.materialize_kernel_source(src, helper_src)
-    HELPER.run_spike(exe, env_sh, helper_src, spike_dir, input_path, output_path)
+    HELPER.materialize_kernel_source(src, helper_src, shape=FP16_SHAPE)
+    HELPER.run_spike(exe, env_sh, helper_src, spike_dir, input_path, output_path, shape=FP16_SHAPE)
     return HELPER.parse_u32_words(output_path)
 
 

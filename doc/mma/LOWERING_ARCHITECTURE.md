@@ -43,8 +43,8 @@ Current implementation checkpoints:
 
 - `sbt/riscv_decode.cpp` now includes repository-local MMA decode metadata (`MmaInstInfo`) with explicit support-class partitioning for committed/deferred/research families.
 - dedicated MMA decode and microtest assets are landed (`tools/mma_decode_test.cpp`, `testcases/ocl_compare/custom_mma_kernels.cl`, `tools/custom_mma_oracle.py`).
-- the confirmed toolchain mismatch currently blocks the MMA `fp16 -> fp16` path, which must remain explicit fail-fast in current PTX lowering behavior (see `openspec/changes/archive/2026-04-13-support-custom-mma/2026-04-06-mma-abi-metadata-mismatch-temp-note.md`).
-- therefore this document remains an active architecture contract for future MMA extension work, while the `fp16 -> fp16` path stays temporarily fail-fast until toolchain alignment.
+- the current landed subset now also includes `m16n8k16 row.col f16 -> f16` and `m16n16k16 row.col f16 -> f16`, using the same layered `VGPR window -> logical coordinates -> PTX native fragment tuple` contract as the rest of the first batch.
+- therefore this document remains an active architecture contract for future deferred/research MMA extension work beyond the landed current subset, rather than a temporary placeholder for a blocked `fp16 -> fp16` path.
 
 ## Design Goals
 

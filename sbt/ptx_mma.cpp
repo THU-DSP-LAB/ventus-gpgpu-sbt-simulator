@@ -108,7 +108,14 @@ constexpr ScalarTupleValue kF16BPlans[] = {
     quad_pair_value(1u, 1u, 0u, 8u, 1u),
 };
 
-constexpr ScalarTupleValue kF16CDPlans[] = {
+constexpr ScalarTupleValue kF16F16CDPlans[] = {
+    quad_pair_value(0u, 0u, 0u, 0u, 0u),
+    quad_pair_value(0u, 1u, 0u, 0u, 1u),
+    quad_pair_value(1u, 0u, 8u, 0u, 0u),
+    quad_pair_value(1u, 1u, 8u, 0u, 1u),
+};
+
+constexpr ScalarTupleValue kF16F32CDPlans[] = {
     quad_scalar_value(0u, 0u, 0u, 0u),
     quad_scalar_value(1u, 0u, 0u, 1u),
     quad_scalar_value(2u, 8u, 0u, 0u),
@@ -169,12 +176,19 @@ constexpr ScalarTupleValue kTf32CDPlans[] = {
 const ScalarTupleValue *plans_for(const AbiDesc &abi, OperandRole role, uint8_t &count) {
   switch (abi.key) {
   case AbiKey::M16N8K16_F16_F16:
+    switch (role) {
+    case OperandRole::A: count = static_cast<uint8_t>(std::size(kF16APlans)); return kF16APlans;
+    case OperandRole::B: count = static_cast<uint8_t>(std::size(kF16BPlans)); return kF16BPlans;
+    case OperandRole::C:
+    case OperandRole::D: count = static_cast<uint8_t>(std::size(kF16F16CDPlans)); return kF16F16CDPlans;
+    }
+    break;
   case AbiKey::M16N8K16_F16_F32:
     switch (role) {
     case OperandRole::A: count = static_cast<uint8_t>(std::size(kF16APlans)); return kF16APlans;
     case OperandRole::B: count = static_cast<uint8_t>(std::size(kF16BPlans)); return kF16BPlans;
     case OperandRole::C:
-    case OperandRole::D: count = static_cast<uint8_t>(std::size(kF16CDPlans)); return kF16CDPlans;
+    case OperandRole::D: count = static_cast<uint8_t>(std::size(kF16F32CDPlans)); return kF16F32CDPlans;
     }
     break;
   case AbiKey::M16N8K16_BF16_F32:
