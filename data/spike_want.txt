@@ -84,6 +84,7 @@ vlh12_v
 vlhu12_v
 vlw12_v
 vlw_v
+vid_v
 vmacc_vv
 vmacc_vx
 vmadd_vv

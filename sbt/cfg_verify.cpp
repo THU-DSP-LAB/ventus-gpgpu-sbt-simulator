@@ -119,42 +119,44 @@ private:
   std::array<uint64_t, 4> w_{};
 };
 
-static bool starts_with(std::string_view s, std::string_view p) { return s.size() >= p.size() && s.substr(0, p.size()) == p; }
-
-static bool ends_with(std::string_view s, std::string_view suf) {
-  return s.size() >= suf.size() && s.substr(s.size() - suf.size()) == suf;
-}
-
-static bool is_vector_load(std::string_view name) { return name == "vlw12_v" || name == "vlbu12_v" || name == "vlw_v"; }
-
-static bool is_uniform_unsafe_op(std::string_view name) { return starts_with(name, "vmadd") || starts_with(name, "vfmadd"); }
-
 static void transfer_vreg_uniform(VRegSet &st, const BundleInst &bi) {
   const auto &di = bi.inst;
   if (di.rd_class != sbt::RegClass::V) return;
+  if (di.uniform_transfer_kind == sbt::UniformTransferKind::Unknown) {
+    if (di.custom.valid || di.mma.valid) {
+      st.set(di.rd, false);
+      return;
+    }
+    throw std::runtime_error("missing shared uniform-transfer metadata for supported instruction '" + di.name + "'");
+  }
 
   const int vd = di.rd;
   bool uniform = false;
-  const std::string_view name(di.name);
-
-  if (name == "vmv_v_x") {
-    uniform = true;
-  } else if (name == "vid_v") {
-    uniform = false;
-  } else if (is_vector_load(name) && di.rs1_class == sbt::RegClass::V) {
+  switch (di.uniform_transfer_kind) {
+  case sbt::UniformTransferKind::AlwaysUniformDst: uniform = true; break;
+  case sbt::UniformTransferKind::NeverUniformDst: uniform = false; break;
+  case sbt::UniformTransferKind::UniformIfRs1:
+    if (di.rs1_class == sbt::RegClass::None || di.rs1 < 0) {
+      throw std::runtime_error("incomplete uniform-transfer metadata for instruction '" + di.name + "': missing rs1");
+    }
     uniform = st.test(di.rs1);
-  } else if (is_uniform_unsafe_op(name)) {
-    uniform = false;
-  } else if (ends_with(name, "_vx")) {
+    break;
+  case sbt::UniformTransferKind::UniformIfRs2:
+    if (di.rs2_class == sbt::RegClass::None || di.rs2 < 0) {
+      throw std::runtime_error("incomplete uniform-transfer metadata for instruction '" + di.name + "': missing rs2");
+    }
     uniform = st.test(di.rs2);
-  } else if (ends_with(name, "_vi")) {
-    uniform = st.test(di.rs2);
-  } else if (ends_with(name, "_vv")) {
-    uniform = st.test(di.rs2) && st.test(di.rs1);
-  } else if (ends_with(name, "_v") && di.rs2_class == sbt::RegClass::V) {
-    uniform = st.test(di.rs2);
-  } else {
-    uniform = false;
+    break;
+  case sbt::UniformTransferKind::UniformIfRs1AndRs2:
+    if (di.rs1_class == sbt::RegClass::None || di.rs1 < 0 || di.rs2_class == sbt::RegClass::None || di.rs2 < 0) {
+      throw std::runtime_error("incomplete uniform-transfer metadata for instruction '" + di.name + "': missing rs1/rs2");
+    }
+    uniform = st.test(di.rs1) && st.test(di.rs2);
+    break;
+  case sbt::UniformTransferKind::NotApplicable:
+    throw std::runtime_error("unexpected non-applicable uniform-transfer metadata on vector-dst instruction '" + di.name + "'");
+  case sbt::UniformTransferKind::Unknown:
+  default: throw std::runtime_error("missing shared uniform-transfer metadata for supported instruction '" + di.name + "'");
   }
 
   st.set(vd, uniform);

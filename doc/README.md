@@ -18,6 +18,7 @@
 
 - `README.md`：用户入口、构建命令、回归入口、文档导航。
 - `doc/IMPLEMENTATION_CODEMAP.md`：当前实现真相（as-built）。目录/模块职责、关键数据结构与调用链，以及 current PTX 固定槽位 / `%tmp*` scratch ownership 口径。
+- current instruction metadata 口径也以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/instruction_metadata.cpp`、`openspec/specs/inst-support/spec.md` 与 `openspec/specs/replicated-scalar-state/spec.md` 为准：不要再把 decode / CFG verify / emitter 的字符串 suffix 推断当作当前事实源。
 - `openspec/README.md`：OpenSpec 状态分层、当前 specs 与 archive 的使用方式。
 - `openspec/specs/global-address-space/spec.md`：当前 PTX ordinary address mapping / single-Global / VMM backing contract。
 - `openspec/specs/ptx-temp-register-allocation/spec.md`：当前 PTX emitter 固定槽位与 `%tmp*` scratch ownership contract。
@@ -44,8 +45,10 @@
 - `openspec/specs/ptx-call-prototype/spec.md`：当前 helper prototype 合同。
 - `openspec/specs/ptx-temp-register-allocation/spec.md`：当前 PTX scratch ownership / `%tmp*` virtual temp 合同。
 - `openspec/specs/inst-support/spec.md`：当前指令支持与验证合同。
+- current Spike-backed 指令形态 / uniform-transfer metadata 以 `openspec/specs/inst-support/spec.md` 与 `sbt/instruction_metadata.cpp` 为准。
 - `openspec/specs/sbt-rodinia-bringup/spec.md`：当前 Rodinia bring-up / fail-fast 边界。
 - `openspec/specs/build-time-spike-pattern-subset/spec.md`：当前 Spike pattern 子集生成合同。
+- current scalar execution classification 以 `openspec/specs/replicated-scalar-state/spec.md` 与 `sbt/instruction_metadata.cpp` 为准；未分类 scalar 当前是显式失败，不存在默认 `UniformPure` fallback。
 - `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：`active` shared baseline（非 current as-built）；保留 custom split 的共享前提，并继续约束后续 blocked/deferred MMA 扩展的基线选择。
 - `doc/mma/LOWERING_ARCHITECTURE.md`：`active` MMA lowering 架构合同（非 current as-built）；规定 canonical MMA matrix、首批 `row.col` MMA 的分层 lowering 模型、decode metadata contract 和 composite `split-n` 路径，并为后续 blocked/deferred/research family 保留统一架构入口。
 

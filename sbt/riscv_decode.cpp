@@ -45,21 +45,6 @@ static uint32_t imm_j(uint32_t w) {
   return (bit20 << 20) | (bits19_12 << 12) | (bit11 << 11) | (bits10_1 << 1);
 }
 
-static bool is_vbranch(std::string_view name) {
-  return name == "vbeq" || name == "vbne" || name == "vblt" || name == "vbge" || name == "vbltu" ||
-         name == "vbgeu";
-}
-
-static bool is_load(std::string_view name) {
-  return name == "vlw12_v" || name == "vlb12_v" || name == "vlbu12_v" || name == "vlh12_v" || name == "vlhu12_v" || name == "vlw_v";
-}
-
-static bool is_store(std::string_view name) { return name == "vsw12_v" || name == "vsb12_v" || name == "vsh12_v" || name == "vsw_v"; }
-
-static bool ends_with(std::string_view s, std::string_view suf) {
-  return s.size() >= suf.size() && s.substr(s.size() - suf.size()) == suf;
-}
-
 static int ext_apply(int base5, uint8_t ext3) { return base5 | (int(ext3) << 5); }
 
 static void start_regext_bundle(RegextPrefix &px, uint32_t pc) {
@@ -104,171 +89,6 @@ static Pattern const *match_pattern(uint32_t w, const std::vector<Pattern> &patt
     if ((w & p.mask) == p.match) return &p;
   }
   return nullptr;
-}
-
-static void classify_by_name(std::string_view name, DecodedInst &out) {
-  // Default: no operands/imm.
-  out.rd_class = RegClass::None;
-  out.rs1_class = RegClass::None;
-  out.rs2_class = RegClass::None;
-  out.rs3_class = RegClass::None;
-  out.imm_kind = ImmKind::None;
-  out.imm = 0;
-
-  if (name == "setrpc") {
-    out.rd_class = RegClass::X;
-    out.rs1_class = RegClass::X;
-    out.imm_kind = ImmKind::I12;
-    return;
-  }
-  if (name == "regext" || name == "regexti") {
-    // Prefix ops (normally bundled by the decoder).
-    out.rd_class = RegClass::X;
-    out.rs1_class = RegClass::X;
-    out.imm_kind = ImmKind::Raw12;
-    return;
-  }
-  if (name == "barrier") {
-    out.rd_class = RegClass::X;
-    out.rs1_class = RegClass::X;
-    out.imm_kind = ImmKind::I12;
-    return;
-  }
-  if (name == "join" || name == "endprg") {
-    out.rd_class = RegClass::X;
-    out.rs1_class = RegClass::X;
-    out.rs2_class = RegClass::X;
-    return;
-  }
-  if (is_vbranch(name)) {
-    out.rs1_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.imm_kind = ImmKind::B13;
-    return;
-  }
-  if (is_load(name)) {
-    out.rd_class = RegClass::V;
-    out.rs1_class = RegClass::V;
-    out.imm_kind = ImmKind::I12;
-    return;
-  }
-  if (is_store(name)) {
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::V;
-    out.imm_kind = ImmKind::S12;
-    return;
-  }
-  if (name == "vsetvli") {
-    out.rd_class = RegClass::X;
-    out.rs1_class = RegClass::X;
-    out.imm_kind = ImmKind::Raw12;
-    return;
-  }
-  if (name == "vid_v") {
-    out.rd_class = RegClass::V;
-    return;
-  }
-  if (name == "vmv_v_x") {
-    out.rd_class = RegClass::V;
-    out.rs1_class = RegClass::X;
-    return;
-  }
-  if (name == "vmv_s_x") {
-    // vmv.s.x vd, rs1
-    out.rd_class = RegClass::V;
-    out.rs1_class = RegClass::X;
-    return;
-  }
-  if (name == "vmv_v_i") {
-    // vmv.v.i vd, imm
-    out.rd_class = RegClass::V;
-    out.imm_kind = ImmKind::SImm5;
-    return;
-  }
-  if (name == "vfmv_v_f") {
-    // vfmv.v.f vd, rs1
-    out.rd_class = RegClass::V;
-    out.rs1_class = RegClass::X;
-    return;
-  }
-  if (name == "vmv_x_s") {
-    // vmv.x.s rd, vs2
-    out.rd_class = RegClass::X;
-    out.rs2_class = RegClass::V;
-    return;
-  }
-  if (name == "vadd12_vi" || name == "vsub12_vi") {
-    // Custom v*.vi with 12-bit immediate in I-type encoding: vd, vs1, imm12.
-    out.rd_class = RegClass::V;
-    out.rs1_class = RegClass::V;
-    out.imm_kind = ImmKind::I12;
-    return;
-  }
-
-  // Vector arithmetic common forms inferred from suffix.
-  if (ends_with(name, "_vvm")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::V;
-    return;
-  }
-  if (ends_with(name, "_vxm")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::X;
-    return;
-  }
-  if (ends_with(name, "_vim")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.imm_kind = ImmKind::SImm5;
-    return;
-  }
-  if (ends_with(name, "_vfm")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::X;
-    return;
-  }
-  if (ends_with(name, "_vv")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::V;
-    return;
-  }
-  if (ends_with(name, "_vx")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::X;
-    return;
-  }
-  if (ends_with(name, "_vf")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::X;
-    return;
-  }
-  if (ends_with(name, "_vi")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.imm_kind = (name.find("sll") != std::string_view::npos || name.find("srl") != std::string_view::npos ||
-                        name.find("sra") != std::string_view::npos
-                    ? ImmKind::UImm5
-                    : ImmKind::SImm5);
-    return;
-  }
-  if (ends_with(name, "_mm")) {
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    out.rs1_class = RegClass::V;
-    return;
-  }
-  if (ends_with(name, "_v")) {
-    // Unary vector op (e.g. vfsqrt.v). Treat as vd, vs2.
-    out.rd_class = RegClass::V;
-    out.rs2_class = RegClass::V;
-    return;
-  }
 }
 
 static void init_custom_non_mma_common(uint32_t w, DecodedInst &out) {
@@ -933,7 +753,10 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
     // Decoded by repository-local custom path.
   } else if (const Pattern *p = match_pattern(w, patterns)) {
     out.name = p->name;
-    classify_by_name(out.name, out);
+    if (!populate_inst_metadata(out.name, out)) {
+      throw std::runtime_error("missing shared instruction metadata for Spike-backed instruction '" + out.name +
+                               "'; update data/spike_want.txt and rebuild the pattern subset if this is a newly supported instruction");
+    }
     // Fill operands/imm based on classification.
     if (out.rd_class != RegClass::None) out.rd = rd5;
     if (out.rs1_class != RegClass::None) out.rs1 = rs1_5;
@@ -968,7 +791,10 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
     case ImmKind::None: default: break;
     }
   } else {
-    (void)decode_scalar(w, out);
+    const bool decoded_scalar = decode_scalar(w, out);
+    if (decoded_scalar && out.name != "unknown" && out.name != "system" && !populate_inst_metadata(out.name, out)) {
+      throw std::runtime_error("missing shared instruction metadata for scalar instruction '" + out.name + "'");
+    }
   }
 
   // Apply regext prefix if present.
@@ -994,6 +820,7 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
     out.mma.rs1_base = out.rs1;
     out.mma.rs2_base = out.rs2;
   }
+  if (out.inst_id == kUnknownInstId && out.name != "unknown") out.inst_id = make_inst_id(out.name);
 
   return out;
 }

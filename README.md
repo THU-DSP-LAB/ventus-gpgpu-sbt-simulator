@@ -68,6 +68,11 @@ cmake -S . -B build -DSBT_SPIKE_ENCODING_H=/abs/path/to/spike/riscv/encoding.h
 cmake --build build -j
 ```
 
+当前 Spike-backed 非 custom 指令的 decode / CFG verify metadata 也已经收敛到仓库内显式维护的共享 contract。若要新增一条 Spike-backed 指令，当前同步入口至少包括：
+- `data/spike_want.txt`
+- `sbt/instruction_metadata.cpp`
+- 重新构建生成的 build-time Spike subset（`cmake --build build` 会自动触发）
+
 ## `sbt_decode` 常用命令
 ```bash
 # 对照 .dump 校验 .text 字节
@@ -109,6 +114,12 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 当前 PTX emitter 的寄存器 current 口径是：
 - 固定 machine/runtime/control 槽位继续保留，当前至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`，以及逻辑寄存器文件 `%x<256>` / `%v<256>`。
 - lowering scratch 统一走函数级唯一命名的 `%tmp*` 虚拟临时寄存器，例如 `%tmp_b32_*`、`%tmp_b64_*`、`%tmp_p_*`、`%tmp_f32_*`、`%tmp_b16_*`、`%tmp_u8_*`、`%tmp_u16_*`；这些寄存器在函数头统一 `.reg` 声明，本阶段不要求重排固定槽位编号。
+
+当前 instruction metadata / scalar execution current 口径是：
+- Spike-backed 非 custom 指令通过共享 `InstId + InstMetadata` contract 提供 `operand_form`、`imm_kind`、`uniform_transfer_kind`；`DecodedInst.name` 只保留给 pretty print、JSON 输出与诊断兼容。
+- `sbt/riscv_decode` 在 Spike-backed pattern decode 与 scalar decode 两条路径上都会填充共享 metadata；custom non-MMA / MMA 继续保留各自显式 metadata，不回退到字符串推断。
+- `sbt/cfg_verify` 只消费共享 `uniform_transfer_kind` 做 vector uniform 传播；supported-path 指令缺 metadata 时直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 猜测。
+- PTX emitter 的 scalar execution classification 现为显式表驱动、默认拒绝未分类项；当前 supported scalar subset 必须逐条声明 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`。
 
 当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
 - non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。
@@ -216,6 +227,9 @@ python3 tools/update_spike_want.py
 
 # want 一致性 smoke
 tools/check_spike_want_consistency.sh
+
+# instruction metadata / decode+verify 合同 smoke
+./build/instruction_metadata_contract_test
 
 # 端到端回归耗时统计
 export VENTUS_BACKEND=ptx

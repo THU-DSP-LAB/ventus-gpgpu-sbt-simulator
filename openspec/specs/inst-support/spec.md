@@ -25,6 +25,34 @@ Given `sbt_ptx`, `sbt_decode`, and `gen_spike_encoding_subset` are built from th
 When they load Spike patterns,  
 Then they must derive their wanted insn IDs from the same whitelist input and cannot diverge due to per-tool hardcoding.
 
+### Requirement: Spike-backed instruction metadata SHALL be repository-managed and shared across decode and CFG analysis
+For the current supported non-custom instructions recognized through the build-time Spike pattern subset, the repository MUST maintain structured shared metadata that is authoritative for at least:
+
+- operand form
+- immediate form
+- vector uniform-transfer behavior needed by CFG verification
+
+Decode and CFG verification MUST consume the same repository-managed metadata rather than each inferring behavior independently from mnemonic suffixes such as `_vx`, `_vi`, `_vv`, or `_v`.
+
+Dedicated repository-local metadata for custom non-MMA and MMA instruction families MAY remain separate, but the current Spike-backed non-custom subset MUST still follow the same “explicit metadata, single source of truth” rule.
+
+#### Scenario: New Spike-backed vector instruction updates one shared metadata entry and remains reachable
+- **GIVEN** a developer adds support for a Spike-backed non-custom instruction whose operand shape or uniform-transfer behavior does not fit a simple suffix rule
+- **WHEN** they update the repository-managed shared metadata for that mnemonic
+- **AND WHEN** they also update `data/spike_want.txt` and rebuild the build-time Spike pattern subset
+- **THEN** decode and CFG verification both observe the new operand and analysis behavior from the same metadata source
+- **AND THEN** the metadata entry remains reachable from the same build-time Spike-backed decode entrypoint that current `sbt_decode` and `sbt_ptx` use
+
+### Requirement: Missing shared metadata SHALL fail explicitly on the supported Spike-backed path
+If a Spike-backed non-custom instruction is treated as part of the current supported subset, missing or incomplete shared metadata MUST be an explicit error.
+
+#### Scenario: Missing shared metadata does not fall back to suffix guessing
+- **GIVEN** a Spike-backed non-custom instruction reaches the current supported decode or CFG verify path
+- **AND GIVEN** its required shared metadata entry is missing or incomplete
+- **WHEN** the instruction is decoded or analyzed
+- **THEN** the implementation fails explicitly
+- **AND THEN** it is not accepted by silently guessing operand or analysis semantics from the mnemonic suffix
+
 ### Requirement: Extend PTX emitter scalar RV32I/M coverage
 The PTX backend MUST support a complete, commonly used RV32I/M scalar subset that is already decodable by the frontend, including at least:
 - logic ops: `and/or/xor/andi/ori`

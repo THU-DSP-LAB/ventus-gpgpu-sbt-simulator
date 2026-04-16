@@ -31,7 +31,7 @@ This requirement does not apply to inactive lanes.
 - **AND THEN** only scalar state that remains live after reconvergence must satisfy active-lane equality
 
 ### Requirement: Scalar instructions SHALL be classified by execution semantics
-The emitter MUST classify scalar-side instructions by execution semantics rather than by a simple side-effect-only rule.
+The emitter MUST classify scalar-side instructions by execution semantics through an explicit repository-managed classification contract rather than by a simple side-effect-only rule or an implicit default.
 
 The lowering SHALL support at least these classes:
 
@@ -49,7 +49,11 @@ The lowering SHALL support at least these classes:
   - changes memory, atomic state, trap state, or other externally observable machine state
   - must execute on one selected active leader lane
 
+For the current supported scalar subset, every scalar instruction that may reach PTX lowering and requires scalar execution classification MUST have an explicit classification.
+
 Instructions such as `vmv.x.s` MUST be treated as fixed-lane-sensitive, not as all-lane uniform-pure operations and not as arbitrary-leader operations.
+
+If a scalar instruction that requires classification has no explicit execution-semantics classification, the implementation MUST fail explicitly rather than silently treating it as `uniform-pure`.
 
 #### Scenario: Uniform-pure scalar instruction executes on all active lanes
 - **GIVEN** a scalar `add` whose operands are live replicated scalar registers
@@ -62,6 +66,13 @@ Instructions such as `vmv.x.s` MUST be treated as fixed-lane-sensitive, not as a
 - **WHEN** the instruction is emitted
 - **THEN** the PTX lowering preserves the architectural source-lane meaning of the instruction rather than substituting an arbitrary selected leader
 - **AND THEN** if the required fixed source lane is not active and the current supported input contract does not permit that case, the implementation rejects the shape explicitly rather than silently changing semantics
+
+#### Scenario: Unclassified scalar instruction is rejected explicitly
+- **GIVEN** a new scalar instruction reaches PTX lowering on the current supported path
+- **AND GIVEN** no explicit execution-semantics classification has been defined for it
+- **WHEN** the emitter attempts to lower the instruction
+- **THEN** translation fails explicitly
+- **AND THEN** the instruction is not lowered as `uniform-pure` by default
 
 ### Requirement: Divergent paths SHALL select a valid path-local leader only when needed
 The replicated scalar-state lowering MUST NOT require a permanent leader-lane ownership model for all scalar execution.

@@ -91,6 +91,7 @@ int main() {
   require(decoded.size() == 4, "all custom non-MMA words decoded without Spike patterns");
   require(decoded[0].name == "shuffle_idx", "shuffle idx name");
   require(decoded[0].custom.valid, "shuffle metadata present");
+  require(decoded[0].operand_form == sbt::OperandForm::None, "custom path does not get overwritten by shared Spike metadata");
   require(decoded[0].custom.vm_bit, "shuffle vm bit kept as encoding metadata");
   require(decoded[0].custom.family == sbt::CustomFamily::Shuffle, "shuffle family");
   require(decoded[0].custom.subop == sbt::CustomSubOp::ShuffleIdx, "shuffle subop");
@@ -126,6 +127,10 @@ int main() {
   require(decoded_scalar[1].name == "lw", "lw decoded");
   require(decoded_scalar[2].name == "sw", "sw decoded");
   require(decoded_scalar[3].name == "jal", "jal decoded");
+  require(decoded_scalar[0].inst_id != sbt::kUnknownInstId, "scalar addi gets shared inst id");
+  require(decoded_scalar[0].scalar_exec_kind == sbt::ScalarExecKind::UniformPure, "scalar addi gets shared scalar exec metadata");
+  require(decoded_scalar[1].scalar_exec_kind == sbt::ScalarExecKind::UniformPure, "scalar load gets shared scalar exec metadata");
+  require(decoded_scalar[2].scalar_exec_kind == sbt::ScalarExecKind::ExternallySideEffecting, "scalar store gets explicit side-effect metadata");
   require(!decoded_scalar[0].custom.valid, "addi must not carry fake custom metadata");
   require(!decoded_scalar[1].custom.valid, "lw must not carry fake custom metadata");
   require(!decoded_scalar[2].custom.valid, "sw must not carry fake custom metadata");

@@ -9,6 +9,7 @@
 - `gen_spike_encoding_subset.cpp`：根据 `data/spike_want.txt` 生成 Spike 子集头
 - `regext_bundle_test.cpp`：`regext/regexti` bundling 回归测试
 - `custom_decode_test.cpp`：repository-local custom non-MMA decode 回归测试
+- `instruction_metadata_contract_test.cpp`：shared instruction metadata / Spike want 同步 / decode+CFG verify fail-fast 合同测试
 - `custom_ptx_emit_test.cpp`：custom non-MMA PTX lowering + ptxas compile-first 回归测试
 - `ptx_emit_call_prototype_test.cpp`：PTX helper 前向调用 prototype 回归测试
 - `ptx_emit_leader_lane_abi_test.cpp`：replicated scalar-state / value ABI / divergence 回归测试（文件名沿用历史命名）

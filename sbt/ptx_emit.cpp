@@ -113,50 +113,25 @@ static void require(bool ok, const EmitError &err) {
   if (!ok) throw err;
 }
 
-enum class ScalarExecKind {
-  UniformPure,
-  LaneSensitive,
-  FixedLaneSensitive,
-  ExternallySideEffecting,
-};
-
-struct ScalarExecRule final {
-  std::string_view name;
-  ScalarExecKind kind;
-};
-
-static constexpr std::array<ScalarExecRule, 18> kScalarExecRules{{
-    {"lb", ScalarExecKind::UniformPure},
-    {"lh", ScalarExecKind::UniformPure},
-    {"lw", ScalarExecKind::UniformPure},
-    {"lbu", ScalarExecKind::UniformPure},
-    {"lhu", ScalarExecKind::UniformPure},
-    {"flw", ScalarExecKind::UniformPure},
-    {"sb", ScalarExecKind::ExternallySideEffecting},
-    {"sh", ScalarExecKind::ExternallySideEffecting},
-    {"sw", ScalarExecKind::ExternallySideEffecting},
-    {"fsw", ScalarExecKind::ExternallySideEffecting},
-    {"csrrw", ScalarExecKind::UniformPure},
-    {"csrrs", ScalarExecKind::UniformPure},
-    {"csrrc", ScalarExecKind::UniformPure},
-    {"csrrwi", ScalarExecKind::UniformPure},
-    {"csrrsi", ScalarExecKind::UniformPure},
-    {"csrrci", ScalarExecKind::UniformPure},
-    {"vmv_x_s", ScalarExecKind::FixedLaneSensitive},
-    {"trap", ScalarExecKind::ExternallySideEffecting},
-}};
-
-static std::optional<ScalarExecKind> lookup_scalar_exec_kind(std::string_view name) {
-  for (const auto &rule : kScalarExecRules) {
-    if (rule.name == name) return rule.kind;
-  }
-  return std::nullopt;
+static ScalarExecKind scalar_exec_kind_for_inst(const sbt::DecodedInst &di, std::string_view func_name) {
+  if (di.scalar_exec_kind != ScalarExecKind::None) return di.scalar_exec_kind;
+  throw EmitError("missing.scalar_exec_metadata", std::string(func_name), di.pc, di.name);
 }
 
-static ScalarExecKind scalar_exec_kind_for_inst(const sbt::DecodedInst &di) {
-  if (const auto kind = lookup_scalar_exec_kind(di.name)) return *kind;
-  if (is_scalar_branch(di.name)) return ScalarExecKind::UniformPure;
-  return ScalarExecKind::UniformPure;
+static bool is_uniform_pure_scalar_alu_name(std::string_view name) {
+  return name == "addi" || name == "add" || name == "sub" || name == "and" || name == "or" || name == "xor" || name == "andi" ||
+         name == "ori" || name == "mul" || name == "mulh" || name == "mulhu" || name == "mulhsu" || name == "div" || name == "divu" ||
+         name == "rem" || name == "remu" || name == "lui" || name == "auipc" || name == "slli" || name == "srli" || name == "srai" ||
+         name == "sll" || name == "srl" || name == "sra" || name == "xori" || name == "slt" || name == "sltu" || name == "slti" ||
+         name == "sltiu";
+}
+
+static bool is_scalar_fp_name(std::string_view name) {
+  return name == "fmv_w_x" || name == "fmv_x_w" || name == "fsgnj_s" || name == "fsgnjn_s" || name == "fsgnjx_s" || name == "fadd_s" ||
+         name == "fsub_s" || name == "fmul_s" || name == "fdiv_s" || name == "fsqrt_s" || name == "fmadd_s" || name == "fmsub_s" ||
+         name == "fnmsub_s" || name == "fnmadd_s" || name == "fmin_s" || name == "fmax_s" || name == "feq_s" || name == "flt_s" ||
+         name == "fle_s" || name == "fcvt_s_w" || name == "fcvt_s_wu" || name == "fcvt_w_s" || name == "fcvt_wu_s" ||
+         name == "fclass_s";
 }
 
 } // namespace
@@ -216,6 +191,15 @@ struct EmitCtx final {
   EmitCtx(const sbt::cfg::FunctionCfg &cfg_, const std::unordered_map<uint32_t, std::string> &sym_by_addr_,
           const std::string &func_name_, const std::string &ptx_name_, const Options &opt_, const ModuleInfo &mod_, bool is_entry_)
       : cfg(cfg_), sym_by_addr(sym_by_addr_), func_name(func_name_), ptx_name(ptx_name_), opt(opt_), mod(mod_), is_entry(is_entry_) {}
+
+  void require_scalar_exec_kind(const sbt::DecodedInst &di, ScalarExecKind expected, uint32_t pc_for_err) const {
+    require(scalar_exec_kind_for_inst(di, func_name) == expected,
+            EmitError("invalid.scalar_exec", func_name, pc_for_err, std::string(di.name)));
+  }
+
+  void require_uniform_pure_scalar(const sbt::DecodedInst &di, uint32_t pc_for_err) const {
+    require_scalar_exec_kind(di, ScalarExecKind::UniformPure, pc_for_err);
+  }
 
   // Fixed register assignment conventions (must match PTX declarations).
   // Only these slots are part of the current machine/runtime/control contract.
@@ -1133,7 +1117,9 @@ struct EmitCtx final {
   }
 
   bool try_emit_scalar_fp(const sbt::DecodedInst &di) {
+    if (!is_scalar_fp_name(di.name)) return false;
     const uint32_t pc = di.pc;
+    require_uniform_pure_scalar(di, pc);
 
     // Bitwise moves (Zfinx: both sides are X regs).
     if (di.name == "fmv_w_x" || di.name == "fmv_x_w") {
@@ -1283,7 +1269,7 @@ struct EmitCtx final {
       return true;
     }
 
-    return false;
+    throw EmitError("unsupported.inst", func_name, pc, di.name);
   }
 
   std::string mma_detail(const sbt::MmaInstInfo &mma) const {
@@ -1748,6 +1734,10 @@ struct EmitCtx final {
       return;
     }
 
+    if (sbt::is_scalar_exec_classification_required(di)) {
+      (void)scalar_exec_kind_for_inst(di, func_name);
+    }
+
     // Calls: support a small inlined builtin set, plus direct calls to emitted `.func`s.
     if (is_call(di)) {
       const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(inst_pc) + static_cast<int64_t>(di.imm));
@@ -1853,6 +1843,7 @@ struct EmitCtx final {
 
     // Scalar conditional branches.
     if (is_scalar_branch(di.name) && di.imm_kind == sbt::ImmKind::B13) {
+      require_uniform_pure_scalar(di, pc);
       const uint32_t target = static_cast<uint32_t>(static_cast<int64_t>(inst_pc) + static_cast<int64_t>(di.imm));
       const uint32_t fallthrough = inst_pc + 4;
       const uint32_t src_block = block_start_of_pc(bundle_pc);
@@ -1904,8 +1895,7 @@ struct EmitCtx final {
 
     // CSR ops (prototype: treat Ventus CSRs as read-only for bring-up).
     if (di.name == "csrrw" || di.name == "csrrs" || di.name == "csrrc" || di.name == "csrrwi" || di.name == "csrrsi" || di.name == "csrrci") {
-      require(scalar_exec_kind_for_inst(di) == ScalarExecKind::UniformPure,
-              EmitError("invalid.scalar_exec", func_name, pc, std::string(di.name)));
+      require_uniform_pure_scalar(di, pc);
       require(di.imm_kind == sbt::ImmKind::CSR12, EmitError("invalid.csr", func_name, pc, "imm_kind"));
       const uint32_t csr = static_cast<uint32_t>(di.imm);
 
@@ -1943,8 +1933,7 @@ struct EmitCtx final {
 
     // Scalar loads/stores (uniform ops).
     if (is_scalar_load(di.name) && di.imm_kind == sbt::ImmKind::I12) {
-      require(scalar_exec_kind_for_inst(di) == ScalarExecKind::UniformPure,
-              EmitError("invalid.scalar_exec", func_name, pc, std::string(di.name)));
+      require_uniform_pure_scalar(di, pc);
       emit_ld_x_u32_scalar(r(14), di.rs1, pc);
       emit_line(scalar_prefix() + "add.u32 " + r(15) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
 
@@ -1988,8 +1977,7 @@ struct EmitCtx final {
     }
 
     if (is_scalar_store(di.name) && di.imm_kind == sbt::ImmKind::S12) {
-      require(scalar_exec_kind_for_inst(di) == ScalarExecKind::ExternallySideEffecting,
-              EmitError("invalid.scalar_exec", func_name, pc, std::string(di.name)));
+      require_scalar_exec_kind(di, ScalarExecKind::ExternallySideEffecting, pc);
       emit_ld_x_u32_scalar(r(14), di.rs1, pc); // base
       emit_ld_x_u32_scalar(r(15), di.rs2, pc); // value
       emit_line(scalar_prefix() + "add.u32 " + r(16) + ", " + r(14) + ", " + std::to_string(di.imm) + ";");
@@ -2019,6 +2007,10 @@ struct EmitCtx final {
 
     // Scalar FP ops (Zfinx: f32 bits carried in X regs).
     if (try_emit_scalar_fp(di)) return;
+
+    if (is_uniform_pure_scalar_alu_name(di.name)) {
+      require_uniform_pure_scalar(di, pc);
+    }
 
     // Scalar ALU ops (uniform) - minimal subset used by Rodinia.
     if (di.name == "addi" && di.imm_kind == sbt::ImmKind::I12) {
@@ -2318,8 +2310,7 @@ struct EmitCtx final {
       return;
     }
     if (di.name == "vmv_x_s") {
-      require(scalar_exec_kind_for_inst(di) == ScalarExecKind::FixedLaneSensitive,
-              EmitError("invalid.scalar_exec", func_name, pc, std::string(di.name)));
+      require_scalar_exec_kind(di, ScalarExecKind::FixedLaneSensitive, pc);
       emit_trap_if_lane_inactive(/*lane=*/0u);
       emit_line("setp.eq.u32 " + p(2) + ", " + r(0) + ", 0;");
       emit_line("@" + p(2) + " mov.u32 " + x(di.rd) + ", " + v(di.rs2) + ";");

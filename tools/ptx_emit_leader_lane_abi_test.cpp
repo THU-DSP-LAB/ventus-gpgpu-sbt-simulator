@@ -40,6 +40,8 @@ sbt::cfg::BundleInst make_inst(uint32_t pc, std::string name) {
   bi.len = 4;
   bi.inst.pc = pc;
   bi.inst.name = std::move(name);
+  (void)sbt::populate_inst_metadata(bi.inst.name, bi.inst);
+  if (bi.inst.inst_id == sbt::kUnknownInstId && bi.inst.name != "unknown") bi.inst.inst_id = sbt::make_inst_id(bi.inst.name);
   return bi;
 }
 
@@ -669,6 +671,73 @@ int main() {
           "reconverged direct call after divergent store should re-unify leader metadata before marshaling mutable state");
   require(count_substr(helper_store_ret_body, "bfind.u32 %r2, %r1;") == 2,
           "helper ret after divergent store should re-unify leader metadata before exporting mutable state");
+
+  {
+    auto mystery = make_inst(0x80001d00u, "mystery_scalar");
+    mystery.inst.rd_class = sbt::RegClass::X;
+    mystery.inst.rd = 1;
+    mystery.inst.rs1_class = sbt::RegClass::X;
+    mystery.inst.rs1 = 2;
+    mystery.inst.rs2_class = sbt::RegClass::X;
+    mystery.inst.rs2 = 3;
+
+    sbt::cfg::FunctionCfg cfg;
+    cfg.start = mystery.pc;
+    cfg.end = mystery.pc + 8u;
+    cfg.insts = {mystery, make_endprg(mystery.pc + 4u)};
+    cfg.inst_index_by_pc.emplace(cfg.insts[0].pc, 0);
+    cfg.inst_index_by_pc.emplace(cfg.insts[1].pc, 1);
+    cfg.inst_pc_to_block.emplace(cfg.insts[0].pc, cfg.start);
+    cfg.inst_pc_to_block.emplace(cfg.insts[1].pc, cfg.start);
+    sbt::cfg::BasicBlock bb;
+    bb.start = cfg.start;
+    bb.inst_indices = {0, 1};
+    cfg.block_index_by_start.emplace(bb.start, 0);
+    cfg.blocks = {bb};
+
+    bool threw = false;
+    try {
+      (void)sbt::ptx::emit_module(cfg, {{cfg.start, "mystery_scalar"}}, "mystery_scalar", {}, {}, opt);
+    } catch (const sbt::ptx::EmitError &e) {
+      threw = e.code == "missing.scalar_exec_metadata";
+    }
+    require(threw, "unclassified scalar instructions must fail explicitly before lowering");
+  }
+
+  {
+    auto bad_branch_cfg = make_scalar_branch_cfg(0x80001e00u);
+    bad_branch_cfg.insts[0].inst.scalar_exec_kind = sbt::ScalarExecKind::ExternallySideEffecting;
+
+    bool threw = false;
+    try {
+      (void)sbt::ptx::emit_module(bad_branch_cfg, {{bad_branch_cfg.start, "bad_branch"}}, "bad_branch", {}, {}, opt);
+    } catch (const sbt::ptx::EmitError &e) {
+      threw = e.code == "invalid.scalar_exec";
+    }
+    require(threw, "scalar branch lowering must reject non-uniform-pure classification drift");
+  }
+
+  {
+    const uint32_t start = 0x80001f00u;
+    sbt::cfg::FunctionCfg cfg;
+    cfg.start = start;
+    cfg.end = start + 8u;
+    cfg.insts = {make_addi(start, 1, 2, 4), make_endprg(start + 4u)};
+    cfg.insts[0].inst.scalar_exec_kind = sbt::ScalarExecKind::ExternallySideEffecting;
+    for (size_t i = 0; i < cfg.insts.size(); ++i) {
+      cfg.inst_index_by_pc.emplace(cfg.insts[i].pc, i);
+      cfg.inst_pc_to_block.emplace(cfg.insts[i].pc, start);
+    }
+    append_block(cfg, start, {0, 1}, {});
+
+    bool threw = false;
+    try {
+      (void)sbt::ptx::emit_module(cfg, {{cfg.start, "bad_addi"}}, "bad_addi", {}, {}, opt);
+    } catch (const sbt::ptx::EmitError &e) {
+      threw = e.code == "invalid.scalar_exec";
+    }
+    require(threw, "scalar ALU lowering must reject non-uniform-pure classification drift");
+  }
 
   std::cout << "ok ptx replicated scalar state\n";
   return 0;

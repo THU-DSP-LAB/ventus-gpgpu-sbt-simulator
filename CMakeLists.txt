@@ -20,6 +20,7 @@ endif ()
 add_library(sbt_lib
   sbt/elf_reader.cpp
   sbt/spike_encoding_parser.cpp
+  sbt/instruction_metadata.cpp
   sbt/riscv_decode.cpp
   sbt/dump_parser.cpp
   sbt/cfg.cpp
@@ -79,6 +80,9 @@ target_link_libraries(custom_decode_test PRIVATE sbt_lib)
 
 add_executable(mma_decode_test tools/mma_decode_test.cpp)
 target_link_libraries(mma_decode_test PRIVATE sbt_lib)
+
+add_executable(instruction_metadata_contract_test tools/instruction_metadata_contract_test.cpp)
+target_link_libraries(instruction_metadata_contract_test PRIVATE sbt_lib)
 
 add_executable(ptx_emit_call_prototype_test tools/ptx_emit_call_prototype_test.cpp)
 target_link_libraries(ptx_emit_call_prototype_test PRIVATE sbt_lib)

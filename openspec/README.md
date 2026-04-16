@@ -26,17 +26,15 @@
 
 - `build-time-spike-pattern-subset`：构建期 Spike pattern 子集生成合同
 - `global-address-space`：当前 PTX ordinary address mapping / single-Global / VMM backing 合同
-- `inst-support`：指令支持与语义验证合同（当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；所有 current supported MMA family 现统一采用 `Spike / sbtsim PTX / CPU reference` 三方语义验证）
+- `inst-support`：指令支持与语义验证合同（当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；Spike-backed 非 custom 指令当前通过共享 instruction metadata 维护 operand / immediate / uniform-transfer contract；所有 current supported MMA family 现统一采用 `Spike / sbtsim PTX / CPU reference` 三方语义验证）
 - `ptx-call-prototype`：多函数 PTX helper prototype / value ABI 合同
 - `ptx-temp-register-allocation`：当前 PTX emitter 固定槽位与 `%tmp*` scratch ownership 合同
-- `replicated-scalar-state`：当前 PTX lowering 主线合同
+- `replicated-scalar-state`：当前 PTX lowering 主线合同（包含 scalar execution classification 显式化、未分类 scalar 默认拒绝的 current contract）
 - `sbt-rodinia-bringup`：Rodinia bring-up / fail-fast 边界
 
 ## 当前 active changes
 
-当前有 1 个 active changes：
-
-- `openspec/changes/tighten-mma-triple-oracle-regression`：收敛 current MMA 回归合同，把所有已支持 MMA family 改为 `Spike / sbtsim PTX / CPU reference` 三方一致性检查，并把输入扩展到较小/较大两档随机样本。
+当前没有 active changes。
 
 当前口径提醒：
 - `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。
@@ -44,12 +42,14 @@
 
 ## 近期 historical changes（与 custom split 相关）
 
+- `openspec/changes/archive/2026-04-16-tighten-instruction-metadata-contract`：已归档的 instruction metadata contract 收敛 change；其结果已同步进 current `inst-support` / `replicated-scalar-state` specs、README/doc 索引与相关 decode / CFG verify / emitter 回归。
+- `openspec/changes/archive/2026-04-14-tighten-mma-triple-oracle-regression`：已归档的 MMA 三方 oracle 收敛 change；其结果已同步进 current `inst-support` spec、README 与统一回归入口。
 - `openspec/changes/archive/2026-04-14-support-fp16-fp16-mma`：已归档的 `fp16 -> fp16` MMA change；其结果已同步进 current `inst-support` spec、统一回归入口与相关 current 文档。`lab/07_fp16_mma_ptx_probe/` 保留为该 change 的 historical 前期实验记录。
 - `openspec/changes/archive/2026-04-14-introduce-ptx-virtual-temp-registers`：已归档的虚拟临时寄存器 change；其结果已同步进 current `ptx-temp-register-allocation` spec、README/doc 索引与 PTX emitter 回归。
 - `openspec/changes/archive/2026-04-13-support-custom-mma`：已归档的 MMA change；其结果已同步进 current spec，形成当前 landed 首批 `row.col` MMA contract。其时对 `fp16 -> fp16` 的 blocked 结论现在仅作为 `historical` 背景。
 - `openspec/changes/archive/2026-04-05-support-custom-instructions`：已归档的 non-MMA custom change（historical）。
 
-除上述 active change 外，custom 指令主题当前没有其它未归档变更；若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract。
+custom 指令主题当前没有未归档变更；若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract。
 
 ## Legacy specs
 

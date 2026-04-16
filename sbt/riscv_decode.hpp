@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace sbt {
@@ -23,6 +25,49 @@ enum class ImmKind : uint8_t {
   UImm5,
   SImm5,
   Raw12,
+};
+
+using InstId = uint32_t;
+
+inline constexpr InstId kUnknownInstId = 0;
+
+enum class OperandForm : uint8_t {
+  None = 0,
+  XRdRs1Imm,
+  XRdRs1Rs2,
+  XRdRs1Rs2Rs3,
+  XRdImm,
+  XRdCsrRs1,
+  XRdCsrImm,
+  XRs1Rs2Imm,
+  VRd,
+  VRdImm,
+  VRdRs1Scalar,
+  VRdRs1VectorImm,
+  VRdRs2Vector,
+  VRdRs2VectorRs1Scalar,
+  VRdRs2VectorRs1Vector,
+  VRdRs2VectorImm,
+  XRdRs2Vector,
+  VRs1VectorRs2VectorImm,
+};
+
+enum class UniformTransferKind : uint8_t {
+  Unknown = 0,
+  NotApplicable,
+  AlwaysUniformDst,
+  NeverUniformDst,
+  UniformIfRs1,
+  UniformIfRs2,
+  UniformIfRs1AndRs2,
+};
+
+enum class ScalarExecKind : uint8_t {
+  None = 0,
+  UniformPure,
+  LaneSensitive,
+  FixedLaneSensitive,
+  ExternallySideEffecting,
 };
 
 // RISC-V floating-point rounding mode (rm field).
@@ -171,10 +216,28 @@ struct RegextPrefix final {
   uint8_t prefix_bytes = 0;
 };
 
+struct InstMetadata final {
+  InstId id = kUnknownInstId;
+  const char *name = nullptr;
+  OperandForm operand_form = OperandForm::None;
+  RegClass rd_class = RegClass::None;
+  RegClass rs1_class = RegClass::None;
+  RegClass rs2_class = RegClass::None;
+  RegClass rs3_class = RegClass::None;
+  ImmKind imm_kind = ImmKind::None;
+  UniformTransferKind uniform_transfer_kind = UniformTransferKind::Unknown;
+  ScalarExecKind scalar_exec_kind = ScalarExecKind::None;
+  bool spike_managed = false;
+};
+
 struct DecodedInst final {
   uint32_t pc = 0;
   uint32_t word = 0;
   std::string name;
+  InstId inst_id = kUnknownInstId;
+  OperandForm operand_form = OperandForm::None;
+  UniformTransferKind uniform_transfer_kind = UniformTransferKind::Unknown;
+  ScalarExecKind scalar_exec_kind = ScalarExecKind::None;
 
   RegClass rd_class = RegClass::None;
   RegClass rs1_class = RegClass::None;
@@ -216,8 +279,19 @@ std::vector<DecodedInst>
 decode_text(const std::vector<uint8_t> &text, uint32_t text_vaddr, const DecodeOptions &opt,
             const std::vector<Pattern> &patterns);
 
+InstId make_inst_id(std::string_view name);
+std::span<const InstMetadata> all_inst_metadata();
+const InstMetadata *find_inst_metadata(std::string_view name);
+const InstMetadata *find_inst_metadata(InstId id);
+void apply_inst_metadata(const InstMetadata &metadata, DecodedInst &out);
+bool populate_inst_metadata(std::string_view name, DecodedInst &out);
+bool is_scalar_exec_classification_required(const DecodedInst &di);
+
 const char *to_string(RegClass c);
 const char *to_string(ImmKind k);
+const char *to_string(OperandForm form);
+const char *to_string(UniformTransferKind kind);
+const char *to_string(ScalarExecKind kind);
 const char *to_string(FpRoundingMode rm);
 const char *to_string(CustomFamily f);
 const char *to_string(CustomSubOp op);

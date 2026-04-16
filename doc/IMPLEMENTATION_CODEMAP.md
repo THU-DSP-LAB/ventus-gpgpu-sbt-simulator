@@ -38,13 +38,19 @@
   - 注意：不再提供 `GPU_SBT_WANT_FILE`/repo-root/CWD 的“自动路径解析”；want 文件路径由构建系统/脚本显式传入（如 CMake 调用 `gen_spike_encoding_subset --want-file ...`）。
   - 补充：`sbt_decode/sbt_ptx` 的 pattern 子集已在构建期固化，不再在运行期读取 want 文件；本模块主要供生成器与维护脚本使用。
 
+- `sbt/instruction_metadata.cpp`
+  - current shared instruction metadata 事实源：为 Spike-backed 非 custom 指令维护 repository-managed `InstId + InstMetadata`。
+  - current 最小 contract：至少覆盖 `operand_form`、`imm_kind`、`uniform_transfer_kind`，并为当前 supported scalar subset 维护显式 `ScalarExecKind`。
+  - 新增 Spike-backed 指令的当前同步入口：`data/spike_want.txt` + 本文件；缺任一侧都会在 decode/verify/test 上显式失败。
+
 - `sbt/riscv_decode.{hpp,cpp}`
   - `decode_text(text, vaddr, opt, patterns)`：按 4B 指令解码。
   - 支持 `regext/regexti` 前缀 bundling：前缀只作用下一条指令；CFG 里会把“bundle pc”和“真实指令 pc”区分开。
   - current：默认对连续前缀 fail-fast，报 `nested regext prefix`；若环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1` 打开，则临时按 Spike 现有行为顺序覆盖前缀状态，允许同一条真实指令前出现连续 `regext/regexti`。
   - Ventus 扩展优先：先走 repository-local custom decode（含已落地的 non-MMA 与 MMA 路径），再按 `match/mask` 命中 Spike pattern，最后才走 RV32 标量子集解码。
+  - current：Spike-backed pattern decode 与 scalar decode 都会填充共享 metadata；前者不再以 mnemonic suffix 作为 operand/immediate 主事实源。若命中了当前 build-time Spike subset 但缺少共享 metadata，会显式 fail-fast。
   - MMA 边界（current）：`opcode=0x0A` 现已落地首批 committed `row.col` MMA decode/lowering；`DecodedInst.custom.family = CustomFamily::Mma` 仅承担 family ownership，shape/layout/type/window 信息由独立 `MmaInstInfo` 承载。当前 landed subset 为 `m16n8k16 f16->f16`、`m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f16`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`；deferred/research MMA 组合与非 current `fp16 -> fp16` 组合在 `--require-known` 下显式 fail-fast。
-  - `DecodedInst` 是当前“最小 IR”：含 `name`、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
+  - `DecodedInst` 是当前“最小 IR”：含 `name`、`inst_id`、共享 metadata 映射出的 operand/transfer/classification 字段、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
 
 - `sbt/cfg.{hpp,cpp}`
   - `build_function_cfg(decoded, func_start, func_end_excl)`：构建函数级 CFG。
@@ -64,6 +70,7 @@
     - join 必须落在 `join` 指令处，且成为基本块入口
     - post-dominator / region side-exit / region single-entry 等结构化条件（循环形态有特殊放宽）
     - 额外：做一份“向量寄存器 uniform must 分析”，用于判断某些 `vbranch` 是否可证明 warp-uniform（从而对 barrier 合法性做更合理的保守处理）
+  - current：vector uniform 传播只消费共享 `InstMetadata.uniform_transfer_kind`；supported-path 指令若缺 metadata 或 metadata 与实际操作数字段不匹配，会直接抛错而不是回退到 `_vx/_vi/_vv/_v` suffix 猜测。
   - `barrier` 校验：保守策略——`barrier` 所在块不得落在任何“不可证明收敛”的 vbranch 区域内。
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
 
@@ -76,6 +83,7 @@
     - PTX 寄存器 ownership：当前固定 machine/runtime/control 槽位保持 stable，至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`、`%x<256>`、`%v<256>`；`%rd1/%rd3` 仍保留为稳定的 legacy reserved slot，不作为共享 scratch 池重新分配。
     - helper scratch：函数内临时值按类型分配到唯一命名 `%tmp*` virtual temp（`.b32/.b64/.pred/.f32/.b16/.u8/.u16`），并在函数头统一 `.reg` 声明；当前阶段不要求通过重排固定槽位编号来引入这套 scratch 策略。
     - 标量（x-reg）live state：采用 replicated active-lane 表示，任何仍然 live 的 `x-reg` / scalar CSR 在当前 active lanes 上都应保持相等。
+    - scalar execution classification（current）：由共享 metadata 显式给出 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`；当前 supported scalar subset 中未分类项在进入 lowering 前直接 fail-fast，不再默认视为 `UniformPure`。
     - leader 只在真正需要 single-lane 语义时按需选择：当前主线把 scalar store 等 externally side-effecting 指令降到 leader-only；普通 scalar ALU / branch / CSR read / load 直接 all-lane 执行。
     - 标量条件分支（`beq/bne/blt/bge/bltu/bgeu`）：保持 `bra.uni`，但直接读取 replicated `%x` 比较，不再做 leader-to-all-lane broadcast。
     - fixed-lane-sensitive：`vmv.x.s` 保留 architectural lane 0 语义；若 lane 0 不在当前 active mask 中则显式 `trap`，否则把 lane 0 结果 `shfl.sync` 复制回目标 `%x`。
@@ -113,6 +121,7 @@
   - 回归测试：
     - `build/ptx_emit_call_prototype_test`：覆盖“helper 前向调用 + prototype 先声明 + 新 value ABI prototype/definition 同步”。
     - `build/ptx_emit_leader_lane_abi_test`：覆盖 replicated scalar-state、fixed-lane `vmv.x.s`、direct-call value ABI、lazy leader selection 与 `vbranch/join` 无 full-`x` shim 的主线合同（target 名称沿用历史命名）。
+    - `build/instruction_metadata_contract_test`：覆盖 `data/spike_want.txt <-> instruction_metadata.cpp` 同步、Spike-backed decode metadata、CFG verify shared metadata 传播，以及 metadata 缺失时的显式失败。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
 
 - `tools/rodinia_ptx_smoke.sh`

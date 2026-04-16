@@ -68,6 +68,7 @@ int main() {
     require(di.custom.valid, "mma custom metadata valid");
     require(di.custom.family == sbt::CustomFamily::Mma, "mma custom family tag");
     require(di.mma.valid, "mma metadata valid");
+    require(di.operand_form == sbt::OperandForm::None, "mma path keeps dedicated metadata contract");
     require(di.mma.shape == sbt::MmaShape::M16N8K16, "shape m16n8k16");
     require(di.mma.a_layout == sbt::MmaLayout::Row, "a row");
     require(di.mma.b_layout == sbt::MmaLayout::Col, "b col");

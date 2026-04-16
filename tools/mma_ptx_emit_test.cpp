@@ -59,6 +59,8 @@ sbt::cfg::BundleInst make_endprg(uint32_t pc) {
   bi.len = 4;
   bi.inst.pc = pc;
   bi.inst.name = "endprg";
+  (void)sbt::populate_inst_metadata(bi.inst.name, bi.inst);
+  bi.inst.inst_id = sbt::make_inst_id(bi.inst.name);
   return bi;
 }
 
