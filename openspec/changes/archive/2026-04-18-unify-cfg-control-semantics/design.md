@@ -1,6 +1,6 @@
 ## Context
 
-本设计描述的是 **target behavior**，不是当前已完全实现的行为。
+本设计描述的是本 change 的 **landed behavior 与设计边界**。
 
 当前仓库已经具备一套足以表达 main-pipeline 控制流语义的结构化基础：
 
@@ -9,7 +9,7 @@
 - `finalize_emit_descriptor()` 已把 `jal` 细化为 `DirectJump/DirectCall`，把 `jalr` 细化为 `Return/IndirectTerminator`；
 - `sbt/ptx_emit.cpp` 已经在 current supported path 上消费这些结构化控制流语义。
 
-但其它控制流消费者还没有对齐：
+本 change 落地前，其它控制流消费者还没有对齐：
 
 - `sbt/cfg.cpp` 仍自行按 `di.name` 分类 terminator / edge；
 - `sbt/cfg_verify.cpp` 仍自行按 `di.name` 分类 `setrpc/vbranch/join/barrier/jalr`，向前回溯 `auipc` 时也仍看 mnemonic；
@@ -75,19 +75,22 @@
 
 ### 2. Introduce a shared control-semantics helper as the only consumer-side classifier
 
-本 change 将新增一个共享 helper 模块，专门为控制流消费者提供统一分类入口。
+本 change 新增一个共享 helper 模块（`sbt/control_semantics.{hpp,cpp}`），专门为控制流消费者提供统一分类入口。
 
 该 helper 的职责是：
 
 - 从 `DecodedInst` 读取结构化控制流语义；
 - 产出 `cfg` / `cfg_verify` / `tools/sbt_ptx.cpp` 所需的统一分类结果；
-- 对结构化字段缺失、类型不匹配、或与 supported contract 自相矛盾的情况显式报错。
+- 对结构化字段缺失、类型不匹配、或与 supported contract 自相矛盾的情况显式报错；
+- 统一负责 branch / jump / direct-call 的 `inst_pc + imm` target 计算，避免消费者再次抄写 bundle-pc / inst-pc 规则；
+- 统一负责 `setrpc` + `ScalarIntKind::Auipc` 的 join 解析入口，避免 `cfg_verify` 在 consumer 侧继续保留 mnemonic 回溯。
 
 该 helper 不重新存一份语义，只做：
 
 - authority read
 - consumer-friendly classification
 - fail-fast validation
+- shared target / PC resolution
 
 这样可以避免：
 
@@ -136,6 +139,7 @@ target behavior 是：
 - direct-call 识别来自 `ControlKind::DirectCall`
 - direct-call target 计算继续使用现有 `inst_pc + imm`
 - builtin callee 过滤继续按现有 symbol contract 工作
+- prototype / `.func` 闭包路径继续通过 `ptx_emit_call_prototype_test` 与主流程 smoke 一起回归，避免 authority 收口破坏 helper 前向声明路径
 
 如果保留这个点的 `di.name == "jal"` 判定，那么主流程外围仍然有一处 mnemonic authority，没有真正完成收口。
 
@@ -171,4 +175,4 @@ target behavior 是：
 - 共享 helper 会把原本分散的控制流判断集中起来，短期需要更认真地设计分类边界；但这正是消除漂移的必要成本。
 - poison-name regression 可能暴露出当前手工构造测试 fixture 里“只改 name，没改 descriptor”的旧假设；这是预期内的收敛成本。
 - regext-bundled control-flow 指令同时依赖 `bundle pc` 与 `inst_pc` 语义；若回归覆盖不够，这次 authority 收口容易意外破坏现有 PC 约定。
-- `openspec/README.md` 当前 active change 列表与 `openspec list` 结果并不完全一致；本 change 会顺手修正相关导航，但不会把它扩成一次全面文档整理。
+- `EmitDescriptor` 这个名字本身仍偏 emitter；虽然字段当前已同时服务 CFG / verify / call-graph scan，但本 change 不扩成一次更大的 descriptor 重命名或 IR 重构。

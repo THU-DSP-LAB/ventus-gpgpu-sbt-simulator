@@ -122,14 +122,15 @@ python3 tools/check_ptx_emit_name_allowlist.py
 当前 instruction metadata / scalar execution current 口径是：
 - Spike-backed 非 custom 指令通过共享 `InstId + InstMetadata` contract 提供 `operand_form`、`imm_kind`、`uniform_transfer_kind`；`DecodedInst.name` 只保留给 pretty print、JSON 输出与 external mnemonic contract。
 - `sbt/riscv_decode` 在 Spike-backed pattern decode 与 scalar decode 两条路径上都会填充共享 metadata；custom non-MMA / MMA 继续保留各自显式 metadata，不回退到字符串推断。
-- `sbt/cfg_verify` 只消费共享 `uniform_transfer_kind` 做 vector uniform 传播；supported-path 指令缺 metadata 时直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 猜测。
+- `sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与 `tools/sbt_ptx.cpp` 当前统一通过共享 `EmitDescriptor` / ordinary metadata 控制流 helper 消费 `branch/jump/call/return/indirect terminator/structured control/auipc` 语义；supported-path 控制流不再按 `DecodedInst.name` 做 correctness 分派。
+- `sbt/cfg_verify` 的 vector uniform 传播继续只消费共享 `uniform_transfer_kind`；supported-path 指令缺 metadata 或缺控制流结构化语义时都会直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 或 mnemonic 猜测。
 - PTX emitter 的 scalar execution classification 现为显式表驱动、默认拒绝未分类项；当前 supported scalar subset 必须逐条声明 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`。
 
 当前 lowering authority / mnemonic contract 口径是：
-- `sbt/ptx_emit.cpp` 的 current supported correctness path 已改为消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
+- `sbt/ptx_emit.cpp`、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与 `tools/sbt_ptx.cpp` 的 current supported control-flow correctness path 都已改为消费 decode 产出的结构化语义；ordinary/custom/MMA 的 emit 语义同样不再由 `DecodedInst.name` 决定。
 - `DecodedInst.name` 当前允许用途限定为 pretty / JSON / diagnostics / coverage / ABI-visible builtin symbol / comments。
-- `tools/check_ptx_emit_name_allowlist.py` 会静态检查 emitter 中残余 `name` 读取是否只剩 allowlist 用途；代表性 supported-path 回归还会做 poison-name 检查。
-- decode 期间的 shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 仍保留 name-string 依赖；这是当前 active change 明确标注的 deferred 范围，不属于本轮 emit 实施缺口。
+- `tools/check_ptx_emit_name_allowlist.py` 会静态检查 emitter 中残余 `name` 读取是否只剩 allowlist 用途；`build/instruction_metadata_contract_test` 等代表性 supported-path 回归会继续做 control/emitter poison-name 检查，并覆盖 poisoned non-`ret` `jalr` 仍被识别为 `unsupported_jalr`。
+- decode 期间的 shared-metadata lookup 当前仍保留内部 name-keyed 查表；但 CFG build / CFG verify / direct-call 闭包扫描已不再把 `DecodedInst.name` 当作控制流 semantic authority。
 
 当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
 - non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。

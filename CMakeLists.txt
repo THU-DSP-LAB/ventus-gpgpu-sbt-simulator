@@ -23,6 +23,7 @@ add_library(sbt_lib
   sbt/instruction_metadata.cpp
   sbt/riscv_decode.cpp
   sbt/dump_parser.cpp
+  sbt/control_semantics.cpp
   sbt/cfg.cpp
   sbt/cfg_verify.cpp
   sbt/ptx_mma.cpp
