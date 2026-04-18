@@ -34,7 +34,7 @@
 
 ## 当前 active changes
 
-当前没有 active changes。
+- `reduce-lowering-name-dependence`：当前唯一 active change；目标已收紧为“让 current supported emit path 整体转成 descriptor-driven”。`DecodedInst.name` 继续保留为 external mnemonic contract，但不再作为 PTX emitter correctness path 的 authority。该 change 要求 ordinary/custom/MMA 在进入 emitter 前都具备 emit-authoritative descriptor / payload，并同步把 CFG control-flow 分类收口到共享前置 descriptor；`cfg_verify` 的更宽结构化规则重写仍不在本 change 范围内。
 
 当前口径提醒：
 - `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。
@@ -49,7 +49,7 @@
 - `openspec/changes/archive/2026-04-13-support-custom-mma`：已归档的 MMA change；其结果已同步进 current spec，形成当前 landed 首批 `row.col` MMA contract。其时对 `fp16 -> fp16` 的 blocked 结论现在仅作为 `historical` 背景。
 - `openspec/changes/archive/2026-04-05-support-custom-instructions`：已归档的 non-MMA custom change（historical）。
 
-custom 指令主题当前没有未归档变更；若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract。
+custom 指令与普通 lowering 去名字耦合主题当前有一个未归档 change：`reduce-lowering-name-dependence`。若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract，而不是混入该 change。
 
 ## Legacy specs
 
