@@ -18,6 +18,7 @@
 
 - `README.md`：用户入口、构建命令、回归入口、文档导航。
 - `doc/IMPLEMENTATION_CODEMAP.md`：当前实现真相（as-built）。目录/模块职责、关键数据结构与调用链，以及 current PTX 固定槽位 / `%tmp*` scratch ownership 口径。
+- current lowering authority 也以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/emit_descriptor.hpp`、`sbt/instruction_metadata.cpp` 与 `sbt/ptx_emit.cpp` 为准：当前 supported emit path 已 descriptor-driven，`DecodedInst.name` 只保留 external mnemonic contract；decode/shared-metadata lookup/CFG 的去 name string 化仍在 active change 中显式 deferred。
 - current instruction metadata 口径也以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/instruction_metadata.cpp`、`openspec/specs/inst-support/spec.md` 与 `openspec/specs/replicated-scalar-state/spec.md` 为准：不要再把 decode / CFG verify / emitter 的字符串 suffix 推断当作当前事实源。
 - `openspec/README.md`：OpenSpec 状态分层、当前 specs 与 archive 的使用方式。
 - `openspec/specs/global-address-space/spec.md`：当前 PTX ordinary address mapping / single-Global / VMM backing contract。
@@ -46,6 +47,7 @@
 - `openspec/specs/ptx-temp-register-allocation/spec.md`：当前 PTX scratch ownership / `%tmp*` virtual temp 合同。
 - `openspec/specs/inst-support/spec.md`：当前指令支持与验证合同。
 - current Spike-backed 指令形态 / uniform-transfer metadata 以 `openspec/specs/inst-support/spec.md` 与 `sbt/instruction_metadata.cpp` 为准。
+- current emitter name-dependence 边界以 `openspec/changes/reduce-lowering-name-dependence/inventory.md` 记录：inventory 中列出的 decode / CFG site 是 `active` deferred 项，不覆盖 current emitter already-landed 行为。
 - `openspec/specs/sbt-rodinia-bringup/spec.md`：当前 Rodinia bring-up / fail-fast 边界。
 - `openspec/specs/build-time-spike-pattern-subset/spec.md`：当前 Spike pattern 子集生成合同。
 - current scalar execution classification 以 `openspec/specs/replicated-scalar-state/spec.md` 与 `sbt/instruction_metadata.cpp` 为准；未分类 scalar 当前是显式失败，不存在默认 `UniformPure` fallback。

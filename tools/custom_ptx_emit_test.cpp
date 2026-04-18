@@ -40,6 +40,7 @@ sbt::cfg::BundleInst make_custom_inst(uint32_t pc, const std::string &name, int 
   bi.inst.custom.family = family;
   bi.inst.custom.subop = subop;
   bi.inst.custom.dtype = dtype;
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -51,6 +52,7 @@ sbt::cfg::BundleInst make_endprg(uint32_t pc) {
   bi.inst.pc = pc;
   bi.inst.name = "endprg";
   (void)sbt::populate_inst_metadata(bi.inst.name, bi.inst);
+  sbt::finalize_emit_descriptor(bi.inst);
   bi.inst.inst_id = sbt::make_inst_id(bi.inst.name);
   return bi;
 }
@@ -122,6 +124,13 @@ int main() {
   opt.include_comments = false;
   const auto res = sbt::ptx::emit_kernel(cfg, sym_by_addr, "custom_kernel", opt);
   const std::string &ptx = res.ptx;
+
+  auto poisoned_cfg = cfg;
+  for (size_t i = 0; i + 1 < poisoned_cfg.insts.size(); ++i) {
+    poisoned_cfg.insts[i].inst.name = "poison_custom_" + std::to_string(i);
+  }
+  const auto poisoned_ptx = sbt::ptx::emit_kernel(poisoned_cfg, sym_by_addr, "custom_kernel", opt).ptx;
+  require(poisoned_ptx == ptx, "custom lowering must stay payload-authoritative when mnemonic names are poisoned");
 
   require(ptx.find(".version 7.8") != std::string::npos, "ptx version baseline");
   require(ptx.find(".target sm_89") != std::string::npos, "sm baseline");

@@ -41,6 +41,8 @@
 - `sbt/instruction_metadata.cpp`
   - current shared instruction metadata 事实源：为 Spike-backed 非 custom 指令维护 repository-managed `InstId + InstMetadata`。
   - current 最小 contract：至少覆盖 `operand_form`、`imm_kind`、`uniform_transfer_kind`，并为当前 supported scalar subset 维护显式 `ScalarExecKind`。
+  - current：该层还集中维护 emitter-facing `EmitDescriptor`，作为 `sbt/ptx_emit.cpp` supported-path lowering 的 shared authority。
+  - 边界：shared metadata 当前内部仍按 mnemonic name 查表并产出 descriptor；这属于 `reduce-lowering-name-dependence` 明确 deferred 的非-emitter name 依赖，而不是当前 emitter correctness path 的 authority 来源。
   - 新增 Spike-backed 指令的当前同步入口：`data/spike_want.txt` + 本文件；缺任一侧都会在 decode/verify/test 上显式失败。
 
 - `sbt/riscv_decode.{hpp,cpp}`
@@ -50,7 +52,7 @@
   - Ventus 扩展优先：先走 repository-local custom decode（含已落地的 non-MMA 与 MMA 路径），再按 `match/mask` 命中 Spike pattern，最后才走 RV32 标量子集解码。
   - current：Spike-backed pattern decode 与 scalar decode 都会填充共享 metadata；前者不再以 mnemonic suffix 作为 operand/immediate 主事实源。若命中了当前 build-time Spike subset 但缺少共享 metadata，会显式 fail-fast。
   - MMA 边界（current）：`opcode=0x0A` 现已落地首批 committed `row.col` MMA decode/lowering；`DecodedInst.custom.family = CustomFamily::Mma` 仅承担 family ownership，shape/layout/type/window 信息由独立 `MmaInstInfo` 承载。当前 landed subset 为 `m16n8k16 f16->f16`、`m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f16`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`；deferred/research MMA 组合与非 current `fp16 -> fp16` 组合在 `--require-known` 下显式 fail-fast。
-  - `DecodedInst` 是当前“最小 IR”：含 `name`、`inst_id`、共享 metadata 映射出的 operand/transfer/classification 字段、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
+  - `DecodedInst` 是当前“最小 IR”：含 `name`、`inst_id`、共享 metadata 映射出的 operand/transfer/classification/emit-descriptor 字段、寄存器类（X/V）、寄存器号、立即数类型与值、是否携带 regext 前缀信息，以及标量 FP rounding mode（`fp_rm`，来自 F 指令的 `rm` 域）。
 
 - `sbt/cfg.{hpp,cpp}`
   - `build_function_cfg(decoded, func_start, func_end_excl)`：构建函数级 CFG。
@@ -61,6 +63,7 @@
     - `jal rd!=0, off`：call（非 terminator，fallthrough）
     - `jalr`：仅 `ret` 形态被识别为 return；其它 `jalr` 视为“间接控制流 terminator”（后续 verify 会记录为 unsupported）
     - `beq/bne/...` 与 `vb*`：条件分支（terminator，含 fallthrough）
+  - 边界：CFG current 仍按 `di.name` 做 terminator / edge 分类；这部分与 `cfg_verify` 一起被显式标注为 deferred，不属于当前 emitter 去 name-string 化已完成范围。
 
 - `sbt/cfg_verify.{hpp,cpp}`
   - `verify_function(cfg, func_name)`：对 `setrpc/vbranch/join/barrier/jalr` 做结构化验证。
@@ -73,11 +76,14 @@
   - current：vector uniform 传播只消费共享 `InstMetadata.uniform_transfer_kind`；supported-path 指令若缺 metadata 或 metadata 与实际操作数字段不匹配，会直接抛错而不是回退到 `_vx/_vi/_vv/_v` suffix 猜测。
   - `barrier` 校验：保守策略——`barrier` 所在块不得落在任何“不可证明收敛”的 vbranch 区域内。
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
+  - 边界：结构化 verify 规则当前仍保留 `name` 分类；这同样是 `reduce-lowering-name-dependence` change 的 deferred 非-emitter 站点。
 
 - `sbt/ptx_emit.{hpp,cpp}`
   - `emit_module(entry_cfg, sym_by_addr, entry_name, funcs, ptx_name_by_addr, opt)`：输出一个 PTX module，包含 1 个 `.entry <kernel>` + 若干 `.func <callee>`（用于 direct call）。
   - `emit_kernel(...)`：兼容接口（单函数 `.entry`，不含通用 call graph）。
   - 关键语义约定（当前主线）：
+    - current supported correctness path 已 descriptor-driven：ordinary/control/scalar/vector path 消费 `DecodedInst.emit`，custom non-MMA 消费 `DecodedInst.custom`，MMA 消费 `DecodedInst.mma`；`DecodedInst.name` 不再是 emitter semantic authority。
+    - emitter 中残余 `name` 读取当前只允许出现在 comments / diagnostics / external reporting；该 allowlist 由 `tools/check_ptx_emit_name_allowlist.py` 静态检查。
     - `setrpc/join/vsetvli`：结构化翻译下视为 no-op（主要用于 Stage2 verify）。
     - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
     - PTX 寄存器 ownership：当前固定 machine/runtime/control 槽位保持 stable，至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`、`%x<256>`、`%v<256>`；`%rd1/%rd3` 仍保留为稳定的 legacy reserved slot，不作为共享 scratch 池重新分配。
@@ -122,7 +128,9 @@
     - `build/ptx_emit_call_prototype_test`：覆盖“helper 前向调用 + prototype 先声明 + 新 value ABI prototype/definition 同步”。
     - `build/ptx_emit_leader_lane_abi_test`：覆盖 replicated scalar-state、fixed-lane `vmv.x.s`、direct-call value ABI、lazy leader selection 与 `vbranch/join` 无 full-`x` shim 的主线合同（target 名称沿用历史命名）。
     - `build/instruction_metadata_contract_test`：覆盖 `data/spike_want.txt <-> instruction_metadata.cpp` 同步、Spike-backed decode metadata、CFG verify shared metadata 传播，以及 metadata 缺失时的显式失败。
+    - `build/external_mnemonic_contract_test`：覆盖 pretty / JSON / diagnostics / coverage / external builtin symbol 等 external mnemonic contract，确保 authority 迁移后 `DecodedInst.name` 仍稳定服务外部口径。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
+    - `python3 tools/check_ptx_emit_name_allowlist.py`：静态检查 `sbt/ptx_emit.cpp` 中 `name` 读取只剩显式 allowlist 用途。
 
 - `tools/rodinia_ptx_smoke.sh`
   - 固定列表：Rodinia 11 个 kernel（compile-first），生成 PTX 并用 `ptxas` 编译。

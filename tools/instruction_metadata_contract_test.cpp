@@ -65,6 +65,7 @@ sbt::cfg::BundleInst make_inst(uint32_t pc, const std::string &name) {
   bi.inst.pc = pc;
   bi.inst.name = name;
   (void)sbt::populate_inst_metadata(name, bi.inst);
+  sbt::finalize_emit_descriptor(bi.inst);
   if (bi.inst.inst_id == sbt::kUnknownInstId && name != "unknown") bi.inst.inst_id = sbt::make_inst_id(name);
   return bi;
 }
@@ -76,28 +77,34 @@ sbt::cfg::FunctionCfg make_uniform_vbranch_cfg() {
   auto auipc = make_inst(kStart, "auipc");
   auipc.inst.rd = 1;
   auipc.inst.imm = 0;
+  sbt::finalize_emit_descriptor(auipc.inst);
 
   auto setrpc = make_inst(kStart + 4u, "setrpc");
   setrpc.inst.rs1 = 1;
   setrpc.inst.imm = static_cast<int32_t>(kJoinPc - kStart);
+  sbt::finalize_emit_descriptor(setrpc.inst);
 
   auto vmv_vi = make_inst(kStart + 8u, "vmv_v_i");
   vmv_vi.inst.rd = 2;
   vmv_vi.inst.imm = 3;
+  sbt::finalize_emit_descriptor(vmv_vi.inst);
 
   auto vadd12 = make_inst(kStart + 12u, "vadd12_vi");
   vadd12.inst.rd = 1;
   vadd12.inst.rs1 = 2;
   vadd12.inst.imm = 7;
+  sbt::finalize_emit_descriptor(vadd12.inst);
 
   auto vbeq = make_inst(kStart + 16u, "vbeq");
   vbeq.inst.rs1 = 1;
   vbeq.inst.rs2 = 1;
   vbeq.inst.imm = static_cast<int32_t>(kJoinPc - (kStart + 16u));
+  sbt::finalize_emit_descriptor(vbeq.inst);
 
   auto jump = make_inst(kStart + 20u, "jal");
   jump.inst.rd = 0;
   jump.inst.imm = static_cast<int32_t>(kJoinPc - (kStart + 20u));
+  sbt::finalize_emit_descriptor(jump.inst);
 
   auto join = make_inst(kJoinPc, "join");
   auto endprg = make_inst(kJoinPc + 4u, "endprg");
@@ -248,6 +255,7 @@ void check_cfg_verify_keeps_repo_local_custom_conservative() {
   cfg.insts[2].inst.rs2 = 3;
   cfg.insts[2].inst.imm_kind = sbt::ImmKind::UImm5;
   cfg.insts[2].inst.imm = 1;
+  sbt::finalize_emit_descriptor(cfg.insts[2].inst);
 
   const auto result = sbt::cfg::verify_function(cfg, "repo_local_custom_conservative");
   require(result.vbranch.size() == 1, "expect one vbranch for custom uniform check");

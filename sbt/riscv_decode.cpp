@@ -820,6 +820,7 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
     out.mma.rs1_base = out.rs1;
     out.mma.rs2_base = out.rs2;
   }
+  finalize_emit_descriptor(out);
   if (out.inst_id == kUnknownInstId && out.name != "unknown") out.inst_id = make_inst_id(out.name);
 
   return out;

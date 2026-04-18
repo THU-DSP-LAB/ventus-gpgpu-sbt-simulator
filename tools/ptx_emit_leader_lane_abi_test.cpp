@@ -41,6 +41,7 @@ sbt::cfg::BundleInst make_inst(uint32_t pc, std::string name) {
   bi.inst.pc = pc;
   bi.inst.name = std::move(name);
   (void)sbt::populate_inst_metadata(bi.inst.name, bi.inst);
+  sbt::finalize_emit_descriptor(bi.inst);
   if (bi.inst.inst_id == sbt::kUnknownInstId && bi.inst.name != "unknown") bi.inst.inst_id = sbt::make_inst_id(bi.inst.name);
   return bi;
 }
@@ -55,6 +56,7 @@ sbt::cfg::BundleInst make_scalar_branch(uint32_t pc, const std::string &name, in
   bi.inst.rs2 = rs2;
   bi.inst.imm_kind = sbt::ImmKind::B13;
   bi.inst.imm = static_cast<int32_t>(target - pc);
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -66,6 +68,7 @@ sbt::cfg::BundleInst make_vbranch(uint32_t pc, const std::string &name, int rs1,
   bi.inst.rs2 = rs2;
   bi.inst.imm_kind = sbt::ImmKind::B13;
   bi.inst.imm = static_cast<int32_t>(target - pc);
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -85,6 +88,7 @@ sbt::cfg::BundleInst make_setrpc(uint32_t pc, int rs1, uint32_t join_pc) {
   bi.inst.rs1 = rs1;
   bi.inst.imm_kind = sbt::ImmKind::I12;
   bi.inst.imm = static_cast<int32_t>(delta);
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -94,6 +98,7 @@ sbt::cfg::BundleInst make_auipc(uint32_t pc, int rd) {
   bi.inst.rd = rd;
   bi.inst.imm_kind = sbt::ImmKind::U20;
   bi.inst.imm = 0;
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -103,6 +108,7 @@ sbt::cfg::BundleInst make_jump(uint32_t pc, uint32_t target) {
   bi.inst.rd = 0;
   bi.inst.imm_kind = sbt::ImmKind::J21;
   bi.inst.imm = static_cast<int32_t>(target - pc);
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -112,6 +118,7 @@ sbt::cfg::BundleInst make_call(uint32_t pc, uint32_t target) {
   bi.inst.rd = 1;
   bi.inst.imm_kind = sbt::ImmKind::J21;
   bi.inst.imm = static_cast<int32_t>(target - pc);
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -123,6 +130,7 @@ sbt::cfg::BundleInst make_addi(uint32_t pc, int rd, int rs1, int imm) {
   bi.inst.rs1 = rs1;
   bi.inst.imm_kind = sbt::ImmKind::I12;
   bi.inst.imm = imm;
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -134,6 +142,7 @@ sbt::cfg::BundleInst make_scalar_store(uint32_t pc, const std::string &name, int
   bi.inst.rs2 = rs2;
   bi.inst.imm_kind = sbt::ImmKind::S12;
   bi.inst.imm = imm;
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -143,6 +152,7 @@ sbt::cfg::BundleInst make_vmv_x_s(uint32_t pc, int rd, int rs2) {
   bi.inst.rd = rd;
   bi.inst.rs2_class = sbt::RegClass::V;
   bi.inst.rs2 = rs2;
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -607,6 +617,28 @@ int main() {
       extract_ptx_body(vbranch_store_call_ptx, ".visible .entry vbranch_store_call(");
   const std::string helper_store_ret_body =
       extract_ptx_body(helper_store_ret_ptx, ") __sbt_fn_helper_store_ret(");
+
+  {
+    auto poisoned_branch_cfg = helper_b_cfg;
+    poisoned_branch_cfg.insts[0].inst.name = "poison_scalar_branch";
+    const auto poisoned_branch_ptx =
+        sbt::ptx::emit_module(poisoned_branch_cfg, {{kBranchPc, "branch_helper"}}, "branch_helper", {}, {}, opt).ptx;
+    const auto clean_branch_ptx = sbt::ptx::emit_module(helper_b_cfg, {{kBranchPc, "branch_helper"}}, "branch_helper", {}, {}, opt).ptx;
+    require(poisoned_branch_ptx == clean_branch_ptx, "scalar supported-path lowering must ignore poisoned mnemonic names");
+  }
+
+  {
+    auto poisoned_diverge_cfg = diverge_cfg;
+    for (auto &bi : poisoned_diverge_cfg.insts) {
+      if (bi.inst.emit.domain == sbt::EmitDomain::StructuredControl || bi.inst.emit.domain == sbt::EmitDomain::Control) {
+        bi.inst.name = "poison_control";
+      }
+    }
+    const auto poisoned_diverge_ptx =
+        sbt::ptx::emit_module(poisoned_diverge_cfg, {{kDivergePc, "diverge"}}, "diverge", {}, {}, opt).ptx;
+    const auto clean_diverge_ptx = sbt::ptx::emit_module(diverge_cfg, {{kDivergePc, "diverge"}}, "diverge", {}, {}, opt).ptx;
+    require(poisoned_diverge_ptx == clean_diverge_ptx, "control / structured-control lowering must ignore poisoned mnemonic names");
+  }
 
   require(ptx.find(".param .align 4 .b8 __sbt_mutable_state_in[") != std::string::npos,
           "helper definition should use mutable-state input blob");

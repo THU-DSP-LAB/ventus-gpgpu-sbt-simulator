@@ -26,15 +26,15 @@
 
 - `build-time-spike-pattern-subset`：构建期 Spike pattern 子集生成合同
 - `global-address-space`：当前 PTX ordinary address mapping / single-Global / VMM backing 合同
-- `inst-support`：指令支持与语义验证合同（当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；Spike-backed 非 custom 指令当前通过共享 instruction metadata 维护 operand / immediate / uniform-transfer contract；所有 current supported MMA family 现统一采用 `Spike / sbtsim PTX / CPU reference` 三方语义验证）
+- `inst-support`：指令支持与语义验证合同（当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；Spike-backed 非 custom 指令当前通过共享 instruction metadata 维护 operand / immediate / uniform-transfer / emit-descriptor contract；所有 current supported MMA family 现统一采用 `Spike / sbtsim PTX / CPU reference` 三方语义验证）
 - `ptx-call-prototype`：多函数 PTX helper prototype / value ABI 合同
 - `ptx-temp-register-allocation`：当前 PTX emitter 固定槽位与 `%tmp*` scratch ownership 合同
-- `replicated-scalar-state`：当前 PTX lowering 主线合同（包含 scalar execution classification 显式化、未分类 scalar 默认拒绝的 current contract）
+- `replicated-scalar-state`：当前 PTX lowering 主线合同（包含 scalar execution classification 显式化、scalar-side emit descriptor authority、未分类 scalar 默认拒绝的 current contract）
 - `sbt-rodinia-bringup`：Rodinia bring-up / fail-fast 边界
 
 ## 当前 active changes
 
-- `reduce-lowering-name-dependence`：当前唯一 active change；目标已收紧为“让 current supported emit path 整体转成 descriptor-driven”。`DecodedInst.name` 继续保留为 external mnemonic contract，但不再作为 PTX emitter correctness path 的 authority。该 change 要求 ordinary/custom/MMA 在进入 emitter 前都具备 emit-authoritative descriptor / payload，并同步把 CFG control-flow 分类收口到共享前置 descriptor；`cfg_verify` 的更宽结构化规则重写仍不在本 change 范围内。
+- `reduce-lowering-name-dependence`：当前唯一 active change；当前已落地部分聚焦 emitter correctness path：current supported emit path 已转成 descriptor-driven，`DecodedInst.name` 继续保留为 external mnemonic contract，但不再作为 PTX emitter correctness path 的 authority。decode/shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 的去 name string 化仍是后续 change 的 deferred 范围。
 
 当前口径提醒：
 - `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。

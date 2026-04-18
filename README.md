@@ -107,6 +107,10 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 # replicated scalar-state / value ABI / divergence 回归
 ./build/ptx_emit_leader_lane_abi_test
+
+# external mnemonic contract / emitter allowlist 回归
+./build/external_mnemonic_contract_test
+python3 tools/check_ptx_emit_name_allowlist.py
 ```
 
 当前实现仍坚持 fail-fast：遇到 unknown/unsupported 指令、不可接受的 CFG 形态、或当前未支持的 `jalr` 用法时直接报错退出，而不是静默降级。
@@ -116,10 +120,16 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 - lowering scratch 统一走函数级唯一命名的 `%tmp*` 虚拟临时寄存器，例如 `%tmp_b32_*`、`%tmp_b64_*`、`%tmp_p_*`、`%tmp_f32_*`、`%tmp_b16_*`、`%tmp_u8_*`、`%tmp_u16_*`；这些寄存器在函数头统一 `.reg` 声明，本阶段不要求重排固定槽位编号。
 
 当前 instruction metadata / scalar execution current 口径是：
-- Spike-backed 非 custom 指令通过共享 `InstId + InstMetadata` contract 提供 `operand_form`、`imm_kind`、`uniform_transfer_kind`；`DecodedInst.name` 只保留给 pretty print、JSON 输出与诊断兼容。
+- Spike-backed 非 custom 指令通过共享 `InstId + InstMetadata` contract 提供 `operand_form`、`imm_kind`、`uniform_transfer_kind`；`DecodedInst.name` 只保留给 pretty print、JSON 输出与 external mnemonic contract。
 - `sbt/riscv_decode` 在 Spike-backed pattern decode 与 scalar decode 两条路径上都会填充共享 metadata；custom non-MMA / MMA 继续保留各自显式 metadata，不回退到字符串推断。
 - `sbt/cfg_verify` 只消费共享 `uniform_transfer_kind` 做 vector uniform 传播；supported-path 指令缺 metadata 时直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 猜测。
 - PTX emitter 的 scalar execution classification 现为显式表驱动、默认拒绝未分类项；当前 supported scalar subset 必须逐条声明 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`。
+
+当前 lowering authority / mnemonic contract 口径是：
+- `sbt/ptx_emit.cpp` 的 current supported correctness path 已改为消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
+- `DecodedInst.name` 当前允许用途限定为 pretty / JSON / diagnostics / coverage / ABI-visible builtin symbol / comments。
+- `tools/check_ptx_emit_name_allowlist.py` 会静态检查 emitter 中残余 `name` 读取是否只剩 allowlist 用途；代表性 supported-path 回归还会做 poison-name 检查。
+- decode 期间的 shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 仍保留 name-string 依赖；这是当前 active change 明确标注的 deferred 范围，不属于本轮 emit 实施缺口。
 
 当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
 - non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。

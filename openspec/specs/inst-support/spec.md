@@ -53,6 +53,47 @@ If a Spike-backed non-custom instruction is treated as part of the current suppo
 - **THEN** the implementation fails explicitly
 - **AND THEN** it is not accepted by silently guessing operand or analysis semantics from the mnemonic suffix
 
+### Requirement: Current supported PTX emission SHALL consume explicit emit-authoritative descriptor or payload
+For every current supported instruction that reaches PTX emission, the lowering authority MUST already be present before emitter-side correctness decisions are made.
+
+The current contract is:
+- ordinary non-custom supported paths consume emitter-facing `EmitDescriptor`
+- custom non-MMA supported paths consume explicit `custom.family/subop/dtype` payload
+- MMA supported paths consume dedicated MMA metadata rather than mnemonic dispatch
+
+The PTX emitter MUST NOT use `DecodedInst.name` as the semantic authority for ordinary/custom/MMA lowering on the current supported path.
+
+#### Scenario: Supported instruction lowers without mnemonic authority
+- **GIVEN** a current supported instruction reaches PTX emission
+- **WHEN** emitter-side correctness logic selects its lowering path
+- **THEN** the decision is made from explicit descriptor or payload metadata
+- **AND THEN** changing `DecodedInst.name` alone does not alter the supported-path lowering behavior
+
+### Requirement: Missing emit descriptor or payload SHALL fail explicitly on the supported PTX path
+If a current supported instruction reaches PTX emission without the required emit-authoritative descriptor or payload, translation MUST fail explicitly rather than falling back to emitter-local mnemonic parsing.
+
+#### Scenario: Supported-path emit does not fall back to name parsing
+- **GIVEN** a current supported ordinary/custom/MMA instruction reaches PTX emission
+- **AND GIVEN** its required emit descriptor or payload is missing or incomplete
+- **WHEN** the emitter attempts to lower the instruction
+- **THEN** translation fails explicitly
+- **AND THEN** the emitter does not recover by parsing `DecodedInst.name`
+
+### Requirement: External mnemonic contract SHALL remain stable after authority migration
+`DecodedInst.name` remains part of the current external mnemonic contract for user-visible or externally visible reporting.
+
+The current contract includes at least:
+- pretty output
+- JSON / diagnostics
+- coverage / mnemonic reporting
+- ABI-visible builtin symbol or equivalent external reporting sites
+
+#### Scenario: External mnemonic output remains available
+- **GIVEN** the project runs pretty/JSON/reporting paths on a decoded current supported instruction
+- **WHEN** lowering authority has already migrated away from mnemonic strings
+- **THEN** the external output still exposes the expected mnemonic contract
+- **AND THEN** this behavior is validated independently from emitter correctness
+
 ### Requirement: Extend PTX emitter scalar RV32I/M coverage
 The PTX backend MUST support a complete, commonly used RV32I/M scalar subset that is already decodable by the frontend, including at least:
 - logic ops: `and/or/xor/andi/ori`

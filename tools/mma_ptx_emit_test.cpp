@@ -49,6 +49,7 @@ sbt::cfg::BundleInst make_mma_inst(uint32_t pc, int rd_base, int rs1_base, int r
   bi.inst.mma.wide_ab = wide_ab;
   bi.inst.mma.support_class = support_class;
   bi.inst.mma.lowering_class = lowering_class;
+  sbt::finalize_emit_descriptor(bi.inst);
   return bi;
 }
 
@@ -60,6 +61,7 @@ sbt::cfg::BundleInst make_endprg(uint32_t pc) {
   bi.inst.pc = pc;
   bi.inst.name = "endprg";
   (void)sbt::populate_inst_metadata(bi.inst.name, bi.inst);
+  sbt::finalize_emit_descriptor(bi.inst);
   bi.inst.inst_id = sbt::make_inst_id(bi.inst.name);
   return bi;
 }

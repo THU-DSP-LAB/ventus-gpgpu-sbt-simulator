@@ -74,6 +74,33 @@ If a scalar instruction that requires classification has no explicit execution-s
 - **THEN** translation fails explicitly
 - **AND THEN** the instruction is not lowered as `uniform-pure` by default
 
+### Requirement: Scalar-side supported lowering SHALL use explicit descriptor authority together with execution classification
+For the current supported scalar-side path, emitter correctness decisions MUST be driven by explicit emit descriptor metadata plus `scalar_exec_kind` where classification is applicable.
+
+The current contract covers at least:
+- scalar control-flow / structured control
+- scalar memory
+- scalar integer / bitmanip
+- scalar FP
+- CSR lowering
+- the applicability boundary for whether scalar execution classification is required
+
+The emitter MUST NOT re-derive these scalar-side semantics from `DecodedInst.name` on the current supported path.
+
+#### Scenario: Poisoned mnemonic does not change scalar-side lowering
+- **GIVEN** a current supported scalar-side instruction has valid emit descriptor metadata and execution classification
+- **AND GIVEN** its `DecodedInst.name` is intentionally replaced with an unrelated poison string in a regression test
+- **WHEN** PTX emission runs on the supported path
+- **THEN** lowering still follows the descriptor/classification contract
+- **AND THEN** the poison mnemonic does not change scalar-side correctness behavior
+
+#### Scenario: Missing scalar-side descriptor authority is rejected
+- **GIVEN** a current supported scalar-side instruction reaches PTX emission
+- **AND GIVEN** the required descriptor or scalar execution applicability metadata is missing
+- **WHEN** the emitter attempts to lower it
+- **THEN** translation fails explicitly
+- **AND THEN** the emitter does not recover by branching on the mnemonic string
+
 ### Requirement: Divergent paths SHALL select a valid path-local leader only when needed
 The replicated scalar-state lowering MUST NOT require a permanent leader-lane ownership model for all scalar execution.
 

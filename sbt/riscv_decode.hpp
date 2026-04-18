@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sbt/emit_descriptor.hpp"
+
 #include <cstdint>
 #include <span>
 #include <string>
@@ -227,6 +229,7 @@ struct InstMetadata final {
   ImmKind imm_kind = ImmKind::None;
   UniformTransferKind uniform_transfer_kind = UniformTransferKind::Unknown;
   ScalarExecKind scalar_exec_kind = ScalarExecKind::None;
+  EmitDescriptor emit{};
   bool spike_managed = false;
 };
 
@@ -258,6 +261,7 @@ struct DecodedInst final {
   // Structured metadata for repository-local custom decode path.
   CustomInstInfo custom{};
   MmaInstInfo mma{};
+  EmitDescriptor emit{};
 
   bool had_regext = false;
   RegextPrefix regext{};
@@ -285,6 +289,7 @@ const InstMetadata *find_inst_metadata(std::string_view name);
 const InstMetadata *find_inst_metadata(InstId id);
 void apply_inst_metadata(const InstMetadata &metadata, DecodedInst &out);
 bool populate_inst_metadata(std::string_view name, DecodedInst &out);
+void finalize_emit_descriptor(DecodedInst &out);
 bool is_scalar_exec_classification_required(const DecodedInst &di);
 
 const char *to_string(RegClass c);

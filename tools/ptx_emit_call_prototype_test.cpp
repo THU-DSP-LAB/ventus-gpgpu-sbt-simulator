@@ -21,6 +21,7 @@ sbt::cfg::BundleInst make_endprg(uint32_t pc) {
   bi.inst.pc = pc;
   bi.inst.name = "endprg";
   (void)sbt::populate_inst_metadata(bi.inst.name, bi.inst);
+  sbt::finalize_emit_descriptor(bi.inst);
   bi.inst.inst_id = sbt::make_inst_id(bi.inst.name);
   return bi;
 }
@@ -37,6 +38,7 @@ sbt::cfg::BundleInst make_call(uint32_t pc, uint32_t target) {
   bi.inst.rd = 1;
   bi.inst.imm_kind = sbt::ImmKind::J21;
   bi.inst.imm = static_cast<int32_t>(target - pc);
+  sbt::finalize_emit_descriptor(bi.inst);
   bi.inst.inst_id = sbt::make_inst_id(bi.inst.name);
   return bi;
 }
