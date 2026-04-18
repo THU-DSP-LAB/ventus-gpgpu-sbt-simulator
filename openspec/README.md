@@ -34,7 +34,7 @@
 
 ## 当前 active changes
 
-- `reduce-lowering-name-dependence`：当前唯一 active change；当前已落地部分聚焦 emitter correctness path：current supported emit path 已转成 descriptor-driven，`DecodedInst.name` 继续保留为 external mnemonic contract，但不再作为 PTX emitter correctness path 的 authority。decode/shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 的去 name string 化仍是后续 change 的 deferred 范围。
+- `unify-cfg-control-semantics`：当前 active change；目标是把 decode 已产出的结构化控制流语义收敛成 `cfg`、`cfg_verify`、`tools/sbt_ptx.cpp` 与 `ptx_emit` 的共同 authority。当前 current 文档仍以 as-built 真相为准；待该 change 实现落地后，再把 `cfg/cfg_verify` 的旧 deferred 口径切换为新的 as-built 真相。
 
 当前口径提醒：
 - `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。
@@ -43,13 +43,14 @@
 ## 近期 historical changes（与 custom split 相关）
 
 - `openspec/changes/archive/2026-04-16-tighten-instruction-metadata-contract`：已归档的 instruction metadata contract 收敛 change；其结果已同步进 current `inst-support` / `replicated-scalar-state` specs、README/doc 索引与相关 decode / CFG verify / emitter 回归。
+- `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence`：已归档的 emitter lowering authority 收敛 change；其结果已同步进 current `inst-support` spec、README/doc 索引与相关 emitter 回归。`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与主流程外围 control-semantics authority 收口由后续 `active` change 单独承接。
 - `openspec/changes/archive/2026-04-14-tighten-mma-triple-oracle-regression`：已归档的 MMA 三方 oracle 收敛 change；其结果已同步进 current `inst-support` spec、README 与统一回归入口。
 - `openspec/changes/archive/2026-04-14-support-fp16-fp16-mma`：已归档的 `fp16 -> fp16` MMA change；其结果已同步进 current `inst-support` spec、统一回归入口与相关 current 文档。`lab/07_fp16_mma_ptx_probe/` 保留为该 change 的 historical 前期实验记录。
 - `openspec/changes/archive/2026-04-14-introduce-ptx-virtual-temp-registers`：已归档的虚拟临时寄存器 change；其结果已同步进 current `ptx-temp-register-allocation` spec、README/doc 索引与 PTX emitter 回归。
 - `openspec/changes/archive/2026-04-13-support-custom-mma`：已归档的 MMA change；其结果已同步进 current spec，形成当前 landed 首批 `row.col` MMA contract。其时对 `fp16 -> fp16` 的 blocked 结论现在仅作为 `historical` 背景。
 - `openspec/changes/archive/2026-04-05-support-custom-instructions`：已归档的 non-MMA custom change（historical）。
 
-custom 指令与普通 lowering 去名字耦合主题当前有一个未归档 change：`reduce-lowering-name-dependence`。若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract，而不是混入该 change。
+custom 指令与普通 lowering 去名字耦合主题当前的 active 入口是 `unify-cfg-control-semantics`。若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract，而不是混入当前 control-semantics authority change。
 
 ## Legacy specs
 
