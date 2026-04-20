@@ -405,7 +405,7 @@ int main(int argc, char **argv) {
             }
             // Keep stdout compatible with existing driver usage.
             std::cout << "已生成 PTX: " << out_path << "\n";
-            std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
+            std::cout << "提示: 需要 dynamic shared >= warps_per_block*ldsStackSizePerWf + ldsSize（其中 ldsStackSizePerWf 来自 KNL metadata）\n";
             return 0;
           }
         }
@@ -462,6 +462,9 @@ int main(int argc, char **argv) {
     sbt::ptx::Options popt;
     popt.sm = sm;
     popt.include_comments = include_comments;
+    if (const auto gp = sbt::elf::read_symbol_value(elf_path, "__global_pointer$")) {
+      popt.global_pointer_vaddr = *gp;
+    }
 
     auto build_cfg_for = [&](const FuncRange &fr, const std::string &name) -> sbt::cfg::FunctionCfg {
       if (fr.start < text.vaddr || fr.end > text_end || fr.end <= fr.start) {
@@ -675,7 +678,7 @@ int main(int argc, char **argv) {
     }
 
     std::cout << "已生成 PTX: " << out_path << "\n";
-    std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
+    std::cout << "提示: 需要 dynamic shared >= warps_per_block*ldsStackSizePerWf + ldsSize（其中 ldsStackSizePerWf 来自 KNL metadata）\n";
     return 0;
   } catch (const sbt::ptx::EmitError &e) {
     std::cerr << "PTX 生成失败: " << e.what() << "\n";

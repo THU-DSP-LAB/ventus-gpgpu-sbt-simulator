@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -34,5 +35,6 @@ ElfSection read_section(const std::filesystem::path &elf_path, std::string_view 
 
 std::vector<FuncSymbol> read_func_symbols(const std::filesystem::path &elf_path);
 
-} // namespace sbt::elf
+std::optional<uint32_t> read_symbol_value(const std::filesystem::path &elf_path, std::string_view symbol_name);
 
+} // namespace sbt::elf
