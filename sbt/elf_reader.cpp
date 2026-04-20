@@ -194,4 +194,48 @@ std::vector<FuncSymbol> read_func_symbols(const std::filesystem::path &elf_path)
   return out;
 }
 
+std::optional<uint32_t> read_symbol_value(const std::filesystem::path &elf_path, std::string_view symbol_name) {
+  Fd fd(-1);
+  ElfHandle eh = open_elf_ro(elf_path, fd);
+  Elf *e = eh.get();
+
+  const size_t shstrndx = get_shstrndx(e);
+
+  Elf_Scn *symtab_scn = nullptr;
+  GElf_Shdr symtab_shdr{};
+  for (Elf_Scn *scn = elf_nextscn(e, nullptr); scn != nullptr; scn = elf_nextscn(e, scn)) {
+    GElf_Shdr shdr{};
+    require_elf_ok(gelf_getshdr(scn, &shdr) != nullptr, "ELF: gelf_getshdr failed");
+    if (scn_name(e, shstrndx, shdr) != ".symtab") continue;
+    symtab_scn = scn;
+    symtab_shdr = shdr;
+    break;
+  }
+
+  require(symtab_scn != nullptr, "ELF: missing .symtab: " + elf_path.string());
+  require(symtab_shdr.sh_entsize != 0, "ELF: .symtab sh_entsize is 0: " + elf_path.string());
+
+  const size_t strtab_ndx = symtab_shdr.sh_link;
+  Elf_Data *sym_data = elf_getdata(symtab_scn, nullptr);
+  require_elf_ok(sym_data != nullptr, "ELF: elf_getdata(.symtab) failed");
+
+  const size_t sym_count = symtab_shdr.sh_size / symtab_shdr.sh_entsize;
+  for (size_t i = 0; i < sym_count; ++i) {
+    GElf_Sym sym{};
+    require_elf_ok(gelf_getsym(sym_data, static_cast<int>(i), &sym) != nullptr, "ELF: gelf_getsym failed");
+    if (sym.st_shndx == SHN_UNDEF) continue;
+
+    const char *name = elf_strptr(e, strtab_ndx, sym.st_name);
+    if (name == nullptr || name[0] == '\0') continue;
+    if (name != symbol_name) continue;
+    if (sym.st_value > UINT32_MAX) {
+      throw ElfError(
+          "ELF: symbol value out of 32-bit range: '" + std::string(symbol_name) + "' in " + elf_path.string()
+      );
+    }
+    return static_cast<uint32_t>(sym.st_value);
+  }
+  return std::nullopt;
+}
+
 } // namespace sbt::elf

@@ -106,6 +106,8 @@ ptxas -arch=sm_75 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 
 当前实现仍坚持 fail-fast：遇到 unknown/unsupported 指令、不可接受的 CFG 形态、或当前未支持的 `jalr` 用法时直接报错退出，而不是静默降级。
 
+当前 `.entry` prologue 会按当前 Ventus `_start` ABI 对齐运行时初始状态：初始化 `x2/x3/x4/x8/x10`，其中 `x3(gp)` 来自 ELF `__global_pointer$`，`x2/x8` 使用 `KNL_LDS_STACK_SIZE_PER_WF`，`CSR_PRINT` 通过 `CSR_KNL + KNL_PRINT_ADDR` 建模。
+
 ## 统一回归入口（推荐）
 ```bash
 # 快速回归（不含端到端）：decode/emit + ptxas compile-first + PDS smoke + microtest gate
