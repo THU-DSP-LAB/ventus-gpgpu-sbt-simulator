@@ -1103,10 +1103,11 @@ struct EmitCtx final {
   }
 
   void emit_compute_mma_scratch_base(const std::string &dst_rd, uint32_t pc_for_err) {
-    require(opt.stack_stride_bytes >= 1024u,
-            EmitError("unsupported.mma.stack_stride", func_name, pc_for_err, "stack_stride_bytes<1024"));
-    emit_line("mul.lo.u32 " + r(14) + ", " + r(10) + ", " + std::to_string(opt.stack_stride_bytes) + ";");
-    emit_line("cvt.u64.u32 " + rd(19) + ", " + r(14) + ";");
+    emit_load_knl_u32_scalar(r(14), kKnlLdsStackSizePerWfOffset, pc_for_err);
+    emit_line("setp.lt.u32 " + p(1) + ", " + r(14) + ", 1024;");
+    emit_line("@" + p(1) + " trap;");
+    emit_line("mul.lo.u32 " + r(15) + ", " + r(10) + ", " + r(14) + ";");
+    emit_line("cvt.u64.u32 " + rd(19) + ", " + r(15) + ";");
     emit_line("add.u64 " + dst_rd + ", " + rd(2) + ", " + rd(19) + ";");
   }
 
