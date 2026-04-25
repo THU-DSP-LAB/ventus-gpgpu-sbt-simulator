@@ -260,5 +260,5 @@
 - **MMA 边界**：当前 as-built 已支持首批 committed `row.col` MMA 子集（见上文 decode/oracle 入口）；更宽的 MMA matrix、deferred/research families 与剩余架构讨论仍由 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`、`doc/mma/LOWERING_ARCHITECTURE.md` 作为 `active` 文档维护。
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
 - **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
-- **ABI/元数据**：当前 `.entry` 参数为 `(global_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`；helper `runtime_env_blob` 也只携带一个 `global_base`。prologue 仍会初始化 `x2/x8/x10`（其中 `x8(s0)` 先按 `_start` ABI 设置为 `CSR_LDS + CSR_NUMW*1024`，kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿）。
+- **ABI/元数据**：当前 `.entry` 参数为 `(global_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`；helper `runtime_env_blob` 也只携带一个 `global_base`。prologue 会按当前 `_start` ABI 初始化 `x2/x3/x4/x8/x10`：`x3(gp)` 来自 ELF `__global_pointer$`，`x2/x8` 使用 `CSR_KNL + KNL_LDS_STACK_SIZE_PER_WF`，`x10(a0)` 来自 `CSR_KNL + KNL_ARG_BASE`；`CSR_PRINT` 当前按 `CSR_KNL + KNL_PRINT_ADDR` 建模。kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿。
 - **PDS（private）**：入口 prologue 由 `thread_linear_id==0` 原子申请/写回 `wg_pds_base`，kernel 退出前释放；`vlw.v/vsw.v` 与 `CSR_PDS` 都基于该 `wg_pds_base` 计算，不再按 full-grid block 线性编号寻址。

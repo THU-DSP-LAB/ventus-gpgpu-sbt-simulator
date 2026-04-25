@@ -156,6 +156,18 @@ sbt::cfg::BundleInst make_vmv_x_s(uint32_t pc, int rd, int rs2) {
   return bi;
 }
 
+sbt::cfg::BundleInst make_csrr(uint32_t pc, int rd, uint32_t csr) {
+  auto bi = make_inst(pc, "csrrs");
+  bi.inst.rd_class = sbt::RegClass::X;
+  bi.inst.rd = rd;
+  bi.inst.rs1_class = sbt::RegClass::X;
+  bi.inst.rs1 = 0;
+  bi.inst.imm_kind = sbt::ImmKind::CSR12;
+  bi.inst.imm = static_cast<int32_t>(csr);
+  sbt::finalize_emit_descriptor(bi.inst);
+  return bi;
+}
+
 void append_block(sbt::cfg::FunctionCfg &cfg, uint32_t start, std::initializer_list<size_t> inst_indices,
                   std::initializer_list<sbt::cfg::Edge> succs) {
   sbt::cfg::BasicBlock bb;
@@ -196,6 +208,20 @@ sbt::cfg::FunctionCfg make_helper_call_cfg(uint32_t start, uint32_t target) {
   cfg.start = start;
   cfg.end = start + 8u;
   cfg.insts = {make_call(start, target), make_endprg(start + 4u)};
+  for (size_t i = 0; i < cfg.insts.size(); ++i) {
+    const auto pc = cfg.insts[i].pc;
+    cfg.inst_index_by_pc.emplace(pc, i);
+    cfg.inst_pc_to_block.emplace(pc, start);
+  }
+  append_block(cfg, start, {0, 1}, {});
+  return cfg;
+}
+
+sbt::cfg::FunctionCfg make_print_csr_cfg(uint32_t start) {
+  sbt::cfg::FunctionCfg cfg;
+  cfg.start = start;
+  cfg.end = start + 8u;
+  cfg.insts = {make_csrr(start, 10, 0x80bu), make_endprg(start + 4u)};
   for (size_t i = 0; i < cfg.insts.size(); ++i) {
     const auto pc = cfg.insts[i].pc;
     cfg.inst_index_by_pc.emplace(pc, i);
@@ -769,6 +795,19 @@ int main() {
       threw = e.code == "invalid.scalar_exec";
     }
     require(threw, "scalar ALU lowering must reject non-uniform-pure classification drift");
+  }
+
+  {
+    const auto print_cfg = make_print_csr_cfg(0x8000a000u);
+    sbt::ptx::Options print_opt;
+    print_opt.include_comments = false;
+    print_opt.global_pointer_vaddr = 0x80001234u;
+    const auto print_res = sbt::ptx::emit_module(print_cfg, {{print_cfg.start, "kernel_print"}}, "kernel_print", {}, {}, print_opt);
+    const std::string &print_ptx = print_res.ptx;
+    require(print_ptx.find("0x80001234") != std::string::npos,
+            "entry prologue should initialize x3(gp) from ELF __global_pointer$");
+    require(print_ptx.find("add.u32 %r16, %r30, 48;") != std::string::npos,
+            "CSR_PRINT should lower to KNL_PRINT_ADDR metadata load");
   }
 
   std::cout << "ok ptx replicated scalar state\n";

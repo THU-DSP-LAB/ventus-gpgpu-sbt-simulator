@@ -18,9 +18,7 @@ struct Options final {
   // Ventus numeric address space layout (prototype defaults).
   uint32_t shared_base_vaddr = 0x7000'0000u;
   uint32_t global_base_vaddr = 0x8000'0000u;
-
-  // Per-warp scalar stack inside shared segment: x2 = shared_base + warp_id * stride.
-  uint32_t stack_stride_bytes = 1024u;
+  uint32_t global_pointer_vaddr = 0u;
 
   // Bytes reserved for Ventus local/shared segment in dynamic shared memory.
   uint32_t lds_bytes = 32u * 1024u;

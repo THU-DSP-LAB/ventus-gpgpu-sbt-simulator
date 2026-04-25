@@ -30,6 +30,8 @@ bool try_emit_scalar(EmitCtx &ctx, const sbt::DecodedInst &di) {
       ctx.emit_line(ctx.scalar_prefix() + "mov.u32 " + r(14) + ", %ctaid.y;");
     } else if (csr == 0x80au) {
       ctx.emit_line(ctx.scalar_prefix() + "mov.u32 " + r(14) + ", %ctaid.z;");
+    } else if (csr == 0x80bu) {
+      ctx.emit_load_knl_u32_scalar(r(14), kKnlPrintAddrOffset, pc);
     } else {
       throw EmitError("unsupported.csr", ctx.func_name, pc, "csr=" + hex_u32(csr));
     }

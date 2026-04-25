@@ -50,6 +50,9 @@ static constexpr uint32_t kMachineWarpIdOffset = 12u;
 static constexpr uint32_t kMachineWarpsPerBlockOffset = 16u;
 static constexpr std::array<int, 4> kMmaATupleRegIds{{3, 4, 5, 6}};
 static constexpr std::array<int, 2> kMmaBTupleRegIds{{7, 8}};
+static constexpr uint32_t kKnlArgBaseOffset = 4u;
+static constexpr uint32_t kKnlPrintAddrOffset = 48u;
+static constexpr uint32_t kKnlLdsStackSizePerWfOffset = 56u;
 
 enum class VirtualTempKind : size_t {
   B32 = 0,
@@ -183,7 +186,7 @@ struct EmitCtx final {
   // %rd1: reserved legacy slot (kept stable, not scratch-owned)
   // %rd2: shmem_base (shared)
   // %rd3: reserved legacy slot (kept stable, not scratch-owned)
-  // %rd4: numeric-shared base (shared)  [shared_base_vaddr ..)  (stack + LDS)
+  // %rd4: reserved legacy slot (kept stable, not scratch-owned)
   // %r26: pds_bitmap_base_vaddr (u32 Ventus numeric address)
   // %r27: pds_pool_num_blocks (u32)
   // %r28: pds_base_vaddr (u32 Ventus numeric address)
@@ -365,8 +368,8 @@ struct EmitCtx final {
     emit_line("mov.u32 " + r(19) + ", 1;");
     emit_line("shl.b32 " + r(19) + ", " + r(19) + ", " + r(20) + ";");
     emit_line("atom.global.or.b32 " + r(18) + ", [" + rd(18) + "], " + r(19) + ";");
-    emit_line("and.b32 " + r(17) + ", " + r(18) + ", " + r(19) + ";");
-    emit_line("setp.eq.u32 " + p(7) + ", " + r(17) + ", 0;");
+    emit_line("and.b32 " + r(15) + ", " + r(18) + ", " + r(19) + ";");
+    emit_line("setp.eq.u32 " + p(7) + ", " + r(15) + ", 0;");
     emit_line("@" + p(7) + " bra " + L_alloc_success + ";");
     emit_line("xor.b32 " + r(22) + ", " + r(22) + ", " + r(19) + ";");
     emit_line("setp.ne.u32 " + p(8) + ", " + r(22) + ", 0;");
@@ -381,13 +384,13 @@ struct EmitCtx final {
     emit_label(L_alloc_success);
     emit_line("mad.lo.u32 " + r(18) + ", " + r(21) + ", 32, " + r(20) + ";"); // block index
     emit_line("st.shared.u32 [__sbt_pds_block_idx], " + r(18) + ";");
-    emit_line("shl.b32 " + r(17) + ", " + r(29) + ", 5;"); // bytes per wf
-    emit_line("mul.lo.u32 " + r(16) + ", " + r(12) + ", " + r(17) + ";"); // bytes per wg
+    emit_line("shl.b32 " + r(15) + ", " + r(29) + ", 5;"); // bytes per wf
+    emit_line("mul.lo.u32 " + r(16) + ", " + r(12) + ", " + r(15) + ";"); // bytes per wg
     emit_line("cvt.u64.u32 " + rd(16) + ", " + r(18) + ";");
-    emit_line("cvt.u64.u32 " + rd(17) + ", " + r(16) + ";");
-    emit_line("mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
-    emit_line("cvt.u64.u32 " + rd(17) + ", " + r(28) + ";");
-    emit_line("add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(17) + ";");
+    emit_line("cvt.u64.u32 " + rd(15) + ", " + r(16) + ";");
+    emit_line("mul.lo.u64 " + rd(16) + ", " + rd(16) + ", " + rd(15) + ";");
+    emit_line("cvt.u64.u32 " + rd(15) + ", " + r(28) + ";");
+    emit_line("add.u64 " + rd(16) + ", " + rd(16) + ", " + rd(15) + ";");
     emit_line("cvt.u32.u64 " + r(16) + ", " + rd(16) + ";");
     emit_line("st.shared.u32 [__sbt_pds_wg_base], " + r(16) + ";");
 
@@ -559,6 +562,11 @@ struct EmitCtx final {
     emit_load_param_u32(r(12), blob_name, kMachineWarpsPerBlockOffset);
   }
 
+  void emit_load_knl_u32_scalar(const std::string &dst_r, uint32_t offset, uint32_t pc_for_err) {
+    emit_line("add.u32 " + r(16) + ", " + r(30) + ", " + std::to_string(offset) + ";");
+    emit_addr_map_and_ld_u32_scalar(dst_r, r(16), pc_for_err);
+  }
+
   void maybe_note_fp_dyn_rm(uint32_t pc_for_err) {
     if (!opt.include_comments) return;
     if (emitted_fp_dyn_note) return;
@@ -677,7 +685,7 @@ struct EmitCtx final {
 
     emit_line("add.u32 " + temps.offset_u32 + ", " + temps.addr + ", -" + hex_u32(opt.shared_base_vaddr) + ";");
     emit_line("cvt.u64.u32 " + temps.shared_ptr + ", " + temps.offset_u32 + ";");
-    emit_line("add.u64 " + temps.shared_ptr + ", " + rd(4) + ", " + temps.shared_ptr + ";");
+    emit_line("add.u64 " + temps.shared_ptr + ", " + rd(2) + ", " + temps.shared_ptr + ";");
 
     emit_line("add.u32 " + temps.offset_u32 + ", " + temps.addr + ", -" + hex_u32(opt.global_base_vaddr) + ";");
     emit_line("cvt.u64.u32 " + temps.global_ptr + ", " + temps.offset_u32 + ";");
@@ -1266,11 +1274,14 @@ struct EmitCtx final {
   }
 
   void emit_compute_mma_scratch_base(const std::string &dst_rd, uint32_t pc_for_err) {
-    require(opt.stack_stride_bytes >= 1024u,
-            EmitError("unsupported.mma.stack_stride", func_name, pc_for_err, "stack_stride_bytes<1024"));
+    const std::string stack_stride = tmp_b32();
+    const std::string stack_stride_too_small = tmp_pred();
     const std::string scratch_off = tmp_b32();
     const std::string scratch_off_rd = tmp_b64();
-    emit_line("mul.lo.u32 " + scratch_off + ", " + r(10) + ", " + std::to_string(opt.stack_stride_bytes) + ";");
+    emit_load_knl_u32_scalar(stack_stride, kKnlLdsStackSizePerWfOffset, pc_for_err);
+    emit_line("setp.lt.u32 " + stack_stride_too_small + ", " + stack_stride + ", 1024;");
+    emit_line("@" + stack_stride_too_small + " trap;");
+    emit_line("mul.lo.u32 " + scratch_off + ", " + r(10) + ", " + stack_stride + ";");
     emit_line("cvt.u64.u32 " + scratch_off_rd + ", " + scratch_off + ";");
     emit_line("add.u64 " + dst_rd + ", " + rd(2) + ", " + scratch_off_rd + ";");
   }
@@ -1731,6 +1742,7 @@ struct EmitCtx final {
     emit_line("ld.param.u32 " + r(29) + ", [pds_size_per_thread];");
     emit_line("ld.param.u32 " + r(26) + ", [pds_bitmap_base_vaddr];");
     emit_line("ld.param.u32 " + r(27) + ", [pds_pool_num_blocks];");
+    emit_load_knl_u32_scalar(r(17), kKnlLdsStackSizePerWfOffset, /*pc_for_err=*/cfg.start);
 
     // lane id (0..31)
     emit_line("mov.u32 " + r(0) + ", %laneid;");
@@ -1762,14 +1774,9 @@ struct EmitCtx final {
     emit_line("mov.u64 " + rd(2) + ", __sbt_shmem;");
 
     // Reserved legacy shared scalar backing slot (kept only to avoid register-map churn).
-    emit_line("shl.b32 " + r(13) + ", " + r(10) + ", 10;");
+    emit_line("mul.lo.u32 " + r(13) + ", " + r(10) + ", " + r(17) + ";");
     emit_line("cvt.u64.u32 " + rd(13) + ", " + r(13) + ";");
     emit_line("add.u64 " + rd(3) + ", " + rd(2) + ", " + rd(13) + ";");
-
-    // lds_ptr = shmem_base + warps_per_block * 1024
-    emit_line("shl.b32 " + r(14) + ", " + r(12) + ", 10;");
-    emit_line("cvt.u64.u32 " + rd(14) + ", " + r(14) + ";");
-    emit_line("add.u64 " + rd(4) + ", " + rd(2) + ", " + rd(14) + ";");
 
     emit_line("mov.u64 " + rd(3) + ", 0;");
     emit_select_leader_from_active_mask();
@@ -1786,26 +1793,29 @@ struct EmitCtx final {
     emit_line("mov.u32 " + r(15) + ", 0;");
     emit_st_x_u32_scalar(/*x4=*/4, r(15), /*pc_for_err=*/cfg.start);
 
-    // x2 = shared_base + warp_id * stack_stride (default: 1024 bytes => <<10)
-    emit_line("shl.b32 " + r(15) + ", " + r(10) + ", 10;");
+    if (opt.global_pointer_vaddr != 0) {
+      emit_line("mov.u32 " + r(15) + ", " + hex_u32(opt.global_pointer_vaddr) + ";");
+      emit_st_x_u32_scalar(/*x3=*/3, r(15), /*pc_for_err=*/cfg.start);
+    }
+
+    // x2 = shared_base + warp_id * ldsStackSizePerWf
+    emit_line("mul.lo.u32 " + r(15) + ", " + r(10) + ", " + r(17) + ";");
     emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
     emit_st_x_u32_scalar(/*x2=*/2, r(15), /*pc_for_err=*/cfg.start);
 
     // Match `_start` ABI: s0 (x8) points to the base of the kernel LDS region:
-    //   s0 = CSR_LDS + CSR_NUMW*1024
+    //   s0 = CSR_LDS + CSR_NUMW*ldsStackSizePerWf
     // In this backend `shared_base_vaddr` models the CSR_LDS numeric base, and `warps_per_block` models CSR_NUMW.
     // Note: kernels may further adjust s0 in their own prologue (e.g. `addi s0, s0, <frame_bytes>`). We treat that
     // as frame allocation and do not attempt to compensate it here.
-    emit_line("shl.b32 " + r(15) + ", " + r(12) + ", 10;");
+    emit_line("mul.lo.u32 " + r(15) + ", " + r(12) + ", " + r(17) + ";");
     emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
     emit_st_x_u32_scalar(/*x8=*/8, r(15), /*pc_for_err=*/cfg.start);
 
     // x10 (a0) is the first argument register. PoCL Ventus kernels expect:
     //   a0 = *(u32*)(CSR_KNL + 4)  (arg buffer base)
     // because the original `_start` loads it from the hardware metadata buffer before jumping to the kernel entry.
-    emit_line("add.u32 " + r(16) + ", " + r(30) + ", 4;"); // arg_base field address
-    emit_line("add.u32 " + r(16) + ", " + r(16) + ", 0;"); // keep in u32 reg
-    emit_addr_map_and_ld_u32_scalar(r(17), r(16), /*pc_for_err=*/cfg.start);
+    emit_load_knl_u32_scalar(r(17), kKnlArgBaseOffset, /*pc_for_err=*/cfg.start);
     emit_st_x_u32_scalar(/*x10=*/10, r(17), /*pc_for_err=*/cfg.start);
 
     emit_warp_sync();
@@ -1819,9 +1829,6 @@ struct EmitCtx final {
     emit_load_runtime_env_blob("__sbt_runtime_env_in");
     emit_load_machine_ctx_blob("__sbt_machine_ctx_in");
     emit_line("mov.u64 " + rd(2) + ", __sbt_shmem;");
-    emit_line("shl.b32 " + r(14) + ", " + r(12) + ", 10;");
-    emit_line("cvt.u64.u32 " + rd(14) + ", " + r(14) + ";");
-    emit_line("add.u64 " + rd(4) + ", " + rd(2) + ", " + rd(14) + ";");
     emit_line("mov.u64 " + rd(3) + ", 0;");
     emit_restore_mutable_state_blob("__sbt_mutable_state_in");
   }
