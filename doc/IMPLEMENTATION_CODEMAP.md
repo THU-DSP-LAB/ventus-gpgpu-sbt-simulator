@@ -78,12 +78,16 @@
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
   - 边界：结构化 verify 规则当前仍保留 `name` 分类；这同样是 `reduce-lowering-name-dependence` change 的 deferred 非-emitter 站点。
 
-- `sbt/ptx_emit.{hpp,cpp}`
+- `sbt/ptx_emit.hpp` + `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`
   - `emit_module(entry_cfg, sym_by_addr, entry_name, funcs, ptx_name_by_addr, opt)`：输出一个 PTX module，包含 1 个 `.entry <kernel>` + 若干 `.func <callee>`（用于 direct call）。
   - `emit_kernel(...)`：兼容接口（单函数 `.entry`，不含通用 call graph）。
+  - current 结构分层：
+    - `sbt/ptx_emit.cpp`：public API、`EmitError`、module/function assembly 入口。
+    - `sbt/ptx_emit_internal.hpp`：shared emitter host（`EmitCtx`）、blob ABI/address-mapping helper、prologue/epilogue、dispatcher shared preconditions。
+    - `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`：按 domain 分离的 lowering translation units；dispatcher precedence 固定为 `control -> scalar -> vector -> mma -> custom`。
   - 关键语义约定（当前主线）：
     - current supported correctness path 已 descriptor-driven：ordinary/control/scalar/vector path 消费 `DecodedInst.emit`，custom non-MMA 消费 `DecodedInst.custom`，MMA 消费 `DecodedInst.mma`；`DecodedInst.name` 不再是 emitter semantic authority。
-    - emitter 中残余 `name` 读取当前只允许出现在 comments / diagnostics / external reporting；该 allowlist 由 `tools/check_ptx_emit_name_allowlist.py` 静态检查。
+    - emitter 中残余 `name` 读取当前只允许出现在 comments / diagnostics / external reporting；该 allowlist 由 `tools/check_ptx_emit_name_allowlist.py` 对 `ptx_emit*.cpp` 与 `ptx_emit_internal.hpp` 静态检查。
     - `setrpc/join/vsetvli`：结构化翻译下视为 no-op（主要用于 Stage2 verify）。
     - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
     - PTX 寄存器 ownership：当前固定 machine/runtime/control 槽位保持 stable，至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`、`%x<256>`、`%v<256>`；`%rd1/%rd3` 仍保留为稳定的 legacy reserved slot，不作为共享 scratch 池重新分配。
@@ -130,7 +134,7 @@
     - `build/instruction_metadata_contract_test`：覆盖 `data/spike_want.txt <-> instruction_metadata.cpp` 同步、Spike-backed decode metadata、CFG verify shared metadata 传播，以及 metadata 缺失时的显式失败。
     - `build/external_mnemonic_contract_test`：覆盖 pretty / JSON / diagnostics / coverage / external builtin symbol 等 external mnemonic contract，确保 authority 迁移后 `DecodedInst.name` 仍稳定服务外部口径。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
-    - `python3 tools/check_ptx_emit_name_allowlist.py`：静态检查 `sbt/ptx_emit.cpp` 中 `name` 读取只剩显式 allowlist 用途。
+    - `python3 tools/check_ptx_emit_name_allowlist.py`：静态检查 emitter lowering 文件集中的 `name` 读取只剩显式 allowlist 用途。
 
 - `tools/rodinia_ptx_smoke.sh`
   - 固定列表：Rodinia 11 个 kernel（compile-first），生成 PTX 并用 `ptxas` 编译。

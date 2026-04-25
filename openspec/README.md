@@ -28,20 +28,22 @@
 - `global-address-space`：当前 PTX ordinary address mapping / single-Global / VMM backing 合同
 - `inst-support`：指令支持与语义验证合同（当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；Spike-backed 非 custom 指令当前通过共享 instruction metadata 维护 operand / immediate / uniform-transfer / emit-descriptor contract；所有 current supported MMA family 现统一采用 `Spike / sbtsim PTX / CPU reference` 三方语义验证）
 - `ptx-call-prototype`：多函数 PTX helper prototype / value ABI 合同
+- `ptx-lowering-modularity`：当前 PTX emitter 的 shared core / domain lowering / dispatcher precedence / structural validation 合同
 - `ptx-temp-register-allocation`：当前 PTX emitter 固定槽位与 `%tmp*` scratch ownership 合同
 - `replicated-scalar-state`：当前 PTX lowering 主线合同（包含 scalar execution classification 显式化、scalar-side emit descriptor authority、未分类 scalar 默认拒绝的 current contract）
 - `sbt-rodinia-bringup`：Rodinia bring-up / fail-fast 边界
 
 ## 当前 active changes
 
-- `reduce-lowering-name-dependence`：当前唯一 active change；当前已落地部分聚焦 emitter correctness path：current supported emit path 已转成 descriptor-driven，`DecodedInst.name` 继续保留为 external mnemonic contract，但不再作为 PTX emitter correctness path 的 authority。decode/shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 的去 name string 化仍是后续 change 的 deferred 范围。
+- 当前无未归档的 active change。
 
 当前口径提醒：
-- `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。
+- `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。
 - PTX emitter 当前 scratch ownership 已收敛到函数级唯一命名 `%tmp*` 寄存器；旧的 `%r14/%r15/...` 隐式共享 scratch 约定只保留为 historical 背景，不再作为 current contract。
 
 ## 近期 historical changes（与 custom split 相关）
 
+- `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering`：已归档的 emitter 模块化收敛 change；其结果已同步进 current README/doc 索引、`doc/IMPLEMENTATION_CODEMAP.md`、构建入口与 emitter 回归。当前 `ptx_emit` 实现形态以 `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp` 为准。
 - `openspec/changes/archive/2026-04-16-tighten-instruction-metadata-contract`：已归档的 instruction metadata contract 收敛 change；其结果已同步进 current `inst-support` / `replicated-scalar-state` specs、README/doc 索引与相关 decode / CFG verify / emitter 回归。
 - `openspec/changes/archive/2026-04-14-tighten-mma-triple-oracle-regression`：已归档的 MMA 三方 oracle 收敛 change；其结果已同步进 current `inst-support` spec、README 与统一回归入口。
 - `openspec/changes/archive/2026-04-14-support-fp16-fp16-mma`：已归档的 `fp16 -> fp16` MMA change；其结果已同步进 current `inst-support` spec、统一回归入口与相关 current 文档。`lab/07_fp16_mma_ptx_probe/` 保留为该 change 的 historical 前期实验记录。
@@ -49,7 +51,7 @@
 - `openspec/changes/archive/2026-04-13-support-custom-mma`：已归档的 MMA change；其结果已同步进 current spec，形成当前 landed 首批 `row.col` MMA contract。其时对 `fp16 -> fp16` 的 blocked 结论现在仅作为 `historical` 背景。
 - `openspec/changes/archive/2026-04-05-support-custom-instructions`：已归档的 non-MMA custom change（historical）。
 
-custom 指令与普通 lowering 去名字耦合主题当前有一个未归档 change：`reduce-lowering-name-dependence`。若后续继续推进 blocked/deferred/research MMA family，应新开 change 承载增量 contract，而不是混入该 change。
+custom 指令与普通 lowering 去名字耦合主题的 emitter-path 收口已在 historical change `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence/` 中完成并归档；emitter 结构模块化收敛也已在 `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering/` 中归档。decode/shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 的进一步去 name string 化若要继续推进，应新开 change 承载。
 
 ## Legacy specs
 

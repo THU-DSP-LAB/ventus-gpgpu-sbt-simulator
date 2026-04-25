@@ -27,6 +27,11 @@ add_library(sbt_lib
   sbt/cfg_verify.cpp
   sbt/ptx_mma.cpp
   sbt/ptx_emit.cpp
+  sbt/ptx_emit_control.cpp
+  sbt/ptx_emit_scalar.cpp
+  sbt/ptx_emit_vector.cpp
+  sbt/ptx_emit_custom.cpp
+  sbt/ptx_emit_mma_lowering.cpp
   sbt/want_file.cpp
 )
 

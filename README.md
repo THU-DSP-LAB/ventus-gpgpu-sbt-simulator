@@ -126,10 +126,10 @@ python3 tools/check_ptx_emit_name_allowlist.py
 - PTX emitter 的 scalar execution classification 现为显式表驱动、默认拒绝未分类项；当前 supported scalar subset 必须逐条声明 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`。
 
 当前 lowering authority / mnemonic contract 口径是：
-- `sbt/ptx_emit.cpp` 的 current supported correctness path 已改为消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
+- 当前 PTX emitter 已收敛为 `sbt/ptx_emit.cpp`（public API + module assembly）、`sbt/ptx_emit_internal.hpp`（shared core/host contract）以及 `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`（domain lowering）；current supported correctness path 继续消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
 - `DecodedInst.name` 当前允许用途限定为 pretty / JSON / diagnostics / coverage / ABI-visible builtin symbol / comments。
 - `tools/check_ptx_emit_name_allowlist.py` 会静态检查 emitter 中残余 `name` 读取是否只剩 allowlist 用途；代表性 supported-path 回归还会做 poison-name 检查。
-- decode 期间的 shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 仍保留 name-string 依赖；这是当前 active change 明确标注的 deferred 范围，不属于本轮 emit 实施缺口。
+- decode 期间的 shared-metadata lookup、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 仍保留 name-string 依赖；这是已归档 historical change `reduce-lowering-name-dependence` 明确留下的 deferred 范围，不属于 current emitter behavior 的缺口。emitter 模块化收敛的 historical 记录见 `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering/`。
 
 当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
 - non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。
