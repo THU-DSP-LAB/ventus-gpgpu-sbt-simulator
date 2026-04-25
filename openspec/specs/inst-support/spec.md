@@ -53,6 +53,52 @@ If a Spike-backed non-custom instruction is treated as part of the current suppo
 - **THEN** the implementation fails explicitly
 - **AND THEN** it is not accepted by silently guessing operand or analysis semantics from the mnemonic suffix
 
+### Requirement: Current supported control-flow consumers SHALL consume explicit decode-produced control semantics
+For the current supported control-flow instruction subset, the repository MUST treat decode-produced structured control semantics as the authority for all main-pipeline control-flow consumers, not only for PTX emission.
+
+The current contract is:
+- decode / shared metadata produce the structured control-flow semantics before downstream control-flow decisions are made
+- `sbt/cfg.cpp` consumes that structured authority for leader detection, terminator classification, and edge construction
+- `sbt/cfg_verify.cpp` consumes that structured authority for `setrpc` / `vbranch` / `join` / `barrier` / unsupported `jalr` analysis
+- `tools/sbt_ptx.cpp` consumes that structured authority when scanning direct-call callees
+- `sbt/ptx_emit.cpp` continues to consume that same authority for supported-path control lowering
+
+For the current supported path, these downstream consumers MUST NOT reconstruct control-flow meaning by branching on `DecodedInst.name`.
+
+The structured authority MUST cover at least:
+- scalar branch vs vector branch
+- direct jump vs direct call
+- return vs indirect terminator
+- structured control kinds such as `setrpc`, `join`, `barrier`, and `endprg`
+- ordinary metadata needed by control analysis helpers such as identifying `auipc` when resolving current `setrpc` join targets
+
+#### Scenario: CFG build follows decode-produced control semantics
+- **GIVEN** a current supported control-flow instruction reaches CFG build
+- **WHEN** `sbt/cfg.cpp` classifies leaders, terminators, and outgoing edges
+- **THEN** it uses decode-produced structured control semantics as the authority
+- **AND THEN** it does not choose branch/jump/call/return meaning by matching `DecodedInst.name`
+
+#### Scenario: CFG verify follows decode-produced control semantics
+- **GIVEN** a current supported control-flow instruction reaches CFG verification
+- **WHEN** `sbt/cfg_verify.cpp` analyzes `setrpc`, `vbranch`, `join`, `barrier`, or unsupported `jalr`
+- **THEN** it uses the same structured control semantics consumed by the rest of the main pipeline
+- **AND THEN** it does not recover control-flow meaning from mnemonic text
+
+#### Scenario: Direct-call closure scan follows decode-produced call semantics
+- **GIVEN** a current supported direct call reaches the `sbt_ptx` call-graph closure scan
+- **WHEN** the tool identifies direct callees
+- **THEN** it uses decode-produced direct-call semantics rather than testing whether the mnemonic string equals `jal`
+
+### Requirement: Missing control-semantics authority SHALL fail explicitly on the supported main pipeline
+If a current supported control-flow instruction reaches CFG build, CFG verify, or direct-call closure scanning without the control semantics required by that consumer, the implementation MUST fail explicitly rather than falling back to mnemonic parsing.
+
+#### Scenario: Supported control-flow consumer does not fall back to name parsing
+- **GIVEN** a current supported control-flow instruction reaches CFG build, CFG verify, or direct-call scanning
+- **AND GIVEN** its required structured control semantics are missing, incomplete, or inconsistent with the supported contract
+- **WHEN** the consumer attempts to classify the instruction
+- **THEN** the implementation fails explicitly
+- **AND THEN** it does not recover by parsing `DecodedInst.name`
+
 ### Requirement: Current supported PTX emission SHALL consume explicit emit-authoritative descriptor or payload
 For every current supported instruction that reaches PTX emission, the lowering authority MUST already be present before emitter-side correctness decisions are made.
 
@@ -93,6 +139,13 @@ The current contract includes at least:
 - **WHEN** lowering authority has already migrated away from mnemonic strings
 - **THEN** the external output still exposes the expected mnemonic contract
 - **AND THEN** this behavior is validated independently from emitter correctness
+
+#### Scenario: Poisoned mnemonic does not alter supported control-flow behavior
+- **GIVEN** a current supported control-flow instruction has valid structured control semantics
+- **AND GIVEN** a regression test intentionally replaces `DecodedInst.name` with an unrelated poison string
+- **WHEN** CFG build, CFG verify, or direct-call scanning runs on the supported path
+- **THEN** control-flow behavior still follows the structured semantics contract
+- **AND THEN** the poison mnemonic only affects external text fields, not correctness behavior
 
 ### Requirement: Extend PTX emitter scalar RV32I/M coverage
 The PTX backend MUST support a complete, commonly used RV32I/M scalar subset that is already decodable by the frontend, including at least:

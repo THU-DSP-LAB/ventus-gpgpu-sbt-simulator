@@ -1,28 +1,17 @@
 #include "sbt/cfg_verify.hpp"
+#include "sbt/control_semantics.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <queue>
 #include <stdexcept>
-#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace sbt::cfg {
 namespace {
-
-static bool is_vbranch(std::string_view name) {
-  return name == "vbeq" || name == "vbne" || name == "vblt" || name == "vbge" || name == "vbltu" || name == "vbgeu";
-}
-
-static bool is_ret(const sbt::DecodedInst &di) {
-  return di.name == "jalr" && di.rd_class == sbt::RegClass::X && di.rs1_class == sbt::RegClass::X && di.rd == 0 &&
-         di.rs1 == 1 && di.imm_kind == sbt::ImmKind::I12 && di.imm == 0;
-}
-
-static bool is_indirect_jalr(const sbt::DecodedInst &di) { return di.name == "jalr" && !is_ret(di); }
 
 static std::string hex_u32(uint32_t x) {
   char buf[16];
@@ -32,8 +21,10 @@ static std::string hex_u32(uint32_t x) {
 
 class BitSet final {
 public:
-  explicit BitSet(size_t nbits, bool fill) : nbits_(nbits), w_((nbits + 63) / 64, fill ? ~0ULL : 0ULL) {
-    if (fill) trim();
+  explicit BitSet(size_t nbits, bool fill)
+      : nbits_(nbits), w_((nbits + 63) / 64, fill ? ~0ULL : 0ULL) {
+    if (fill)
+      trim();
   }
 
   static BitSet empty(size_t nbits) { return BitSet(nbits, false); }
@@ -58,7 +49,8 @@ public:
   }
 
   BitSet &operator&=(const BitSet &o) {
-    for (size_t i = 0; i < w_.size(); ++i) w_[i] &= o.w_[i];
+    for (size_t i = 0; i < w_.size(); ++i)
+      w_[i] &= o.w_[i];
     return *this;
   }
 
@@ -68,7 +60,8 @@ public:
 private:
   void trim() {
     const size_t rem = nbits_ % 64;
-    if (rem == 0) return;
+    if (rem == 0)
+      return;
     const uint64_t mask = (rem == 64) ? ~0ULL : ((1ULL << rem) - 1ULL);
     w_.back() &= mask;
   }
@@ -85,22 +78,27 @@ public:
   static VRegSet full() { return VRegSet(true); }
 
   bool test(int r) const {
-    if (r < 0 || r >= kMaxVReg) return false;
+    if (r < 0 || r >= kMaxVReg)
+      return false;
     const size_t wi = static_cast<size_t>(r) / 64;
     const size_t bi = static_cast<size_t>(r) % 64;
     return (w_[wi] >> bi) & 1ULL;
   }
 
   void set(int r, bool v) {
-    if (r < 0 || r >= kMaxVReg) return;
+    if (r < 0 || r >= kMaxVReg)
+      return;
     const size_t wi = static_cast<size_t>(r) / 64;
     const size_t bi = static_cast<size_t>(r) % 64;
-    if (v) w_[wi] |= (1ULL << bi);
-    else w_[wi] &= ~(1ULL << bi);
+    if (v)
+      w_[wi] |= (1ULL << bi);
+    else
+      w_[wi] &= ~(1ULL << bi);
   }
 
   VRegSet &operator&=(const VRegSet &o) {
-    for (size_t i = 0; i < w_.size(); ++i) w_[i] &= o.w_[i];
+    for (size_t i = 0; i < w_.size(); ++i)
+      w_[i] &= o.w_[i];
     return *this;
   }
 
@@ -121,67 +119,64 @@ private:
 
 static void transfer_vreg_uniform(VRegSet &st, const BundleInst &bi) {
   const auto &di = bi.inst;
-  if (di.rd_class != sbt::RegClass::V) return;
+  if (di.rd_class != sbt::RegClass::V)
+    return;
   if (di.uniform_transfer_kind == sbt::UniformTransferKind::Unknown) {
     if (di.custom.valid || di.mma.valid) {
       st.set(di.rd, false);
       return;
     }
-    throw std::runtime_error("missing shared uniform-transfer metadata for supported instruction '" + di.name + "'");
+    throw std::runtime_error(
+        "missing shared uniform-transfer metadata for supported instruction '" +
+        di.name + "'");
   }
 
   const int vd = di.rd;
   bool uniform = false;
   switch (di.uniform_transfer_kind) {
-  case sbt::UniformTransferKind::AlwaysUniformDst: uniform = true; break;
-  case sbt::UniformTransferKind::NeverUniformDst: uniform = false; break;
+  case sbt::UniformTransferKind::AlwaysUniformDst:
+    uniform = true;
+    break;
+  case sbt::UniformTransferKind::NeverUniformDst:
+    uniform = false;
+    break;
   case sbt::UniformTransferKind::UniformIfRs1:
     if (di.rs1_class == sbt::RegClass::None || di.rs1 < 0) {
-      throw std::runtime_error("incomplete uniform-transfer metadata for instruction '" + di.name + "': missing rs1");
+      throw std::runtime_error(
+          "incomplete uniform-transfer metadata for instruction '" + di.name +
+          "': missing rs1");
     }
     uniform = st.test(di.rs1);
     break;
   case sbt::UniformTransferKind::UniformIfRs2:
     if (di.rs2_class == sbt::RegClass::None || di.rs2 < 0) {
-      throw std::runtime_error("incomplete uniform-transfer metadata for instruction '" + di.name + "': missing rs2");
+      throw std::runtime_error(
+          "incomplete uniform-transfer metadata for instruction '" + di.name +
+          "': missing rs2");
     }
     uniform = st.test(di.rs2);
     break;
   case sbt::UniformTransferKind::UniformIfRs1AndRs2:
-    if (di.rs1_class == sbt::RegClass::None || di.rs1 < 0 || di.rs2_class == sbt::RegClass::None || di.rs2 < 0) {
-      throw std::runtime_error("incomplete uniform-transfer metadata for instruction '" + di.name + "': missing rs1/rs2");
+    if (di.rs1_class == sbt::RegClass::None || di.rs1 < 0 ||
+        di.rs2_class == sbt::RegClass::None || di.rs2 < 0) {
+      throw std::runtime_error(
+          "incomplete uniform-transfer metadata for instruction '" + di.name +
+          "': missing rs1/rs2");
     }
     uniform = st.test(di.rs1) && st.test(di.rs2);
     break;
   case sbt::UniformTransferKind::NotApplicable:
-    throw std::runtime_error("unexpected non-applicable uniform-transfer metadata on vector-dst instruction '" + di.name + "'");
+    throw std::runtime_error("unexpected non-applicable uniform-transfer "
+                             "metadata on vector-dst instruction '" +
+                             di.name + "'");
   case sbt::UniformTransferKind::Unknown:
-  default: throw std::runtime_error("missing shared uniform-transfer metadata for supported instruction '" + di.name + "'");
+  default:
+    throw std::runtime_error(
+        "missing shared uniform-transfer metadata for supported instruction '" +
+        di.name + "'");
   }
 
   st.set(vd, uniform);
-}
-
-static std::optional<uint32_t> resolve_setrpc_join_pc(const FunctionCfg &cfg, size_t setrpc_inst_idx) {
-  const auto &bi = cfg.insts.at(setrpc_inst_idx);
-  const auto &di = bi.inst;
-  if (di.name != "setrpc") return std::nullopt;
-  if (di.rs1_class != sbt::RegClass::X || di.rs1 < 0 || di.rs1 >= 32) return std::nullopt;
-
-  const int rs1 = di.rs1;
-  const int32_t off = di.imm;
-
-  const size_t begin = (setrpc_inst_idx > 12 ? setrpc_inst_idx - 12 : 0);
-  for (size_t j = setrpc_inst_idx; j-- > begin;) {
-    const auto &pj = cfg.insts[j].inst;
-    if (pj.name != "auipc") continue;
-    if (pj.rd_class != sbt::RegClass::X || pj.rd != rs1) continue;
-    const int32_t imm = pj.imm; // already << 12
-    const int64_t base = int64_t(cfg.insts[j].inst_pc) + int64_t(imm);
-    const int64_t join = base + int64_t(off);
-    return static_cast<uint32_t>(join);
-  }
-  return std::nullopt;
 }
 
 struct Graph final {
@@ -194,9 +189,11 @@ struct Graph final {
 static Graph build_graph(const FunctionCfg &cfg) {
   Graph g;
   g.nodes.reserve(cfg.blocks.size());
-  for (const auto &bb : cfg.blocks) g.nodes.push_back(bb.start);
+  for (const auto &bb : cfg.blocks)
+    g.nodes.push_back(bb.start);
   std::sort(g.nodes.begin(), g.nodes.end());
-  for (size_t i = 0; i < g.nodes.size(); ++i) g.idx_of[g.nodes[i]] = i;
+  for (size_t i = 0; i < g.nodes.size(); ++i)
+    g.idx_of[g.nodes[i]] = i;
 
   g.succs.resize(g.nodes.size());
   g.preds.resize(g.nodes.size());
@@ -205,7 +202,8 @@ static Graph build_graph(const FunctionCfg &cfg) {
     const size_t si = g.idx_of.at(bb.start);
     for (const auto &e : bb.succs) {
       const auto it = g.idx_of.find(e.dst);
-      if (it == g.idx_of.end()) continue;
+      if (it == g.idx_of.end())
+        continue;
       g.succs[si].insert(e.dst);
       g.preds[it->second].insert(bb.start);
     }
@@ -217,7 +215,8 @@ static std::vector<BitSet> compute_dominators(const Graph &g, uint32_t entry) {
   const size_t n = g.nodes.size();
   std::vector<BitSet> dom;
   dom.reserve(n);
-  for (size_t i = 0; i < n; ++i) dom.push_back(BitSet::full(n));
+  for (size_t i = 0; i < n; ++i)
+    dom.push_back(BitSet::full(n));
 
   const size_t entry_i = g.idx_of.at(entry);
   dom[entry_i] = BitSet::empty(n);
@@ -227,7 +226,8 @@ static std::vector<BitSet> compute_dominators(const Graph &g, uint32_t entry) {
   while (changed) {
     changed = false;
     for (size_t i = 0; i < n; ++i) {
-      if (i == entry_i) continue;
+      if (i == entry_i)
+        continue;
 
       BitSet newset = BitSet::empty(n);
       const auto &ps = g.preds[i];
@@ -256,7 +256,8 @@ static std::vector<BitSet> compute_postdominators(const Graph &g) {
 
   std::vector<BitSet> postdom;
   postdom.reserve(n2);
-  for (size_t i = 0; i < n2; ++i) postdom.push_back(BitSet::full(n2));
+  for (size_t i = 0; i < n2; ++i)
+    postdom.push_back(BitSet::full(n2));
 
   postdom[exit_i] = BitSet::empty(n2);
   postdom[exit_i].set(exit_i);
@@ -291,7 +292,8 @@ static std::vector<char> compute_reachable(const Graph &g, uint32_t entry) {
   const size_t n = g.nodes.size();
   std::vector<char> reach(n, 0);
   const auto it = g.idx_of.find(entry);
-  if (it == g.idx_of.end()) return reach;
+  if (it == g.idx_of.end())
+    return reach;
 
   std::queue<size_t> q;
   q.push(it->second);
@@ -301,7 +303,8 @@ static std::vector<char> compute_reachable(const Graph &g, uint32_t entry) {
     q.pop();
     for (uint32_t s : g.succs[cur]) {
       const size_t si = g.idx_of.at(s);
-      if (reach[si]) continue;
+      if (reach[si])
+        continue;
       reach[si] = 1;
       q.push(si);
     }
@@ -315,7 +318,9 @@ struct VRegUniformData final {
   std::vector<char> reachable;
 };
 
-static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg, const Graph &g, uint32_t entry) {
+static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg,
+                                                 const Graph &g,
+                                                 uint32_t entry) {
   const size_t n = g.nodes.size();
   VRegUniformData d;
   d.in.resize(n, VRegSet::empty());
@@ -323,11 +328,13 @@ static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg, const G
   d.reachable = compute_reachable(g, entry);
 
   const auto it_entry = g.idx_of.find(entry);
-  if (it_entry == g.idx_of.end()) return d;
+  if (it_entry == g.idx_of.end())
+    return d;
   const size_t entry_i = it_entry->second;
 
   for (size_t i = 0; i < n; ++i) {
-    if (!d.reachable[i]) continue;
+    if (!d.reachable[i])
+      continue;
     if (i == entry_i) {
       d.in[i] = VRegSet::empty();
       d.out[i] = VRegSet::empty();
@@ -337,10 +344,12 @@ static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg, const G
     d.out[i] = VRegSet::full();
   }
 
-  auto transfer_block = [&](uint32_t block_start, const VRegSet &in_state) -> VRegSet {
+  auto transfer_block = [&](uint32_t block_start,
+                            const VRegSet &in_state) -> VRegSet {
     VRegSet st = in_state;
     const auto it = cfg.block_index_by_start.find(block_start);
-    if (it == cfg.block_index_by_start.end()) return st;
+    if (it == cfg.block_index_by_start.end())
+      return st;
     const auto &bb = cfg.blocks[it->second];
     for (size_t inst_i : bb.inst_indices) {
       transfer_vreg_uniform(st, cfg.insts[inst_i]);
@@ -352,7 +361,8 @@ static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg, const G
   while (changed) {
     changed = false;
     for (size_t i = 0; i < n; ++i) {
-      if (!d.reachable[i]) continue;
+      if (!d.reachable[i])
+        continue;
 
       VRegSet new_in = VRegSet::empty();
       if (i == entry_i) {
@@ -363,7 +373,8 @@ static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg, const G
         VRegSet acc = VRegSet::full();
         for (uint32_t p : ps) {
           const size_t pi = g.idx_of.at(p);
-          if (!d.reachable[pi]) continue;
+          if (!d.reachable[pi])
+            continue;
           if (!has_reach_pred) {
             acc = d.out[pi];
             has_reach_pred = true;
@@ -398,8 +409,10 @@ static BitSet compute_region(const Graph &g, size_t vblock_i, size_t join_i) {
 
   for (uint32_t s : g.succs[vblock_i]) {
     const size_t si = g.idx_of.at(s);
-    if (si == join_i) continue;
-    if (region.test(si)) continue;
+    if (si == join_i)
+      continue;
+    if (region.test(si))
+      continue;
     region.set(si);
     q.push(si);
   }
@@ -409,8 +422,10 @@ static BitSet compute_region(const Graph &g, size_t vblock_i, size_t join_i) {
     q.pop();
     for (uint32_t s : g.succs[n]) {
       const size_t si = g.idx_of.at(s);
-      if (si == join_i) continue;
-      if (region.test(si)) continue;
+      if (si == join_i)
+        continue;
+      if (region.test(si))
+        continue;
       region.set(si);
       q.push(si);
     }
@@ -418,24 +433,33 @@ static BitSet compute_region(const Graph &g, size_t vblock_i, size_t join_i) {
   return region;
 }
 
-static bool is_jump_block(const FunctionCfg &cfg, uint32_t block_start, uint32_t &out_dst) {
+static bool is_jump_block(const FunctionCfg &cfg, uint32_t block_start,
+                          uint32_t &out_dst) {
   const auto it = cfg.block_index_by_start.find(block_start);
-  if (it == cfg.block_index_by_start.end()) return false;
+  if (it == cfg.block_index_by_start.end())
+    return false;
   const auto &bb = cfg.blocks[it->second];
-  if (bb.succs.size() != 1) return false;
-  if (bb.succs[0].kind != EdgeKind::Jump) return false;
+  if (bb.succs.size() != 1)
+    return false;
+  if (bb.succs[0].kind != EdgeKind::Jump)
+    return false;
   out_dst = bb.succs[0].dst;
   return true;
 }
 
-static bool has_barrier_in_region(uint32_t barrier_block, const Graph &g, const std::vector<VBranchDerived> &vbs, std::string &out_reason) {
+static bool has_barrier_in_region(uint32_t barrier_block, const Graph &g,
+                                  const std::vector<VBranchDerived> &vbs,
+                                  std::string &out_reason) {
   const auto it = g.idx_of.find(barrier_block);
-  if (it == g.idx_of.end()) return false;
+  if (it == g.idx_of.end())
+    return false;
   const size_t b_i = it->second;
   for (const auto &vb : vbs) {
-    if (vb.check.proven_uniform) continue;
+    if (vb.check.proven_uniform)
+      continue;
     if (vb.region.test(b_i)) {
-      out_reason = "barrier 位于 vbranch@" + hex_u32(vb.check.vbranch_addr) + " 的分支区域内（无法证明收敛）";
+      out_reason = "barrier 位于 vbranch@" + hex_u32(vb.check.vbranch_addr) +
+                   " 的分支区域内（无法证明收敛）";
       return true;
     }
   }
@@ -444,24 +468,28 @@ static bool has_barrier_in_region(uint32_t barrier_block, const Graph &g, const 
 
 } // namespace
 
-FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_name) {
+FunctionVerifyResult verify_function(const FunctionCfg &cfg,
+                                     std::string func_name) {
   FunctionVerifyResult out;
   out.func = std::move(func_name);
   out.start = cfg.start;
   out.end = cfg.end;
   out.insts = cfg.insts.size();
   out.blocks = cfg.blocks.size();
-  for (const auto &bb : cfg.blocks) out.edges += bb.succs.size();
+  for (const auto &bb : cfg.blocks)
+    out.edges += bb.succs.size();
 
   const Graph g = build_graph(cfg);
-  const uint32_t entry = cfg.blocks.empty() ? cfg.start : cfg.blocks.front().start;
+  const uint32_t entry =
+      cfg.blocks.empty() ? cfg.start : cfg.blocks.front().start;
   const std::vector<BitSet> dom = compute_dominators(g, entry);
   const std::vector<BitSet> postdom = compute_postdominators(g);
   const VRegUniformData vuni = compute_vreg_uniform_must(cfg, g, entry);
 
   std::unordered_map<uint32_t, const BundleInst *> inst_by_pc;
   inst_by_pc.reserve(cfg.insts.size());
-  for (const auto &bi : cfg.insts) inst_by_pc[bi.pc] = &bi;
+  for (const auto &bi : cfg.insts)
+    inst_by_pc[bi.pc] = &bi;
 
   std::optional<uint32_t> current_rpc;
   std::vector<VBranchDerived> vbs;
@@ -469,31 +497,30 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
   for (size_t i = 0; i < cfg.insts.size(); ++i) {
     const auto &bi = cfg.insts[i];
     const auto &di = bi.inst;
+    const auto semantics = sbt::control::classify(bi);
 
-    if (di.name == "setrpc") {
-      current_rpc = resolve_setrpc_join_pc(cfg, i);
+    if (semantics.is_setrpc) {
+      current_rpc = sbt::control::resolve_setrpc_join_pc(cfg, i);
       continue;
     }
 
-    if (is_indirect_jalr(di)) {
+    if (semantics.is_indirect_terminator) {
       UnsupportedJalr uj;
       uj.addr = bi.pc;
       uj.word = di.word;
       out.unsupported_jalr.push_back(uj);
     }
 
-    if (!is_vbranch(di.name)) continue;
+    if (!semantics.is_vector_branch)
+      continue;
 
-    VBranchDerived derived{.check = {}, .region = BitSet::empty(g.nodes.size())};
+    VBranchDerived derived{.check = {},
+                           .region = BitSet::empty(g.nodes.size())};
     auto &c = derived.check;
     c.vbranch_addr = bi.pc;
     c.mnemonic = di.name;
 
-    // target/fallthrough computed from the actual instruction PC.
-    if (di.imm_kind == sbt::ImmKind::B13) {
-      const int64_t t = int64_t(bi.inst_pc) + int64_t(di.imm);
-      c.target = static_cast<uint32_t>(t);
-    }
+    c.target = static_cast<uint32_t>(semantics.direct_target);
     c.fallthrough = bi.inst_pc + 4;
 
     auto it_vb = cfg.inst_pc_to_block.find(bi.pc);
@@ -513,7 +540,9 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
 
     const uint32_t join_pc = *c.join_pc;
     const auto it_join_inst = inst_by_pc.find(join_pc);
-    c.join_is_join_inst = (it_join_inst != inst_by_pc.end() && it_join_inst->second->inst.name == "join");
+    c.join_is_join_inst =
+        (it_join_inst != inst_by_pc.end() &&
+         sbt::control::classify(*it_join_inst->second).is_join);
     if (!c.join_is_join_inst) {
       c.error = "join PC=" + hex_u32(join_pc) + " 处不存在 join 指令";
       vbs.push_back(std::move(derived));
@@ -551,10 +580,12 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
       if (it_bb != cfg.block_index_by_start.end()) {
         const auto &bb = cfg.blocks[it_bb->second];
         for (size_t inst_i : bb.inst_indices) {
-          if (inst_i == i) break;
+          if (inst_i == i)
+            break;
           transfer_vreg_uniform(st, cfg.insts[inst_i]);
         }
-        if (di.rs1_class == sbt::RegClass::V && di.rs2_class == sbt::RegClass::V) {
+        if (di.rs1_class == sbt::RegClass::V &&
+            di.rs2_class == sbt::RegClass::V) {
           c.proven_uniform = st.test(di.rs1) && st.test(di.rs2);
         }
       }
@@ -566,7 +597,8 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
       uint32_t cur = s;
       for (int step = 0; step < 8; ++step) {
         const auto it_cur_i = g.idx_of.find(cur);
-        if (it_cur_i == g.idx_of.end()) break;
+        if (it_cur_i == g.idx_of.end())
+          break;
         if (dom[vblock_i].test(it_cur_i->second)) {
           c.loop_like = true;
           break;
@@ -578,7 +610,8 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
         }
         break;
       }
-      if (c.loop_like) break;
+      if (c.loop_like)
+        break;
     }
 
     c.postdom_ok = postdom[vblock_i].test(join_i);
@@ -587,14 +620,17 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
 
     c.no_side_exit_ok = true;
     for (size_t ni = 0; ni < g.nodes.size(); ++ni) {
-      if (!derived.region.test(ni)) continue;
+      if (!derived.region.test(ni))
+        continue;
       for (uint32_t s : g.succs[ni]) {
         const size_t si = g.idx_of.at(s);
-        if (si == join_i || derived.region.test(si)) continue;
+        if (si == join_i || derived.region.test(si))
+          continue;
         c.no_side_exit_ok = false;
         break;
       }
-      if (!c.no_side_exit_ok) break;
+      if (!c.no_side_exit_ok)
+        break;
     }
 
     if (c.loop_like) {
@@ -602,14 +638,17 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
     } else {
       c.single_entry_ok = true;
       for (size_t ni = 0; ni < g.nodes.size(); ++ni) {
-        if (!derived.region.test(ni)) continue;
+        if (!derived.region.test(ni))
+          continue;
         for (uint32_t p : g.preds[ni]) {
           const size_t pi = g.idx_of.at(p);
-          if (p == c.vbranch_block || derived.region.test(pi)) continue;
+          if (p == c.vbranch_block || derived.region.test(pi))
+            continue;
           c.single_entry_ok = false;
           break;
         }
-        if (!c.single_entry_ok) break;
+        if (!c.single_entry_ok)
+          break;
       }
     }
 
@@ -622,9 +661,11 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
     vbs.push_back(std::move(derived));
   }
 
-  // Barrier checks (conservative): barrier block must not be in any vbranch region.
+  // Barrier checks (conservative): barrier block must not be in any vbranch
+  // region.
   for (const auto &bi : cfg.insts) {
-    if (bi.inst.name != "barrier") continue;
+    if (!sbt::control::classify(bi).is_barrier)
+      continue;
     BarrierCheck bc;
     bc.barrier_addr = bi.pc;
     auto it = cfg.inst_pc_to_block.find(bi.pc);
@@ -647,7 +688,8 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_na
 
   // Move vbranch checks.
   out.vbranch.reserve(vbs.size());
-  for (auto &vb : vbs) out.vbranch.push_back(std::move(vb.check));
+  for (auto &vb : vbs)
+    out.vbranch.push_back(std::move(vb.check));
 
   return out;
 }

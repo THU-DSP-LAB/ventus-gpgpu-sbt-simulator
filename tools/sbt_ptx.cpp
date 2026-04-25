@@ -1,5 +1,6 @@
 #include "sbt/cfg.hpp"
 #include "sbt/cfg_verify.hpp"
+#include "sbt/control_semantics.hpp"
 #include "sbt/elf_reader.hpp"
 #include "sbt/ptx_emit.hpp"
 #include "sbt/riscv_decode.hpp"
@@ -27,27 +28,35 @@ namespace {
 
 static bool env_truthy(const char *k) {
   const char *v = std::getenv(k);
-  if (!v) return false;
+  if (!v)
+    return false;
   std::string s(v);
-  for (auto &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  for (auto &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return (s == "1" || s == "true" || s == "yes" || s == "on");
 }
 
 static bool env_bool(const char *k, bool default_value) {
   const char *v = std::getenv(k);
-  if (!v) return default_value;
+  if (!v)
+    return default_value;
   std::string s(v);
-  for (auto &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (s == "1" || s == "true" || s == "yes" || s == "on") return true;
-  if (s == "0" || s == "false" || s == "no" || s == "off") return false;
+  for (auto &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "yes" || s == "on")
+    return true;
+  if (s == "0" || s == "false" || s == "no" || s == "off")
+    return false;
   return default_value;
 }
 
 static std::optional<std::string> env_str(const char *k) {
   const char *v = std::getenv(k);
-  if (!v) return std::nullopt;
+  if (!v)
+    return std::nullopt;
   std::string s(v);
-  if (s.empty()) return std::nullopt;
+  if (s.empty())
+    return std::nullopt;
   return s;
 }
 
@@ -56,15 +65,26 @@ static std::string json_escape(const std::string &in) {
   out.reserve(in.size() + 8);
   for (char c : in) {
     switch (c) {
-    case '\\': out += "\\\\"; break;
-    case '"': out += "\\\""; break;
-    case '\n': out += "\\n"; break;
-    case '\r': out += "\\r"; break;
-    case '\t': out += "\\t"; break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
     default:
       if (static_cast<unsigned char>(c) < 0x20) {
         char buf[8];
-        std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+        std::snprintf(buf, sizeof(buf), "\\u%04x",
+                      static_cast<unsigned>(static_cast<unsigned char>(c)));
         out += buf;
       } else {
         out += c;
@@ -77,7 +97,8 @@ static std::string json_escape(const std::string &in) {
 static bool append_line_atomic(const fs::path &p, const std::string &line) {
   const std::string path = p.string();
   const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-  if (fd < 0) return false;
+  if (fd < 0)
+    return false;
   const std::string payload = line + "\n";
   const ssize_t n = ::write(fd, payload.data(), payload.size());
   ::close(fd);
@@ -85,23 +106,28 @@ static bool append_line_atomic(const fs::path &p, const std::string &line) {
 }
 
 static long long file_time_token(const fs::path &p) {
-  // Note: file_time_type epoch is platform-specific, but we only use it for equality checks.
+  // Note: file_time_type epoch is platform-specific, but we only use it for
+  // equality checks.
   const auto ft = fs::last_write_time(p);
-  const auto ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(ft).time_since_epoch().count();
+  const auto ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(ft)
+                      .time_since_epoch()
+                      .count();
   return static_cast<long long>(ns);
 }
 
 static std::optional<fs::path> self_exe_path() {
   std::error_code ec;
   fs::path p = fs::read_symlink("/proc/self/exe", ec);
-  if (ec) return std::nullopt;
+  if (ec)
+    return std::nullopt;
   return p;
 }
 
 static void usage() {
   std::cerr << "用法:\n";
   std::cerr << "  sbt_ptx <elf> --func <kernel> [--out <ptx>] [--sm <cc>]\n";
-  std::cerr << "          [--require-known] [--no-bundle-regext] [--no-comments]\n";
+  std::cerr
+      << "          [--require-known] [--no-bundle-regext] [--no-comments]\n";
   std::cerr << "          [--no-cache]\n";
 }
 
@@ -125,12 +151,16 @@ struct FuncRange final {
   uint32_t end = 0; // exclusive
 };
 
-static std::optional<FuncRange> find_func_range(const std::vector<sbt::elf::FuncSymbol> &syms, uint32_t text_vaddr, uint32_t text_end,
-                                                const std::string &name) {
+static std::optional<FuncRange>
+find_func_range(const std::vector<sbt::elf::FuncSymbol> &syms,
+                uint32_t text_vaddr, uint32_t text_end,
+                const std::string &name) {
   for (size_t i = 0; i < syms.size(); ++i) {
-    if (syms[i].name != name) continue;
+    if (syms[i].name != name)
+      continue;
     const auto &s = syms[i];
-    if (s.addr < text_vaddr || s.addr >= text_end) return std::nullopt;
+    if (s.addr < text_vaddr || s.addr >= text_end)
+      return std::nullopt;
     uint32_t start = s.addr;
     uint32_t end = 0;
     if (s.size != 0) {
@@ -142,22 +172,30 @@ static std::optional<FuncRange> find_func_range(const std::vector<sbt::elf::Func
           break;
         }
       }
-      if (end == 0) end = text_end;
+      if (end == 0)
+        end = text_end;
     }
-    if (end <= start) end = text_end;
-    if (end > text_end) end = text_end;
+    if (end <= start)
+      end = text_end;
+    if (end > text_end)
+      end = text_end;
     return FuncRange{start, end};
   }
   return std::nullopt;
 }
 
-static std::optional<FuncRange> find_func_range_by_addr(const std::vector<sbt::elf::FuncSymbol> &syms, uint32_t text_vaddr, uint32_t text_end,
-                                                        uint32_t addr) {
-  auto it = std::lower_bound(syms.begin(), syms.end(), addr, [](const sbt::elf::FuncSymbol &a, uint32_t v) { return a.addr < v; });
-  if (it == syms.end() || it->addr != addr) return std::nullopt;
+static std::optional<FuncRange>
+find_func_range_by_addr(const std::vector<sbt::elf::FuncSymbol> &syms,
+                        uint32_t text_vaddr, uint32_t text_end, uint32_t addr) {
+  auto it = std::lower_bound(
+      syms.begin(), syms.end(), addr,
+      [](const sbt::elf::FuncSymbol &a, uint32_t v) { return a.addr < v; });
+  if (it == syms.end() || it->addr != addr)
+    return std::nullopt;
   const size_t i = static_cast<size_t>(it - syms.begin());
   const auto &s = syms[i];
-  if (s.addr < text_vaddr || s.addr >= text_end) return std::nullopt;
+  if (s.addr < text_vaddr || s.addr >= text_end)
+    return std::nullopt;
   const uint32_t start = s.addr;
   uint32_t end = 0;
   if (s.size != 0) {
@@ -169,10 +207,13 @@ static std::optional<FuncRange> find_func_range_by_addr(const std::vector<sbt::e
         break;
       }
     }
-    if (end == 0) end = text_end;
+    if (end == 0)
+      end = text_end;
   }
-  if (end <= start) end = text_end;
-  if (end > text_end) end = text_end;
+  if (end <= start)
+    end = text_end;
+  if (end > text_end)
+    end = text_end;
   return FuncRange{start, end};
 }
 
@@ -196,11 +237,13 @@ static std::string sanitize_ptx_ident(std::string_view in) {
       out += buf;
     }
   }
-  if (out.empty()) out = "anon";
+  if (out.empty())
+    out = "anon";
   return out;
 }
 
-static std::string ptx_func_name_for(const std::string &ventus_sym, uint32_t start_addr) {
+static std::string ptx_func_name_for(const std::string &ventus_sym,
+                                     uint32_t start_addr) {
   return "__sbt_fn_" + sanitize_ptx_ident(ventus_sym) + "_" + hex8(start_addr);
 }
 
@@ -240,7 +283,8 @@ static std::string render_cache_meta(const CacheKey &k) {
   o << "sm=" << k.sm << "\n";
   o << "require_known=" << (k.require_known ? 1 : 0) << "\n";
   o << "bundle_regext=" << (k.bundle_regext ? 1 : 0) << "\n";
-  o << "compat_spike_nested_regext=" << (k.compat_spike_nested_regext ? 1 : 0) << "\n";
+  o << "compat_spike_nested_regext=" << (k.compat_spike_nested_regext ? 1 : 0)
+    << "\n";
   o << "include_comments=" << (k.include_comments ? 1 : 0) << "\n";
   o << "exe_abs=" << k.exe_abs << "\n";
   o << "exe_time=" << k.exe_time << "\n";
@@ -249,22 +293,26 @@ static std::string render_cache_meta(const CacheKey &k) {
 
 static std::optional<std::string> read_text_file(const fs::path &p) {
   std::ifstream f(p);
-  if (!f) return std::nullopt;
+  if (!f)
+    return std::nullopt;
   std::ostringstream o;
   o << f.rdbuf();
   return o.str();
 }
 
-static std::optional<std::string> get_kv(const std::string &meta, const std::string &key) {
+static std::optional<std::string> get_kv(const std::string &meta,
+                                         const std::string &key) {
   const std::string pat = key + "=";
   size_t pos = 0;
   while (true) {
     const size_t line_start = meta.find(pat, pos);
-    if (line_start == std::string::npos) return std::nullopt;
+    if (line_start == std::string::npos)
+      return std::nullopt;
     if (line_start == 0 || meta[line_start - 1] == '\n') {
       const size_t val_start = line_start + pat.size();
       const size_t line_end = meta.find('\n', val_start);
-      if (line_end == std::string::npos) return meta.substr(val_start);
+      if (line_end == std::string::npos)
+        return meta.substr(val_start);
       return meta.substr(val_start, line_end - val_start);
     }
     pos = line_start + 1;
@@ -286,12 +334,17 @@ static bool cache_meta_matches(const CacheKey &k, const std::string &meta) {
   };
 
   auto fmt = get_kv(meta, "format");
-  if (!fmt || *fmt != "2") return false;
+  if (!fmt || *fmt != "2")
+    return false;
 
-  return eqs("elf_abs", k.elf_abs) && eql("elf_time", k.elf_time) && eqs("func", k.func) && eqs("out_abs", k.out_abs.string()) && eqi("sm", k.sm) &&
-         eqi("require_known", k.require_known ? 1 : 0) && eqi("bundle_regext", k.bundle_regext ? 1 : 0) &&
-         eqi("compat_spike_nested_regext", k.compat_spike_nested_regext ? 1 : 0) &&
-         eqi("include_comments", k.include_comments ? 1 : 0) && eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
+  return eqs("elf_abs", k.elf_abs) && eql("elf_time", k.elf_time) &&
+         eqs("func", k.func) && eqs("out_abs", k.out_abs.string()) &&
+         eqi("sm", k.sm) && eqi("require_known", k.require_known ? 1 : 0) &&
+         eqi("bundle_regext", k.bundle_regext ? 1 : 0) &&
+         eqi("compat_spike_nested_regext",
+             k.compat_spike_nested_regext ? 1 : 0) &&
+         eqi("include_comments", k.include_comments ? 1 : 0) &&
+         eqs("exe_abs", k.exe_abs) && eql("exe_time", k.exe_time);
 }
 
 } // namespace
@@ -310,7 +363,8 @@ int main(int argc, char **argv) {
   bool include_comments = true;
   int sm = 89;
   bool cache_enabled = true;
-  const bool compat_spike_nested_regext = env_bool("SBT_COMPAT_SPIKE_NESTED_REGEXT", false);
+  const bool compat_spike_nested_regext =
+      env_bool("SBT_COMPAT_SPIKE_NESTED_REGEXT", false);
 
   elf_path = argv[1];
 
@@ -345,14 +399,16 @@ int main(int argc, char **argv) {
     usage();
     return 2;
   }
-  if (out_path.empty()) out_path = default_out_path(elf_path, *func);
+  if (out_path.empty())
+    out_path = default_out_path(elf_path, *func);
 
   try {
     const auto profile_log = env_str("GPU_SBT_PTX_PROFILE_LOG");
     const bool profile = profile_log.has_value();
     const auto t0_total = std::chrono::steady_clock::now();
 
-    if (env_truthy("GPU_SBT_PTX_NO_CACHE")) cache_enabled = false;
+    if (env_truthy("GPU_SBT_PTX_NO_CACHE"))
+      cache_enabled = false;
 
     CacheKey key;
     key.elf_abs = fs::absolute(elf_path).string();
@@ -381,18 +437,27 @@ int main(int argc, char **argv) {
       const fs::path out_abs = key.out_abs;
       const fs::path meta_path = cache_meta_path_for(out_abs);
       std::error_code ec;
-      const bool out_ok = fs::exists(out_abs, ec) && fs::is_regular_file(out_abs, ec) && (fs::file_size(out_abs, ec) > 0);
-      const bool meta_ok = fs::exists(meta_path, ec) && fs::is_regular_file(meta_path, ec);
+      const bool out_ok = fs::exists(out_abs, ec) &&
+                          fs::is_regular_file(out_abs, ec) &&
+                          (fs::file_size(out_abs, ec) > 0);
+      const bool meta_ok =
+          fs::exists(meta_path, ec) && fs::is_regular_file(meta_path, ec);
       if (out_ok && meta_ok) {
         if (auto meta = read_text_file(meta_path)) {
           if (cache_meta_matches(key, *meta)) {
             cache_hit = true;
             const auto t1_total = std::chrono::steady_clock::now();
-            t_total_ms =
-                std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1_total - t0_total).count();
+            t_total_ms = std::chrono::duration_cast<
+                             std::chrono::duration<double, std::milli>>(
+                             t1_total - t0_total)
+                             .count();
             if (profile) {
               std::ostringstream j;
-              j << "{\"ts_ms\":" << (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+              j << "{\"ts_ms\":"
+                << (long long)
+                       std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
               j << ",\"pid\":" << (long long)::getpid();
               j << ",\"elf\":\"" << json_escape(key.elf_abs) << "\"";
               j << ",\"func\":\"" << json_escape(key.func) << "\"";
@@ -405,7 +470,9 @@ int main(int argc, char **argv) {
             }
             // Keep stdout compatible with existing driver usage.
             std::cout << "已生成 PTX: " << out_path << "\n";
-            std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
+            std::cout
+                << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + "
+                   "ldsSize（launch 时设置）\n";
             return 0;
           }
         }
@@ -419,10 +486,12 @@ int main(int argc, char **argv) {
     std::unordered_map<uint32_t, std::string> sym_by_addr;
     sym_by_addr.reserve(syms.size());
     for (const auto &s : syms) {
-      if (!s.name.empty()) sym_by_addr.emplace(s.addr, s.name);
+      if (!s.name.empty())
+        sym_by_addr.emplace(s.addr, s.name);
     }
 
-    const uint32_t text_end = text.vaddr + static_cast<uint32_t>(text.data.size());
+    const uint32_t text_end =
+        text.vaddr + static_cast<uint32_t>(text.data.size());
     const auto fr = find_func_range(syms, text.vaddr, text_end, *func);
     if (!fr) {
       std::cerr << "未找到函数符号或不在 .text: " << *func << "\n";
@@ -430,13 +499,16 @@ int main(int argc, char **argv) {
     }
 
     if (fr->start < text.vaddr || fr->end > text_end || fr->end <= fr->start) {
-      std::cerr << "函数范围非法: " << *func << " start=" << hex_u32(fr->start) << " end=" << hex_u32(fr->end) << "\n";
+      std::cerr << "函数范围非法: " << *func << " start=" << hex_u32(fr->start)
+                << " end=" << hex_u32(fr->end) << "\n";
       return 1;
     }
 
     const size_t off = fr->start - text.vaddr;
     const size_t len = fr->end - fr->start;
-    std::vector<uint8_t> slice(text.data.begin() + static_cast<long>(off), text.data.begin() + static_cast<long>(off + len));
+    std::vector<uint8_t> slice(text.data.begin() + static_cast<long>(off),
+                               text.data.begin() +
+                                   static_cast<long>(off + len));
 
     const auto patterns = build_patterns_from_subset_header();
 
@@ -449,12 +521,17 @@ int main(int argc, char **argv) {
     const auto cfg = sbt::cfg::build_function_cfg(decoded, fr->start, fr->end);
     const auto verify = sbt::cfg::verify_function(cfg, *func);
 
-    const bool vbranch_ok = std::all_of(verify.vbranch.begin(), verify.vbranch.end(), [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
-    const bool barrier_ok = std::all_of(verify.barriers.begin(), verify.barriers.end(), [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
+    const bool vbranch_ok = std::all_of(
+        verify.vbranch.begin(), verify.vbranch.end(),
+        [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
+    const bool barrier_ok =
+        std::all_of(verify.barriers.begin(), verify.barriers.end(),
+                    [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
     const bool jalr_ok = verify.unsupported_jalr.empty();
     if (!vbranch_ok || !barrier_ok || !jalr_ok) {
       std::cerr << "CFG 结构化验证未通过: " << *func << "\n";
-      std::cerr << "  vbranch_ok=" << (vbranch_ok ? "true" : "false") << " barrier_ok=" << (barrier_ok ? "true" : "false")
+      std::cerr << "  vbranch_ok=" << (vbranch_ok ? "true" : "false")
+                << " barrier_ok=" << (barrier_ok ? "true" : "false")
                 << " jalr_ok=" << (jalr_ok ? "true" : "false") << "\n";
       return 2;
     }
@@ -463,25 +540,34 @@ int main(int argc, char **argv) {
     popt.sm = sm;
     popt.include_comments = include_comments;
 
-    auto build_cfg_for = [&](const FuncRange &fr, const std::string &name) -> sbt::cfg::FunctionCfg {
+    auto build_cfg_for = [&](const FuncRange &fr,
+                             const std::string &name) -> sbt::cfg::FunctionCfg {
       if (fr.start < text.vaddr || fr.end > text_end || fr.end <= fr.start) {
-        throw std::runtime_error("函数范围非法: " + name + " start=" + hex_u32(fr.start) + " end=" + hex_u32(fr.end));
+        throw std::runtime_error("函数范围非法: " + name + " start=" +
+                                 hex_u32(fr.start) + " end=" + hex_u32(fr.end));
       }
       const size_t off = fr.start - text.vaddr;
       const size_t len = fr.end - fr.start;
-      std::vector<uint8_t> slice(text.data.begin() + static_cast<long>(off), text.data.begin() + static_cast<long>(off + len));
+      std::vector<uint8_t> slice(text.data.begin() + static_cast<long>(off),
+                                 text.data.begin() +
+                                     static_cast<long>(off + len));
       const auto decoded = sbt::decode_text(slice, fr.start, dopt, patterns);
       const auto cfg = sbt::cfg::build_function_cfg(decoded, fr.start, fr.end);
       const auto verify = sbt::cfg::verify_function(cfg, name);
 
-      const bool vbranch_ok =
-          std::all_of(verify.vbranch.begin(), verify.vbranch.end(), [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
-      const bool barrier_ok = std::all_of(verify.barriers.begin(), verify.barriers.end(), [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
+      const bool vbranch_ok = std::all_of(
+          verify.vbranch.begin(), verify.vbranch.end(),
+          [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
+      const bool barrier_ok =
+          std::all_of(verify.barriers.begin(), verify.barriers.end(),
+                      [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
       const bool jalr_ok = verify.unsupported_jalr.empty();
       if (!vbranch_ok || !barrier_ok || !jalr_ok) {
         std::ostringstream o;
-        o << "CFG 结构化验证未通过: " << name << " vbranch_ok=" << (vbranch_ok ? "true" : "false")
-          << " barrier_ok=" << (barrier_ok ? "true" : "false") << " jalr_ok=" << (jalr_ok ? "true" : "false");
+        o << "CFG 结构化验证未通过: " << name
+          << " vbranch_ok=" << (vbranch_ok ? "true" : "false")
+          << " barrier_ok=" << (barrier_ok ? "true" : "false")
+          << " jalr_ok=" << (jalr_ok ? "true" : "false");
         throw std::runtime_error(o.str());
       }
       return cfg;
@@ -509,24 +595,18 @@ int main(int argc, char **argv) {
 
     auto scan_callees = [&](const Node &n) -> std::vector<uint32_t> {
       std::vector<uint32_t> out;
-      for (const auto &bi : n.cfg.insts) {
-        const auto &di = bi.inst;
-        if (di.name != "jal" || di.rd_class != sbt::RegClass::X || di.rd == 0 || di.imm_kind != sbt::ImmKind::J21) continue;
-        const int64_t t64 = static_cast<int64_t>(bi.inst_pc) + static_cast<int64_t>(di.imm);
-        if (t64 < 0 || t64 > 0xffffffffll) {
-          throw std::runtime_error("call target out of range in " + n.name + " at pc=" + hex_u32(di.pc));
-        }
-        const uint32_t target = static_cast<uint32_t>(t64);
+      for (uint32_t target :
+           sbt::control::collect_direct_call_targets(n.cfg, n.name)) {
         auto it = sym_by_addr.find(target);
         if (it == sym_by_addr.end()) {
-          throw std::runtime_error("call target not in .symtab in " + n.name + " at pc=" + hex_u32(di.pc) + " target=" + hex_u32(target));
+          throw std::runtime_error("call target not in .symtab in " + n.name +
+                                   " target=" + hex_u32(target));
         }
         const std::string &callee = it->second;
-        if (sbt::ptx::is_inlined_builtin_call_name(callee)) continue;
+        if (sbt::ptx::is_inlined_builtin_call_name(callee))
+          continue;
         out.push_back(target);
       }
-      std::sort(out.begin(), out.end());
-      out.erase(std::unique(out.begin(), out.end()), out.end());
       return out;
     };
 
@@ -535,22 +615,29 @@ int main(int argc, char **argv) {
       work.pop_back();
 
       auto it = nodes_by_start.find(cur);
-      if (it == nodes_by_start.end()) continue;
+      if (it == nodes_by_start.end())
+        continue;
       Node &n = it->second;
       n.callees = scan_callees(n);
 
       for (uint32_t callee_start : n.callees) {
-        if (nodes_by_start.find(callee_start) != nodes_by_start.end()) continue;
+        if (nodes_by_start.find(callee_start) != nodes_by_start.end())
+          continue;
 
-        auto fr2 = find_func_range_by_addr(syms, text.vaddr, text_end, callee_start);
+        auto fr2 =
+            find_func_range_by_addr(syms, text.vaddr, text_end, callee_start);
         if (!fr2) {
           auto itn = sym_by_addr.find(callee_start);
-          const std::string name2 = (itn != sym_by_addr.end() ? itn->second : std::string("(unknown)"));
-          throw std::runtime_error("callee missing symbol range: " + name2 + " start=" + hex_u32(callee_start));
+          const std::string name2 =
+              (itn != sym_by_addr.end() ? itn->second
+                                        : std::string("(unknown)"));
+          throw std::runtime_error("callee missing symbol range: " + name2 +
+                                   " start=" + hex_u32(callee_start));
         }
         auto itn = sym_by_addr.find(callee_start);
         if (itn == sym_by_addr.end()) {
-          throw std::runtime_error("callee missing symbol name start=" + hex_u32(callee_start));
+          throw std::runtime_error("callee missing symbol name start=" +
+                                   hex_u32(callee_start));
         }
         const std::string &name2 = itn->second;
 
@@ -563,11 +650,13 @@ int main(int argc, char **argv) {
       }
     }
 
-    // Build adjacency and reject cycles (prototype: no recursion / mutual recursion).
+    // Build adjacency and reject cycles (prototype: no recursion / mutual
+    // recursion).
     enum class Mark : uint8_t { White = 0, Gray = 1, Black = 2 };
     std::unordered_map<uint32_t, Mark> mark;
     mark.reserve(nodes_by_start.size());
-    for (const auto &kv : nodes_by_start) mark.emplace(kv.first, Mark::White);
+    for (const auto &kv : nodes_by_start)
+      mark.emplace(kv.first, Mark::White);
 
     std::vector<uint32_t> stack;
     stack.reserve(nodes_by_start.size());
@@ -576,10 +665,13 @@ int main(int argc, char **argv) {
       stack.push_back(u);
       const auto &n = nodes_by_start.at(u);
       for (uint32_t v : n.callees) {
-        if (nodes_by_start.find(v) == nodes_by_start.end()) continue;
-        if (mark[v] == Mark::Gray) return true;
+        if (nodes_by_start.find(v) == nodes_by_start.end())
+          continue;
+        if (mark[v] == Mark::Gray)
+          return true;
         if (mark[v] == Mark::White) {
-          if (dfs(v)) return true;
+          if (dfs(v))
+            return true;
         }
       }
       stack.pop_back();
@@ -587,14 +679,16 @@ int main(int argc, char **argv) {
       return false;
     };
     if (dfs(fr->start)) {
-      throw std::runtime_error("recursive call graph detected (unsupported in prototype)");
+      throw std::runtime_error(
+          "recursive call graph detected (unsupported in prototype)");
     }
 
     // Prepare `.func` emission list and call-target mapping.
     std::vector<uint32_t> starts;
     starts.reserve(nodes_by_start.size());
     for (const auto &kv : nodes_by_start) {
-      if (kv.first == fr->start) continue;
+      if (kv.first == fr->start)
+        continue;
       starts.push_back(kv.first);
     }
     std::sort(starts.begin(), starts.end());
@@ -616,10 +710,14 @@ int main(int argc, char **argv) {
       funcs_to_emit.push_back(std::move(f));
     }
 
-    const auto res = sbt::ptx::emit_module(cfg, sym_by_addr, *func, funcs_to_emit, ptx_name_by_addr, popt);
+    const auto res = sbt::ptx::emit_module(
+        cfg, sym_by_addr, *func, funcs_to_emit, ptx_name_by_addr, popt);
 
     const auto t1_work = std::chrono::steady_clock::now();
-    t_work_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1_work - t0_work).count();
+    t_work_ms =
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+            t1_work - t0_work)
+            .count();
 
     const auto t0_write = std::chrono::steady_clock::now();
     if (!out_path.parent_path().empty()) {
@@ -633,12 +731,16 @@ int main(int argc, char **argv) {
     f << res.ptx;
     f.close();
     const auto t1_write = std::chrono::steady_clock::now();
-    t_write_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1_write - t0_write).count();
+    t_write_ms =
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+            t1_write - t0_write)
+            .count();
 
     if (cache_enabled) {
       const fs::path out_abs = key.out_abs;
       const fs::path meta_path = cache_meta_path_for(out_abs);
-      const fs::path tmp = meta_path.string() + ".tmp." + std::to_string(::getpid());
+      const fs::path tmp =
+          meta_path.string() + ".tmp." + std::to_string(::getpid());
       const std::string body = render_cache_meta(key);
       {
         std::ofstream mf(tmp);
@@ -656,11 +758,17 @@ int main(int argc, char **argv) {
     }
 
     const auto t1_total = std::chrono::steady_clock::now();
-    t_total_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1_total - t0_total).count();
+    t_total_ms =
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+            t1_total - t0_total)
+            .count();
 
     if (profile) {
       std::ostringstream j;
-      j << "{\"ts_ms\":" << (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+      j << "{\"ts_ms\":"
+        << (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+               .count();
       j << ",\"pid\":" << (long long)::getpid();
       j << ",\"elf\":\"" << json_escape(key.elf_abs) << "\"";
       j << ",\"func\":\"" << json_escape(key.func) << "\"";
@@ -675,7 +783,8 @@ int main(int argc, char **argv) {
     }
 
     std::cout << "已生成 PTX: " << out_path << "\n";
-    std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + ldsSize（launch 时设置）\n";
+    std::cout << "提示: 需要 dynamic shared >= warps_per_block*1024(stack) + "
+                 "ldsSize（launch 时设置）\n";
     return 0;
   } catch (const sbt::ptx::EmitError &e) {
     std::cerr << "PTX 生成失败: " << e.what() << "\n";
