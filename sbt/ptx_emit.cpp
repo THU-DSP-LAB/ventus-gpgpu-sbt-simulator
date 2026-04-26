@@ -4,20 +4,6 @@
 
 namespace sbt::ptx {
 
-bool is_inlined_builtin_call_name(std::string_view callee) {
-  return callee == "_Z13get_global_idj" || callee == "_Z12get_local_idj" || callee == "_Z12get_group_idj" || callee == "_Z15get_global_sizej" ||
-         callee == "__builtin_riscv_workitem_id_x" || callee == "__builtin_riscv_workitem_id_y" || callee == "__builtin_riscv_workitem_id_z" ||
-         callee == "__builtin_riscv_workgroup_id_x" || callee == "__builtin_riscv_workgroup_id_y" || callee == "__builtin_riscv_workgroup_id_z" ||
-         callee == "__builtin_riscv_global_id_x" || callee == "__builtin_riscv_global_id_y" || callee == "__builtin_riscv_global_id_z" ||
-         callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf" ||
-         // OpenCL float helpers.
-         callee == "_Z4fmaxff" ||
-         // PoCL trig example (float4).
-         callee == "_Z3cosDv4_f" || callee == "_Z3sinDv4_f" || callee == "_Z3tanDv4_f" || callee == "_Z4sqrtDv4_f" || callee == "_Z4fabsDv4_f" ||
-         // OpenCL integer helpers.
-         callee == "_Z5mad24iii";
-}
-
 EmitError::EmitError(std::string code_, std::string func_, uint32_t pc_, std::string detail)
     : std::runtime_error(code_ + " func=" + func_ + " pc=" + detail::hex_u32(pc_) + (detail.empty() ? "" : (" " + detail))),
       code(std::move(code_)),

@@ -28,8 +28,14 @@ add_library(sbt_lib
   sbt/cfg_verify.cpp
   sbt/ptx_mma.cpp
   sbt/ptx_emit.cpp
+  sbt/ptx_emit_core.cpp
+  sbt/ptx_emit_runtime.cpp
+  sbt/ptx_emit_memory.cpp
+  sbt/ptx_emit_call.cpp
+  sbt/ptx_emit_builtin.cpp
   sbt/ptx_emit_control.cpp
   sbt/ptx_emit_scalar.cpp
+  sbt/ptx_emit_scalar_fp.cpp
   sbt/ptx_emit_vector.cpp
   sbt/ptx_emit_custom.cpp
   sbt/ptx_emit_mma_lowering.cpp

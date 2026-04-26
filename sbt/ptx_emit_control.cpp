@@ -47,79 +47,8 @@ bool try_emit_control(EmitCtx &ctx, const sbt::cfg::BundleInst &bi) {
     ctx.emit_line("mov.u32 " + ret_addr + ", " + hex_u32(inst_pc + 4) + ";");
     ctx.emit_st_x_u32_scalar(di.rd, ret_addr, pc);
 
-    if (is_inlined_builtin_call_name(callee)) {
-      if (callee == "_Z13get_global_idj") {
-        ctx.emit_builtin_get_id("global", pc);
-      } else if (callee == "_Z12get_local_idj") {
-        ctx.emit_builtin_get_id("local", pc);
-      } else if (callee == "_Z12get_group_idj") {
-        ctx.emit_builtin_get_id("group", pc);
-      } else if (callee == "_Z15get_global_sizej") {
-        ctx.emit_builtin_get_global_size(pc);
-      } else if (callee == "_Z4fmaxff") {
-        ctx.emit_builtin_fmaxff(pc);
-      } else if (callee == "_Z10__clc_sqrtf" || callee == "_Z4sqrtf") {
-        ctx.emit_builtin_sqrtf(pc);
-      } else if (callee == "_Z3cosDv4_f") {
-        ctx.emit_builtin_vec4_cos(pc);
-      } else if (callee == "_Z3sinDv4_f") {
-        ctx.emit_builtin_vec4_sin(pc);
-      } else if (callee == "_Z3tanDv4_f") {
-        ctx.emit_builtin_vec4_tan(pc);
-      } else if (callee == "_Z4sqrtDv4_f") {
-        ctx.emit_builtin_vec4_sqrt(pc);
-      } else if (callee == "_Z4fabsDv4_f") {
-        ctx.emit_builtin_vec4_fabs(pc);
-      } else if (callee == "_Z5mad24iii") {
-        ctx.emit_builtin_mad24iii(pc);
-      } else if (callee == "__builtin_riscv_workitem_id_x") {
-        ctx.emit_line("mov.u32 " + v(0) + ", %tid.x;");
-      } else if (callee == "__builtin_riscv_workitem_id_y") {
-        ctx.emit_line("mov.u32 " + v(0) + ", %tid.y;");
-      } else if (callee == "__builtin_riscv_workitem_id_z") {
-        ctx.emit_line("mov.u32 " + v(0) + ", %tid.z;");
-      } else if (callee == "__builtin_riscv_workgroup_id_x") {
-        ctx.emit_line("mov.u32 " + v(0) + ", %ctaid.x;");
-      } else if (callee == "__builtin_riscv_workgroup_id_y") {
-        ctx.emit_line("mov.u32 " + v(0) + ", %ctaid.y;");
-      } else if (callee == "__builtin_riscv_workgroup_id_z") {
-        ctx.emit_line("mov.u32 " + v(0) + ", %ctaid.z;");
-      } else if (callee == "__builtin_riscv_global_id_x") {
-        const std::string tid = ctx.tmp_b32();
-        const std::string ntid = ctx.tmp_b32();
-        const std::string ctaid = ctx.tmp_b32();
-        const std::string gid = ctx.tmp_b32();
-        ctx.emit_line("mov.u32 " + tid + ", %tid.x;");
-        ctx.emit_line("mov.u32 " + ntid + ", %ntid.x;");
-        ctx.emit_line("mov.u32 " + ctaid + ", %ctaid.x;");
-        ctx.emit_line("mul.lo.u32 " + gid + ", " + ctaid + ", " + ntid + ";");
-        ctx.emit_line("add.u32 " + gid + ", " + gid + ", " + tid + ";");
-        ctx.emit_line("mov.u32 " + v(0) + ", " + gid + ";");
-      } else if (callee == "__builtin_riscv_global_id_y") {
-        const std::string tid = ctx.tmp_b32();
-        const std::string ntid = ctx.tmp_b32();
-        const std::string ctaid = ctx.tmp_b32();
-        const std::string gid = ctx.tmp_b32();
-        ctx.emit_line("mov.u32 " + tid + ", %tid.y;");
-        ctx.emit_line("mov.u32 " + ntid + ", %ntid.y;");
-        ctx.emit_line("mov.u32 " + ctaid + ", %ctaid.y;");
-        ctx.emit_line("mul.lo.u32 " + gid + ", " + ctaid + ", " + ntid + ";");
-        ctx.emit_line("add.u32 " + gid + ", " + gid + ", " + tid + ";");
-        ctx.emit_line("mov.u32 " + v(0) + ", " + gid + ";");
-      } else if (callee == "__builtin_riscv_global_id_z") {
-        const std::string tid = ctx.tmp_b32();
-        const std::string ntid = ctx.tmp_b32();
-        const std::string ctaid = ctx.tmp_b32();
-        const std::string gid = ctx.tmp_b32();
-        ctx.emit_line("mov.u32 " + tid + ", %tid.z;");
-        ctx.emit_line("mov.u32 " + ntid + ", %ntid.z;");
-        ctx.emit_line("mov.u32 " + ctaid + ", %ctaid.z;");
-        ctx.emit_line("mul.lo.u32 " + gid + ", " + ctaid + ", " + ntid + ";");
-        ctx.emit_line("add.u32 " + gid + ", " + gid + ", " + tid + ";");
-        ctx.emit_line("mov.u32 " + v(0) + ", " + gid + ";");
-      } else {
-        throw EmitError("unsupported.call", ctx.func_name, pc, "callee=" + callee);
-      }
+    if (const auto builtin = lookup_builtin_call(callee)) {
+      emit_builtin_call(ctx, *builtin, pc);
       return true;
     }
 

@@ -5,14 +5,17 @@
 
 需求/作用
 - 静态检查 emitter lowering 文件集中的 `.name` 读取位置，确保它们只用于显式批准的 comment / diagnostic 场景。
+- 检查 builtin allowlist 与 inline dispatch 共享同一 lookup source，并且每个 accepted builtin symbol 都有 dispatch path。
 
 用法
 - 直接运行：`python3 tools/check_ptx_emit_name_allowlist.py`
 
 实现原理/处理步骤
-- 逐行扫描 `sbt/ptx_emit*.cpp` 与 `sbt/ptx_emit_internal.hpp` 中的 `.name` 使用。
+- 逐行扫描完整 PTX emitter implementation file set 与 `sbt/ptx_emit_internal.hpp` 中的 `.name` 使用。
 - 若发现比较、前后缀匹配、搜索等 authority-like 用法，立即报错。
 - 对剩余 `.name` 读取做 allowlist 校验，只允许 comment / EmitError detail / scalar-exec diagnostic 相关位置保留。
+- 解析 `ptx_emit_builtin.cpp` 中的 builtin lookup table 和 `emit_builtin_call()` switch，确认 public allowlist 与 control
+  dispatch 都经由 lookup，并且 table 中的每个 `BuiltinKind` 都有 switch case。
 """
 
 from __future__ import annotations
@@ -26,8 +29,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 EMITTER_FILES = (
     ROOT / "sbt" / "ptx_emit.cpp",
     ROOT / "sbt" / "ptx_emit_internal.hpp",
+    ROOT / "sbt" / "ptx_emit_core.cpp",
+    ROOT / "sbt" / "ptx_emit_runtime.cpp",
+    ROOT / "sbt" / "ptx_emit_memory.cpp",
+    ROOT / "sbt" / "ptx_emit_call.cpp",
+    ROOT / "sbt" / "ptx_emit_builtin.cpp",
     ROOT / "sbt" / "ptx_emit_control.cpp",
     ROOT / "sbt" / "ptx_emit_scalar.cpp",
+    ROOT / "sbt" / "ptx_emit_scalar_fp.cpp",
     ROOT / "sbt" / "ptx_emit_vector.cpp",
     ROOT / "sbt" / "ptx_emit_custom.cpp",
     ROOT / "sbt" / "ptx_emit_mma_lowering.cpp",
@@ -46,6 +55,12 @@ ALLOWED_SNIPPETS = (
     'emit_line("// "',
 )
 
+BUILTIN_FILE = ROOT / "sbt" / "ptx_emit_builtin.cpp"
+CONTROL_FILE = ROOT / "sbt" / "ptx_emit_control.cpp"
+
+BUILTIN_ENTRY_RE = re.compile(r'\{"([^"]+)",\s*BuiltinKind::([A-Za-z0-9_]+)\}')
+BUILTIN_CASE_RE = re.compile(r"case\s+BuiltinKind::([A-Za-z0-9_]+)\s*:")
+
 
 def main() -> int:
     errors: list[str] = []
@@ -60,6 +75,28 @@ def main() -> int:
                 continue
             if not any(snippet in line for snippet in ALLOWED_SNIPPETS):
                 errors.append(f"{path}:{lineno}: name usage missing allowlist category: {line.strip()}")
+
+    builtin_text = BUILTIN_FILE.read_text(encoding="utf-8")
+    builtin_entries = BUILTIN_ENTRY_RE.findall(builtin_text)
+    if not builtin_entries:
+        errors.append(f"{BUILTIN_FILE}: builtin lookup table has no parsed entries")
+    builtin_names = [name for name, _kind in builtin_entries]
+    duplicate_names = sorted({name for name in builtin_names if builtin_names.count(name) > 1})
+    for name in duplicate_names:
+        errors.append(f"{BUILTIN_FILE}: duplicate builtin lookup entry: {name}")
+
+    table_kinds = {kind for _name, kind in builtin_entries}
+    dispatch_kinds = set(BUILTIN_CASE_RE.findall(builtin_text))
+    missing_dispatch = sorted(table_kinds - dispatch_kinds)
+    for kind in missing_dispatch:
+        errors.append(f"{BUILTIN_FILE}: builtin lookup kind lacks emit_builtin_call dispatch case: {kind}")
+
+    if "return detail::lookup_builtin_call(callee).has_value();" not in builtin_text:
+        errors.append(f"{BUILTIN_FILE}: public is_inlined_builtin_call_name() must delegate to lookup_builtin_call()")
+
+    control_text = CONTROL_FILE.read_text(encoding="utf-8")
+    if "lookup_builtin_call(callee)" not in control_text or "emit_builtin_call(ctx, *builtin, pc)" not in control_text:
+        errors.append(f"{CONTROL_FILE}: control direct-call lowering must dispatch builtins through shared lookup")
 
     if errors:
         for err in errors:

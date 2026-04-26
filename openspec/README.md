@@ -28,22 +28,22 @@
 - `global-address-space`：当前 PTX ordinary address mapping / single-Global / VMM backing 合同
 - `inst-support`：指令支持与语义验证合同（当前已包含 landed 的 non-MMA 子集与首批 committed `row.col` MMA 子集；Spike-backed 非 custom 指令当前通过共享 instruction metadata 维护 operand / immediate / uniform-transfer / emit-descriptor contract；所有 current supported MMA family 现统一采用 `Spike / sbtsim PTX / CPU reference` 三方语义验证）
 - `ptx-call-prototype`：多函数 PTX helper prototype / value ABI 合同
-- `ptx-lowering-modularity`：当前 PTX emitter 的 shared core / domain lowering / dispatcher precedence / structural validation 合同
+- `ptx-lowering-modularity`：当前 PTX emitter 的 internal shared interface、implementation ownership、domain lowering、dispatcher precedence 与 structural validation 合同
 - `ptx-temp-register-allocation`：当前 PTX emitter 固定槽位与 `%tmp*` scratch ownership 合同
 - `replicated-scalar-state`：当前 PTX lowering 主线合同（包含 scalar execution classification 显式化、scalar-side emit descriptor authority、未分类 scalar 默认拒绝的 current contract）
 - `sbt-rodinia-bringup`：Rodinia bring-up / fail-fast 边界
 
 ## 当前 active changes
 
-- 当前无未归档的 active changes。
+- `openspec/changes/split-ptx-emit-internal-core`：`active`，当前工作树已按 proposal/spec/design/tasks 完成实现与验证，尚待归档；该 change 在不改变 current PTX behavior、public API、dispatcher precedence、ABI/address/PDS/MMA/name-allowlist contract 的前提下，把 `sbt/ptx_emit_internal.hpp` 从大段 implementation container 收敛为 internal shared interface，并将 runtime/PDS、memory/address mapping、call ABI、builtin、scalar FP、MMA materialization 等实现迁入职责明确的 `.cpp` 单元。
 
 当前口径提醒：
-- `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。
+- `current` 的固定 machine/runtime/control 槽位真相以 `doc/IMPLEMENTATION_CODEMAP.md`、`sbt/ptx_emit_internal.hpp`、`sbt/ptx_emit_core.cpp` 与 `openspec/specs/ptx-temp-register-allocation/spec.md` 为准。当前 PTX emitter 文件布局以 `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{core,runtime,memory,call,builtin,control,scalar,vector,custom,mma_lowering,scalar_fp}.cpp` 为准。
 - PTX emitter 当前 scratch ownership 已收敛到函数级唯一命名 `%tmp*` 寄存器；旧的 `%r14/%r15/...` 隐式共享 scratch 约定只保留为 historical 背景，不再作为 current contract。
 
 ## 近期 historical changes（与 custom split 相关）
 
-- `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering`：已归档的 emitter 模块化收敛 change；其结果已同步进 current README/doc 索引、`doc/IMPLEMENTATION_CODEMAP.md`、构建入口与 emitter 回归。当前 `ptx_emit` 实现形态以 `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp` 为准。
+- `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering`：已归档的 emitter domain 模块化收敛 change；其结果已同步进 current README/doc 索引、`doc/IMPLEMENTATION_CODEMAP.md`、构建入口与 emitter 回归。该 historical change 形成了 `control/scalar/vector/custom/mma` domain lowering 边界；当前 internal implementation ownership 由 active `split-ptx-emit-internal-core` refinement 继续收敛。
 - `openspec/changes/archive/2026-04-18-unify-cfg-control-semantics`：已归档的 main-pipeline control-semantics authority 收敛 change；其结果已同步进 current `inst-support` spec、README/doc 索引与相关 CFG / CFG verify / direct-call scan 回归。
 - `openspec/changes/archive/2026-04-16-tighten-instruction-metadata-contract`：已归档的 instruction metadata contract 收敛 change；其结果已同步进 current `inst-support` / `replicated-scalar-state` specs、README/doc 索引与相关 decode / CFG verify / emitter 回归。
 - `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence`：已归档的 emitter lowering authority 收敛 change；其结果已同步进 current `inst-support` spec、README/doc 索引与相关 emitter 回归。后续 `unify-cfg-control-semantics` 已把 `sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与主流程外围 control-semantics authority 一并收口到同一 current contract。

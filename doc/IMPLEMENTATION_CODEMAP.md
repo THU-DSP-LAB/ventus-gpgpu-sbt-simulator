@@ -41,7 +41,7 @@
 - `sbt/instruction_metadata.cpp`
   - current shared instruction metadata 事实源：为 Spike-backed 非 custom 指令维护 repository-managed `InstId + InstMetadata`。
   - current 最小 contract：至少覆盖 `operand_form`、`imm_kind`、`uniform_transfer_kind`，并为当前 supported scalar subset 维护显式 `ScalarExecKind`。
-  - current：该层还集中维护 emitter-facing `EmitDescriptor`，作为 `sbt/control_semantics.cpp`、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp`、`tools/sbt_ptx.cpp` 与 `sbt/ptx_emit.cpp` supported-path control/emit lowering 的 shared authority。
+  - current：该层还集中维护 emitter-facing `EmitDescriptor`，作为 `sbt/control_semantics.cpp`、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp`、`tools/sbt_ptx.cpp` 与 PTX emitter supported-path control/emit lowering 的 shared authority。
   - 边界：shared metadata 当前内部仍按 mnemonic name 查表并产出 descriptor；这是 current decode 实现细节，而不是 downstream CFG / verify / call-graph / emitter correctness path 的 authority 来源。
   - 新增 Spike-backed 指令的当前同步入口：`data/spike_want.txt` + 本文件；缺任一侧都会在 decode/verify/test 上显式失败。
 
@@ -86,16 +86,22 @@
   - `barrier` 校验：保守策略——`barrier` 所在块不得落在任何“不可证明收敛”的 vbranch 区域内。
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
 
-- `sbt/ptx_emit.hpp` + `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`
+- `sbt/ptx_emit.hpp` + `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{core,runtime,memory,call,builtin,control,scalar,vector,custom,mma_lowering,scalar_fp}.cpp`
   - `emit_module(entry_cfg, sym_by_addr, entry_name, funcs, ptx_name_by_addr, opt)`：输出一个 PTX module，包含 1 个 `.entry <kernel>` + 若干 `.func <callee>`（用于 direct call）。
   - `emit_kernel(...)`：兼容接口（单函数 `.entry`，不含通用 call graph）。
   - current 结构分层：
     - `sbt/ptx_emit.cpp`：public API、`EmitError`、module/function assembly 入口。
-    - `sbt/ptx_emit_internal.hpp`：shared emitter host（`EmitCtx`）、blob ABI/address-mapping helper、prologue/epilogue、dispatcher shared preconditions。
-    - `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`：按 domain 分离的 lowering translation units；dispatcher precedence 固定为 `control -> scalar -> vector -> mma -> custom`。
+    - `sbt/ptx_emit_internal.hpp`：internal shared interface，保留 `EmitCtx` 字段、固定寄存器/ABI 常量、small inline primitive 与 helper declarations，不再承载 runtime/PDS、memory、call ABI、builtin、scalar FP、MMA materialization 的大段实现。
+    - `sbt/ptx_emit_core.cpp`：`EmitCtx` constructor、寄存器声明、function header/body assembly、dispatcher、CFG traversal、fallthrough emission；dispatcher precedence 固定为 `control -> scalar -> vector -> mma -> custom`。
+    - `sbt/ptx_emit_runtime.cpp`：entry/helper prologue、PDS acquire/release、CSR/PDS runtime helper、kernel metadata scalar load。
+    - `sbt/ptx_emit_memory.cpp`：numeric address mapping、typed load/store helper、leader-only scalar store wrapper。
+    - `sbt/ptx_emit_call.cpp`：helper signature、call parameter layout、mutable/machine/runtime blob marshal、direct `.func` call emission。
+    - `sbt/ptx_emit_builtin.cpp`：builtin lookup table、public builtin allowlist、inline builtin dispatch 与 builtin emission bodies；`is_inlined_builtin_call_name()` 与 control lowering 共用同一 lookup。
+    - `sbt/ptx_emit_scalar_fp.cpp`：FP rounding normalization、`fclass` 与 scalar FP lowering。
+    - `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`：按 semantic domain 分离的 lowering translation units；MMA materialization/writeback 实现在 MMA ownership file 中继续复用 `sbt/ptx_mma.*` planner/ABI helper。
   - 关键语义约定（当前主线）：
     - current supported correctness path 已 descriptor-driven：ordinary/control/scalar/vector path 消费 `DecodedInst.emit`，custom non-MMA 消费 `DecodedInst.custom`，MMA 消费 `DecodedInst.mma`；`DecodedInst.name` 不再是 emitter semantic authority。
-    - emitter 中残余 `name` 读取当前只允许出现在 comments / diagnostics / external reporting；该 allowlist 由 `tools/check_ptx_emit_name_allowlist.py` 对 `ptx_emit*.cpp` 与 `ptx_emit_internal.hpp` 静态检查。
+    - emitter 中残余 `name` 读取当前只允许出现在 comments / diagnostics / external reporting；该 allowlist 由 `tools/check_ptx_emit_name_allowlist.py` 对完整 post-split emitter 文件集与 `ptx_emit_internal.hpp` 静态检查，并额外验证 builtin lookup / public allowlist / control dispatch 同步。
     - `setrpc/join/vsetvli`：结构化翻译下视为 no-op（主要用于 Stage2 verify）。
     - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
     - PTX 寄存器 ownership：当前固定 machine/runtime/control 槽位保持 stable，至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`、`%x<256>`、`%v<256>`；`%rd1/%rd3` 仍保留为稳定的 legacy reserved slot，不作为共享 scratch 池重新分配。
@@ -143,7 +149,7 @@
     - `build/instruction_metadata_contract_test`：覆盖 `data/spike_want.txt <-> instruction_metadata.cpp` 同步、Spike-backed decode metadata、CFG build / CFG verify / direct-call scan 的 shared control semantics authority、poison-name 不变性（包括 poisoned non-`ret` `jalr` 仍报告为 `unsupported_jalr`），以及 metadata / control descriptor 缺失时的显式失败。
     - `build/external_mnemonic_contract_test`：覆盖 pretty / JSON / diagnostics / coverage / external builtin symbol 等 external mnemonic contract，确保 authority 迁移后 `DecodedInst.name` 仍稳定服务外部口径。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
-    - `python3 tools/check_ptx_emit_name_allowlist.py`：静态检查 emitter lowering 文件集中的 `name` 读取只剩显式 allowlist 用途。
+    - `python3 tools/check_ptx_emit_name_allowlist.py`：静态检查完整 post-split emitter 文件集中的 `name` 读取只剩显式 allowlist 用途，并检查 builtin lookup / dispatch 单一事实源。
 
 - `tools/rodinia_ptx_smoke.sh`
   - 固定列表：Rodinia 11 个 kernel（compile-first），生成 PTX 并用 `ptxas` 编译。

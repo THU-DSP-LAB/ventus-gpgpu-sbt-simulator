@@ -127,10 +127,18 @@ python3 tools/check_ptx_emit_name_allowlist.py
 - PTX emitter 的 scalar execution classification 现为显式表驱动、默认拒绝未分类项；当前 supported scalar subset 必须逐条声明 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`。
 
 当前 lowering authority / mnemonic contract 口径是：
-- 当前 PTX emitter 已收敛为 `sbt/ptx_emit.cpp`（public API + module assembly）、`sbt/ptx_emit_internal.hpp`（shared core/host contract）以及 `sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`（domain lowering）；current supported correctness path 继续消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
+- 当前 PTX emitter 已收敛为 `sbt/ptx_emit.cpp`（public API、`EmitError`、module assembly）、`sbt/ptx_emit_internal.hpp`（internal shared interface / `EmitCtx` contract）以及按 ownership 拆分的实现单元：
+  - core/function assembly：`sbt/ptx_emit_core.cpp`
+  - runtime/PDS：`sbt/ptx_emit_runtime.cpp`
+  - memory/address mapping：`sbt/ptx_emit_memory.cpp`
+  - call ABI：`sbt/ptx_emit_call.cpp`
+  - builtin lookup/dispatch：`sbt/ptx_emit_builtin.cpp`
+  - domain lowering：`sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`
+  - scalar FP：`sbt/ptx_emit_scalar_fp.cpp`
+  current supported correctness path 继续消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
 - `sbt/control_semantics.cpp`、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与 `tools/sbt_ptx.cpp` 的 current supported control-flow correctness path 都已改为消费 decode 产出的结构化语义；ordinary/custom/MMA 的 emit 语义同样不再由 `DecodedInst.name` 决定。
 - `DecodedInst.name` 当前允许用途限定为 pretty / JSON / diagnostics / coverage / ABI-visible builtin symbol / comments。
-- `tools/check_ptx_emit_name_allowlist.py` 会静态检查 emitter 中残余 `name` 读取是否只剩 allowlist 用途；`build/instruction_metadata_contract_test` 等代表性 supported-path 回归会继续做 control/emitter poison-name 检查，并覆盖 poisoned non-`ret` `jalr` 仍被识别为 `unsupported_jalr`。
+- `tools/check_ptx_emit_name_allowlist.py` 会静态检查拆分后的完整 emitter 文件集中残余 `name` 读取是否只剩 allowlist 用途，并检查 builtin public allowlist 与 inline dispatch 共用同一 lookup；`build/instruction_metadata_contract_test` 等代表性 supported-path 回归会继续做 control/emitter poison-name 检查，并覆盖 poisoned non-`ret` `jalr` 仍被识别为 `unsupported_jalr`。
 - decode 期间的 shared-metadata lookup 当前仍保留内部 name-keyed 查表；但 CFG build / CFG verify / direct-call 闭包扫描已不再把 `DecodedInst.name` 当作控制流 semantic authority。
 - historical 记录分别见 `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence/`、`openspec/changes/archive/2026-04-18-unify-cfg-control-semantics/` 与 `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering/`。
 
