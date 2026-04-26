@@ -43,6 +43,7 @@
 - 当前 PTX 寄存器 ownership 以 `doc/IMPLEMENTATION_CODEMAP.md` 与 `sbt/ptx_emit.cpp` 为准：固定 machine/runtime/control 槽位与函数级 `%tmp*` scratch 已显式分离。
 - `openspec/specs/global-address-space/spec.md`：当前 Global 地址空间 / driver VMM backing 合同。
 - `doc/ADDRESS_SPACE_SPECIALIZATION.md`：当前仍活跃的地址空间专门化问题说明。
+- `doc/mma/SCRATCHLESS_SHUFFLE_LOWERING.md`：当前 committed MMA lowering 的 scratchless shuffle materialization/writeback 实现说明。
 - `openspec/specs/replicated-scalar-state/spec.md`：当前标量状态/分歧/调用合同。
 - `openspec/specs/ptx-call-prototype/spec.md`：当前 helper prototype 合同。
 - `openspec/specs/ptx-lowering-modularity/spec.md`：当前 PTX emitter 模块化结构合同。
@@ -55,6 +56,7 @@
 - current scalar execution classification 以 `openspec/specs/replicated-scalar-state/spec.md` 与 `sbt/instruction_metadata.cpp` 为准；未分类 scalar 当前是显式失败，不存在默认 `UniformPure` fallback。
 - `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`：`active` shared baseline（非 current as-built）；保留 custom split 的共享前提，并继续约束后续 blocked/deferred MMA 扩展的基线选择。
 - `doc/mma/LOWERING_ARCHITECTURE.md`：`active` MMA lowering 架构合同（非 current as-built）；规定 canonical MMA matrix、首批 `row.col` MMA 的分层 lowering 模型、decode metadata contract 和 composite `split-n` 路径，并为后续 blocked/deferred/research family 保留统一架构入口。
+- `doc/mma/SCRATCHLESS_SHUFFLE_LOWERING.md`：`current` MMA scratchless lowering 说明；记录当前 A/B/C tuple materialization、D writeback、full-active-warp precondition 与不再使用 MMA 专用 `.shared` scratch staging 的 as-built 口径。
 
 ## 3. 历史 PTX 设计/规划（已归档）
 

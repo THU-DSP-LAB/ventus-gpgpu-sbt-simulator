@@ -51,6 +51,7 @@ KEEP_WORKDIR="no"
 
 RUN_DIR=""
 TEMP_RUN_DIR=""
+CURRENT_STEP_PGID=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -82,21 +83,79 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
 }
 
+terminate_current_step() {
+  local pgid="${CURRENT_STEP_PGID}"
+  if [[ -z "${pgid}" ]]; then
+    return 0
+  fi
+
+  echo "[INFO] terminating current step process group: ${pgid}" >&2
+  kill -TERM "-${pgid}" 2>/dev/null || true
+  sleep 0.2
+  kill -KILL "-${pgid}" 2>/dev/null || true
+  CURRENT_STEP_PGID=""
+}
+
+handle_signal() {
+  local sig="$1"
+  trap - INT TERM
+  echo "ERROR: interrupted by ${sig}" >&2
+  terminate_current_step
+  case "${sig}" in
+    INT) exit 130 ;;
+    TERM) exit 143 ;;
+    *) exit 1 ;;
+  esac
+}
+
+run_isolated_in_dir() {
+  local cwd="$1"
+  shift
+  need_cmd setsid
+  setsid --wait bash -c 'cd "$1" || exit; shift; exec "$@"' _ "${cwd}" "$@" &
+  local pid=$!
+  local rc=0
+  CURRENT_STEP_PGID="${pid}"
+  if wait "${pid}"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  CURRENT_STEP_PGID=""
+  return "${rc}"
+}
+
+run_step_in_dir() {
+  local name="$1"
+  local cwd="$2"
+  shift 2
+  local start_s end_s rc
+  start_s="$(date +%s)"
+  echo "[RUN] ${name} (cwd=${cwd})"
+  if run_isolated_in_dir "${cwd}" "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  end_s="$(date +%s)"
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "[OK] ${name} ($((end_s - start_s))s)"
+  else
+    echo "[FAIL] ${name} rc=${rc} ($((end_s - start_s))s)" >&2
+  fi
+  return "${rc}"
+}
+
 run_step() {
   local name="$1"
   shift
-  echo "[RUN] $name"
-  "$@"
+  run_step_in_dir "${name}" "$(pwd)" "$@"
 }
 
 run_step_in_root() {
   local name="$1"
   shift
-  echo "[RUN] $name (cwd=${ROOT_DIR})"
-  (
-    cd "${ROOT_DIR}"
-    "$@"
-  )
+  run_step_in_dir "${name}" "${ROOT_DIR}" "$@"
 }
 
 set_workdir_mode() {
@@ -223,6 +282,7 @@ setup_workdir() {
 cleanup_workdir() {
   local rc=$?
   local cleanup_rc=0
+  terminate_current_step
 
   if ! cd "${ORIG_CWD}" >/dev/null 2>&1; then
     echo "ERROR: failed to restore cwd: ${ORIG_CWD}" >&2
@@ -243,6 +303,7 @@ cleanup_workdir() {
   fi
 
   trap - EXIT
+  trap - INT TERM
   if [[ "${rc}" -ne 0 ]]; then
     exit "${rc}"
   fi
@@ -306,14 +367,14 @@ run_custom_non_mma_oracle_gate() {
   need_cmd python3
   need_cmd ptxas
   run_step "custom non-MMA oracle gate (ARCH=${ARCH})" \
-    python3 "${ROOT_DIR}/tools/custom_non_mma_oracle.py" --sm "${ARCH}" --spike-compat-nested-regext
+    python3 -u "${ROOT_DIR}/tools/custom_non_mma_oracle.py" --sm "${ARCH}" --spike-compat-nested-regext
 }
 
 run_custom_mma_oracle_gate() {
   need_cmd python3
   # custom_mma_oracle.py reports per-kernel PASS/BLOCK/FAIL and exits non-zero on any real failure.
   run_step "custom MMA oracle gate (ARCH=${ARCH}, stage=${MMA_STAGE})" \
-    python3 "${ROOT_DIR}/tools/custom_mma_oracle.py" --sm "${ARCH}" --stage "${MMA_STAGE}" --spike-compat-nested-regext
+    python3 -u "${ROOT_DIR}/tools/custom_mma_oracle.py" --sm "${ARCH}" --stage "${MMA_STAGE}" --spike-compat-nested-regext
 }
 
 run_want_consistency() {
@@ -358,18 +419,18 @@ run_e2e_ventus_env() {
   if [[ ! -f "${ventus_root}/regression-test.py" ]]; then
     die "ventus-env regression-test.py not found: ${ventus_root}/regression-test.py (expected ventus-env at ..)"
   fi
-  echo "[RUN] end-to-end (ventus-env/regression-test.py)"
   # ventus-env runner uses -t for timeout scale
-  (
-    cd "${ventus_root}"
-    GPU_SBT_PTX="${BUILD_DIR}/sbt_ptx" VENTUS_BACKEND="${VENTUS_BACKEND:-ptx}" python3 regression-test.py -t "${TIMEOUT_SCALE}" "${args[@]}"
-  )
+  run_step_in_dir "end-to-end (ventus-env/regression-test.py)" "${ventus_root}" \
+    env GPU_SBT_PTX="${BUILD_DIR}/sbt_ptx" VENTUS_BACKEND="${VENTUS_BACKEND:-ptx}" \
+    python3 regression-test.py -t "${TIMEOUT_SCALE}" "${args[@]}"
 }
 
 main() {
   parse_args "$@"
   normalize_arch
   trap cleanup_workdir EXIT
+  trap 'handle_signal INT' INT
+  trap 'handle_signal TERM' TERM
 
   case "${PRESET}" in
     quick|all|e2e) ;;

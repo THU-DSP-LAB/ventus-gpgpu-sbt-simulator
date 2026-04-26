@@ -44,6 +44,7 @@ Current implementation checkpoints:
 - `sbt/riscv_decode.cpp` now includes repository-local MMA decode metadata (`MmaInstInfo`) with explicit support-class partitioning for committed/deferred/research families.
 - dedicated MMA decode and microtest assets are landed (`tools/mma_decode_test.cpp`, `testcases/ocl_compare/custom_mma_kernels.cl`, `tools/custom_mma_oracle.py`).
 - the current landed subset now also includes `m16n8k16 row.col f16 -> f16` and `m16n16k16 row.col f16 -> f16`, using the same layered `VGPR window -> logical coordinates -> PTX native fragment tuple` contract as the rest of the first batch.
+- as of the scratchless materialization update, current committed MMA lowering no longer uses `.shared` scratch staging for tuple construction/writeback. It materializes A/B/C fragments and merges D through `shfl.sync.idx.b32`, fixed candidate register selection, `.f32 -> .b32` bitcasts for f32 shuffle operands, and packed-half merge logic; see `doc/mma/SCRATCHLESS_SHUFFLE_LOWERING.md` for the current as-built note.
 - therefore this document remains an active architecture contract for future deferred/research MMA extension work beyond the landed current subset, rather than a temporary placeholder for a blocked `fp16 -> fp16` path.
 
 ## Design Goals
@@ -420,7 +421,7 @@ For the first batch, only `row.col` variants are committed. Under Spike's
 interpretation, `row.col` means:
 
 - A is row-major: `column_layout = false`
-- B is col-major (expressed as B^T row-major in the `n x k` view): `row_layout = true`
+- B is col-major in the `n x k` view: `row_layout = false`
 
 If later evidence shows the frontend encoding uses a different bit polarity,
 the decoder MUST expose booleans that match Spike's interpretation above (do not
@@ -568,6 +569,14 @@ For direct-native families, `n_slice` is the full native tile.
 For split-`n` families, `n_slice` is either `[0, 7]` or `[8, 15]` in logical
 Ventus coordinates.
 
+Current as-built materialization implements these helpers without MMA-specific
+`.shared` scratch staging. Source window values are gathered by
+`shfl.sync.idx.b32` over fixed candidate `%v(base + i)` registers, and D
+writeback is a destination-side gather from fixed candidate native D tuple regs.
+The MMA path has an explicit full-active-warp precondition: a native MMA sub-op
+traps if `activemask` is not `0xffffffff`, because the shuffle producer lane
+must be a member of the shuffle mask.
+
 This means the implementation is not allowed to have a "direct-native shortcut"
 that bypasses tuple materialization just because the VGPR window sizes happen to
 match the PTX tuple arity. If an optimized identity path is later proven
@@ -617,20 +626,20 @@ Known fully-frozen pieces from Spike:
 
 - The `n`-slice itself (which logical elements belong to which sub-op) is frozen
   by the Layer 2 block rules.
-- For the B window under the first-batch `row.col` layout, the block split is
-  also representable as a contiguous register split:
+- For the B window under the first-batch `row.col` layout, split-`n`
+  materialization keeps the full source carrier window visible to each sub-op:
   - `m16n16*` uses `bRegsPerThread = 4`
-  - each `m16n8*` sub-op uses `bRegsPerThread = 2`
-  - therefore:
-    - sub-op 0 uses `B_tuple = %v(rs2_base + {0,1})`
-    - sub-op 1 uses `B_tuple = %v(rs2_base + {2,3})`
+  - each native `m16n8*` sub-op materializes only its logical `n` slice
+  - both sub-ops therefore read from the full `rs2_base + [0..3]` source window,
+    with `col_offset = 0` or `8` selecting the logical slice
 
 Composite tuple instantiation rules:
 
 - For split-`n`, the implementation must reuse the same native `PtxMmaAbiDesc`
   helpers as the direct-native families, one invocation per `n_slice`.
-- `B_tuple` may be selected by contiguous register-half for the committed
-  first-batch `row.col` forms as described above.
+- `B_tuple` MUST be materialized from the full source carrier window for the
+  committed split-`n` `row.col` forms; the logical `n` slice, not a contiguous
+  source-register shortcut, selects the elements consumed by each sub-op.
 - `C_tuple` materialization and `D_tuple` merge are explicit repack operations
   over the logical `n_slice`, not implicit aliasing of the larger `m16n16*`
   accumulator window.

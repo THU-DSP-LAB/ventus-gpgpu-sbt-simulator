@@ -102,6 +102,7 @@
     - helper scratch：函数内临时值按类型分配到唯一命名 `%tmp*` virtual temp（`.b32/.b64/.pred/.f32/.b16/.u8/.u16`），并在函数头统一 `.reg` 声明；当前阶段不要求通过重排固定槽位编号来引入这套 scratch 策略。
     - 标量（x-reg）live state：采用 replicated active-lane 表示，任何仍然 live 的 `x-reg` / scalar CSR 在当前 active lanes 上都应保持相等。
     - scalar execution classification（current）：由共享 metadata 显式给出 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`；当前 supported scalar subset 中未分类项在进入 lowering 前直接 fail-fast，不再默认视为 `UniformPure`。
+    - MMA lowering（current）：首批 committed `row.col` MMA 子集继续消费 `DecodedInst.mma`、`AbiDesc` 与 `ScalarTupleValue`，但 tuple construction/writeback 已改为 scratchless shuffle path；A/B/C 通过固定候选 `%v(base + i)` 的 `shfl.sync.idx.b32` materialize，D 通过 destination-side gather/merge 写回，f32 D tuple 在 shuffle 前显式 bitcast 到 `.b32`，非 full-active-warp 的 MMA native sub-op 入口直接 `trap`。
     - leader 只在真正需要 single-lane 语义时按需选择：当前主线把 scalar store 等 externally side-effecting 指令降到 leader-only；普通 scalar ALU / branch / CSR read / load 直接 all-lane 执行。
     - 标量条件分支（`beq/bne/blt/bge/bltu/bgeu`）：保持 `bra.uni`，但直接读取 replicated `%x` 比较，不再做 leader-to-all-lane broadcast。
     - fixed-lane-sensitive：`vmv.x.s` 保留 architectural lane 0 语义；若 lane 0 不在当前 active mask 中则显式 `trap`，否则把 lane 0 结果 `shfl.sync` 复制回目标 `%x`。
@@ -257,7 +258,7 @@
 
 - **ELF 约束**：要求 `.symtab` 存在，且函数符号覆盖 kernel 入口；不做 relocation；对 strip/无符号的 ELF 不友好。
 - **指令覆盖**：目标集合为 `VentusInst_basic.txt`（减去 `data/inst_exceptions.txt`）；在 `--require-known` 下遇到 unknown/unsupported 仍 fail-fast。
-- **MMA 边界**：当前 as-built 已支持首批 committed `row.col` MMA 子集（见上文 decode/oracle 入口）；更宽的 MMA matrix、deferred/research families 与剩余架构讨论仍由 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`、`doc/mma/LOWERING_ARCHITECTURE.md` 作为 `active` 文档维护。
+- **MMA 边界**：当前 as-built 已支持首批 committed `row.col` MMA 子集（见上文 decode/oracle 入口）；当前 MMA tuple materialization/writeback 是 scratchless shuffle path，不再使用 MMA 专用 `.shared` scratch staging，具体见 `doc/mma/SCRATCHLESS_SHUFFLE_LOWERING.md`。更宽的 MMA matrix、deferred/research families 与剩余架构讨论仍由 `doc/CUSTOM_INSTRUCTION_SHARED_BASELINE.md`、`doc/mma/LOWERING_ARCHITECTURE.md` 作为 `active` 文档维护。
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
 - **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
 - **ABI/元数据**：当前 `.entry` 参数为 `(global_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`；helper `runtime_env_blob` 也只携带一个 `global_base`。prologue 会按当前 `_start` ABI 初始化 `x2/x3/x4/x8/x10`：`x3(gp)` 来自 ELF `__global_pointer$`，`x2/x8` 使用 `CSR_KNL + KNL_LDS_STACK_SIZE_PER_WF`，`x10(a0)` 来自 `CSR_KNL + KNL_ARG_BASE`；`CSR_PRINT` 当前按 `CSR_KNL + KNL_PRINT_ADDR` 建模。kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿。

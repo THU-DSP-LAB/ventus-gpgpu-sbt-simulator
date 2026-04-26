@@ -136,7 +136,7 @@ python3 tools/check_ptx_emit_name_allowlist.py
 
 当前 custom support surface 已覆盖 repository-local decode + PTX lowering + Spike-backed OpenCL buffer compare 的以下家族：
 - non-MMA：`shuffle`、`vcvt`、packed `f16x2/bf16x2` 算术，以及 `fp32` / packed `f16x2` / packed `bf16x2` SFU。
-- MMA（要求 `.version 7.8` / `sm_89`）：`row.col` 的 `m16n8k16 f16->f16`、`m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f16`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`。其中 `m16n16*` 通过 committed `split-n` composite lowering 落到两个 native `m16n8*` PTX MMA。
+- MMA（要求 `.version 7.8` / `sm_89`）：`row.col` 的 `m16n8k16 f16->f16`、`m16n8k16 f16->f32`、`m16n8k16 bf16->f32`、`m16n8k8 tf32->f32`、`m16n16k16 f16->f16`、`m16n16k16 f16->f32`、`m16n16k16 bf16->f32`、`m16n16k8 tf32->f32`。其中 `m16n16*` 通过 committed `split-n` composite lowering 落到两个 native `m16n8*` PTX MMA；current MMA tuple materialization/writeback 使用 scratchless `shfl.sync.idx.b32` path，不再占用 MMA 专用 `.shared` scratch staging。
 
 当前 `fp16 -> fp16` MMA 已作为 landed current subset 的一部分接入 `sbt_ptx`：
 - direct-native：`m16n8k16 row.col f16->f16`
@@ -166,7 +166,7 @@ tools/regress.sh --preset quick --workdir /tmp/sbtsim-regress
 tools/regress.sh --preset quick --keep-workdir
 ```
 
-`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。默认 `quick/all` 路径会以 `--mma-stage=full` 执行 custom MMA gate，确保当前已支持 MMA family 的 compile-first 与三方语义对照默认纳入统一回归。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。
+`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。默认 `quick/all` 路径会以 `--mma-stage=full` 执行 custom MMA gate，确保当前已支持 MMA family 的 compile-first 与三方语义对照默认纳入统一回归。`all` 是 `quick + e2e`，其中 custom non-MMA oracle 会串行执行 36 个 OpenCL kernel 的 Spike/PTX/compile-first 链路，端到端阶段还会继续运行 PoCL/driver 回归；日常修改优先用 `quick` 或单项 gate 定位问题。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。回归脚本收到 `INT/TERM` 时会终止当前 step 的 process group，避免中断后遗留 `ventus_ocl_run` / compiler 子进程。
 
 ## PoCL/driver 端到端
 ```bash

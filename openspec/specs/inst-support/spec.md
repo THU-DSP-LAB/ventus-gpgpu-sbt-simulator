@@ -321,7 +321,14 @@ For this landed subset, the project MUST:
 - decode the MMA instruction as known through dedicated MMA metadata,
 - emit PTX through the documented native/composite lowering path,
 - pass compile-first validation with `ptxas -arch=sm_89`,
+- enforce the current full-active-warp precondition at every emitted native MMA sub-operation,
 - and pass semantic validation using observable outputs.
+
+The current PTX MMA lowering requires a full active warp for each native MMA
+sub-operation. At the native sub-op entry point, the active mask MUST be
+`0xffffffff`; otherwise the emitted PTX MUST fail explicitly, such as by
+trapping. This precondition applies to both direct-native MMA lowering and each
+native sub-operation inside committed `split-n` composite lowering.
 
 For every current supported MMA family, semantic validation MUST compare observable sbtsim PTX output, observable Spike output, and a repository-managed CPU reference under documented comparison rules:
 
@@ -339,6 +346,12 @@ The current MMA oracle MUST exercise at least one smaller warp-multiple random s
 - **AND THEN** `ptxas -arch=sm_89` succeeds
 - **AND THEN** the observable sbtsim PTX output and Spike output both match the CPU reference under the documented MMA comparison rules
 - **AND THEN** the gate reports both a smaller random batch and a larger random batch for that supported family
+
+#### Scenario: MMA native sub-operation requires a full active warp
+- **GIVEN** a current supported MMA instruction reaches PTX emission
+- **WHEN** the backend emits a direct-native MMA operation or one native sub-operation of a committed `split-n` composite lowering
+- **THEN** the emitted PTX checks that the active mask is `0xffffffff` before the native `mma.sync`
+- **AND THEN** a non-full-active-warp execution fails explicitly instead of silently gathering from inactive producer lanes
 
 ### Requirement: Unsupported or blocked MMA combinations still fail explicitly
 The current landed MMA support MUST remain limited to the first-batch subset above.

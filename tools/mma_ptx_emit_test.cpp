@@ -116,6 +116,15 @@ void expect_native_mma_tuple_line(const std::string &ptx, const std::string &opc
           "native mma tuple line must not depend on legacy fixed fp scratch registers");
 }
 
+void expect_scratchless_mma_shuffle(const std::string &ptx) {
+  require(ptx.find("activemask.b32 %r1;") != std::string::npos, "MMA lowering must check the active warp mask");
+  require(ptx.find(", %r1, 0xffffffff;") != std::string::npos, "MMA lowering must test for non-full-warp execution");
+  require(ptx.find(" trap;") != std::string::npos, "MMA lowering must trap on invalid warp/mapping conditions");
+  require(ptx.find("shfl.sync.idx.b32 %tmp_b32_") != std::string::npos, "MMA lowering must use shuffle-based tuple materialization");
+  require(ptx.find("ld.shared.u32 %tmp_b32_") == std::string::npos, "MMA lowering must not use temp-address shared loads");
+  require(ptx.find("st.shared.u32 [%tmp_b64_") == std::string::npos, "MMA lowering must not use temp-address shared stores");
+}
+
 void compile_with_ptxas(const std::string &stem, const std::string &ptx) {
   const auto ptx_path = std::filesystem::temp_directory_path() / (stem + ".ptx");
   const auto cubin_path = std::filesystem::temp_directory_path() / (stem + ".cubin");
@@ -248,7 +257,7 @@ int main() {
                                 make_endprg(0x80004004u)}));
     require(ptx.find("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16") != std::string::npos, "missing fp16 native opcode");
     require(ptx.find(".reg .b32 %tmp_b32_0;") != std::string::npos, "missing fp16 mma b32 temp declaration");
-    require(ptx.find(".reg .b64 %tmp_b64_0;") != std::string::npos, "missing fp16 mma b64 temp declaration");
+    expect_scratchless_mma_shuffle(ptx);
     expect_native_mma_tuple_line(ptx, "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16", 10u, 0u);
     compile_with_ptxas("mma_ptx_emit_test_fp16_native", ptx);
   }
@@ -262,6 +271,7 @@ int main() {
     require(ptx.find("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32") != std::string::npos, "missing expected mma.sync opcode in PTX");
     require(ptx.find(".reg .f32 %tmp_f32_0;") != std::string::npos, "missing fp32 mma f32 temp declaration");
     require(ptx.find(".reg .b32 %tmp_b32_0;") != std::string::npos, "missing fp32 mma b32 temp declaration");
+    expect_scratchless_mma_shuffle(ptx);
     expect_native_mma_tuple_line(ptx, "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32", 6u, 8u);
     compile_with_ptxas("mma_ptx_emit_test_fp32_native", ptx);
   }
@@ -276,6 +286,7 @@ int main() {
             "split-n fp32 lowering must emit exactly two native m16n8k16 ops");
     require(ptx.find("%tmp_b32_") != std::string::npos && ptx.find("%tmp_f32_") != std::string::npos,
             "split-n fp32 lowering should rely on virtual temps");
+    expect_scratchless_mma_shuffle(ptx);
     compile_with_ptxas("mma_ptx_emit_test_fp32_split_n", ptx);
   }
 
@@ -288,6 +299,7 @@ int main() {
     require(count_substr(ptx, "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16") == 2u,
             "split-n fp16 lowering must emit exactly two native m16n8k16 ops");
     require(ptx.find("%tmp_b32_") != std::string::npos, "split-n fp16 lowering should rely on virtual temps");
+    expect_scratchless_mma_shuffle(ptx);
     compile_with_ptxas("mma_ptx_emit_test_fp16_split_n", ptx);
   }
 

@@ -33,6 +33,8 @@
   - current：默认 `--mma-stage=full`，确保统一回归默认覆盖当前已支持 MMA family 的 compile-first 与三方 semantic gate
   - 端到端阶段会强制使用当前树的 `build/sbt_ptx` 作为 `GPU_SBT_PTX`
   - `--mma-stage` 控制 `custom_mma_oracle.py` 阶段，默认 `full`
+  - `all` preset 等价于 `quick + e2e`；其中 custom non-MMA oracle 会串行执行 36 个 OpenCL kernel 的 Spike/PTX/compile-first 链路，属于分钟级 gate
+  - current：每个 step 在独立 process group 中执行并打印耗时；收到 `INT/TERM` 时会终止当前 step 的子进程树，避免中断后遗留 `ventus_ocl_run` / compiler 进程
 - `rodinia_ptx_smoke.sh`：Rodinia compile-first smoke（PTX + ptxas）
 - `pds_ptx_smoke.sh`：PDS 参数、single-Global entry ABI 与 PTX 映射 smoke
 - `microtest_coverage_gate.sh`：Spike-vs-PTX 微测例 + 覆盖 gate 入口
