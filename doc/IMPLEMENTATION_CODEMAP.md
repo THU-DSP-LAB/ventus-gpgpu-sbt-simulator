@@ -121,7 +121,7 @@
     - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
       - `.entry` 参数包含 `pds_base_vaddr/pds_size_per_thread/pds_bitmap_base_vaddr/pds_pool_num_blocks`；
       - prologue 以 block 级原子方式从 bitmap 申请 PDS block，写入 shared；
-      - `CSR_PDS = wg_pds_base + warp_id_in_block * (32 * pds_size_per_thread)`；
+      - `CSR_PDS = wg_pds_base`，私有访问地址为 `CSR_PDS + align4(offset) * numw * 32 + (warp_id_in_block * 32 + lane) * 4`；
       - 再通过统一的数值地址映射 helper 落到 `.global` 访问。
   - 调用（call）：
     - 一小部分 builtin 仍在 emitter 内按 ABI-visible symbol 内联（OpenCL id/query + 少量 helper）；symbol identity 与 verifier summary 由 `sbt/builtin_semantics.*` 共享维护。

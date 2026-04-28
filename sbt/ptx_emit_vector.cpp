@@ -8,8 +8,11 @@ static bool try_emit_vector_memory_and_register(EmitCtx &ctx, const sbt::Decoded
   if (is_vector_memory(di, MemAccessKind::Load, MemoryAddrKind::Pds) && di.imm_kind == sbt::ImmKind::I12) {
     ctx.emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
     ctx.emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
+    ctx.emit_line("mul.lo.u32 " + r(15) + ", " + r(15) + ", " + r(12) + ";");
     ctx.emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
-    ctx.emit_line("shl.b32 " + r(16) + ", " + r(0) + ", 2;");
+    ctx.emit_line("shl.b32 " + r(16) + ", " + r(10) + ", 5;");
+    ctx.emit_line("add.u32 " + r(16) + ", " + r(16) + ", " + r(0) + ";");
+    ctx.emit_line("shl.b32 " + r(16) + ", " + r(16) + ", 2;");
     ctx.emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
     ctx.emit_compute_csr_pds_u32(r(24), /*scalar=*/false);
     ctx.emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
@@ -20,8 +23,11 @@ static bool try_emit_vector_memory_and_register(EmitCtx &ctx, const sbt::Decoded
   if (is_vector_memory(di, MemAccessKind::Store, MemoryAddrKind::Pds) && di.imm_kind == sbt::ImmKind::S12) {
     ctx.emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
     ctx.emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
+    ctx.emit_line("mul.lo.u32 " + r(15) + ", " + r(15) + ", " + r(12) + ";");
     ctx.emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
-    ctx.emit_line("shl.b32 " + r(16) + ", " + r(0) + ", 2;");
+    ctx.emit_line("shl.b32 " + r(16) + ", " + r(10) + ", 5;");
+    ctx.emit_line("add.u32 " + r(16) + ", " + r(16) + ", " + r(0) + ";");
+    ctx.emit_line("shl.b32 " + r(16) + ", " + r(16) + ", 2;");
     ctx.emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
     ctx.emit_compute_csr_pds_u32(r(24), /*scalar=*/false);
     ctx.emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");

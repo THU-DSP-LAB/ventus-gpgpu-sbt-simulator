@@ -7,7 +7,7 @@
 | CSR_WGID  | 0x804 | 该 SM 中本 warp 对应的 workgroup id                                               |
 | CSR_WID   | 0x805 | 该 workgroup 中本 warp 对应的 warp id                                             |
 | CSR_LDS   | 0x806 | 该 workgroup 分配的 local memory 的 baseaddr，同时也是该 warp 的 xgpr spill stack 基址    |
-| CSR_PDS   | 0x807 | 该 workgroup 分配的 private memory 的 baseaddr，同时是该 thread 的 vgpr spill stack 基址 |
+| CSR_PDS   | 0x807 | 该驻留 workgroup PDS 槽位的 private memory baseaddr；私有向量指令用 CSR_NUMW/CSR_NUMT/CSR_TID 做 workgroup 级交错寻址 |
 | CSR_GDX   | 0x808 | 该 workgroup 在 NDRange 中的 x id                                               |
 | CSR_GDY   | 0x809 | 该 workgroup 在 NDRange 中的 y id                                               |
 | CSR_GDZ   | 0x80a | 该 workgroup 在 NDRange 中的 z id                                               |

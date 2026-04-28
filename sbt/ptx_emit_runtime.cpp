@@ -26,13 +26,7 @@ void EmitCtx::emit_trap_if_lane_inactive(uint32_t lane) {
 
 void EmitCtx::emit_compute_csr_pds_u32(const std::string &dst_r, bool scalar) {
   const std::string pre = scalar ? scalar_prefix() : "";
-  const std::string wg_base = tmp_b32();
-  const std::string bytes_per_wave = tmp_b32();
-  const std::string wave_offset = tmp_b32();
-  emit_line(pre + "ld.shared.u32 " + wg_base + ", [__sbt_pds_wg_base];");
-  emit_line(pre + "shl.b32 " + bytes_per_wave + ", " + r(29) + ", 5;");
-  emit_line(pre + "mul.lo.u32 " + wave_offset + ", " + r(10) + ", " + bytes_per_wave + ";");
-  emit_line(pre + "add.u32 " + dst_r + ", " + wg_base + ", " + wave_offset + ";");
+  emit_line(pre + "ld.shared.u32 " + dst_r + ", [__sbt_pds_wg_base];");
 }
 
 void EmitCtx::emit_entry_pds_pool_acquire(uint32_t pc_for_err) {
