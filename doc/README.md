@@ -50,7 +50,7 @@
 - `openspec/specs/ptx-temp-register-allocation/spec.md`：当前 PTX scratch ownership / `%tmp*` virtual temp 合同。
 - `openspec/specs/inst-support/spec.md`：当前指令支持与验证合同。
 - current Spike-backed 指令形态 / uniform-transfer metadata 以 `openspec/specs/inst-support/spec.md` 与 `sbt/instruction_metadata.cpp` 为准。
-- current name-dependence 边界以 `doc/IMPLEMENTATION_CODEMAP.md`、`openspec/specs/inst-support/spec.md` 与 `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence/inventory.md` 共同记录：current main-pipeline control-flow authority 已从 CFG / verify / direct-call scan 中移除，remaining internal name-keyed site 主要是 decode/shared-metadata lookup 的实现组织；emitter domain 结构收敛的 historical 记录见 `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering/`，当前 active refinement 为 `openspec/changes/split-ptx-emit-internal-core/`。
+- current name-dependence 边界以 `doc/IMPLEMENTATION_CODEMAP.md`、`openspec/specs/inst-support/spec.md` 与 `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence/inventory.md` 共同记录：current main-pipeline control-flow authority 已从 CFG / verify / direct-call scan 中移除，remaining internal name-keyed site 主要是 decode/shared-metadata lookup 的实现组织；emitter domain 结构收敛的 historical 记录见 `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering/`，internal implementation ownership 收敛的 historical 记录见 `openspec/changes/archive/2026-04-28-split-ptx-emit-internal-core/`。
 - `openspec/specs/sbt-rodinia-bringup/spec.md`：当前 Rodinia bring-up / fail-fast 边界。
 - `openspec/specs/build-time-spike-pattern-subset/spec.md`：当前 Spike pattern 子集生成合同。
 - current scalar execution classification 以 `openspec/specs/replicated-scalar-state/spec.md` 与 `sbt/instruction_metadata.cpp` 为准；未分类 scalar 当前是显式失败，不存在默认 `UniformPure` fallback。
