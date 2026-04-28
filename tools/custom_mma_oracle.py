@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
 """
 背景
-- custom MMA 首批 `row.col` 子集已经成为 current 行为；当前回归需要把所有已支持 family 统一到同一条
-  `sbtsim / Spike / CPU reference` 三方语义检查路径上。
-- 旧 gate 把 non-`fp16 -> fp16` family 留在 Spike-vs-PTX 二方比较，并保留了单独的 `spike-precheck`
-  stage；这会让 current MMA oracle 强度不一致，也让 sample 多样性不足。
+- custom MMA 首批 `row.col` 子集已经成为 current 行为；统一回归需要覆盖 compile-first 与三方语义检查。
 
 需求/作用
 - 执行 `testcases/ocl_compare/custom_mma_kernels.cl` 的 MMA microtest family。
-- 支持两档 gate：
-  1) `compile-first`：materialize ELF 后运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`；
-  2) `full`：在 compile-first 基础上，对所有已支持 MMA family 执行 `Spike / sbtsim PTX / CPU reference`
-     三方一致性检查，并覆盖至少一个较小样本和一个稍大样本。
-- 不做静默降级：任何启用的步骤失败都显式报 `FAIL`；blocked family 必须显式报 `BLOCK`。
+- `compile-first` 跑 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`；`full` 增加 `Spike / sbtsim PTX / CPU reference`。
+- 不做静默降级：失败显式报 `FAIL`；blocked family 显式报 `BLOCK`；工具链/Spike 缺 feature 时显式报 `SKIP`。
 
 用法
 - `python3 tools/custom_mma_oracle.py`
@@ -22,10 +16,7 @@
 实现原理/处理步骤
 1) 为每个 kernel materialize 单-kernel OpenCL 源文件，并先通过一次 Spike 运行生成 `object0.riscv`。
 2) 对当前 kernel 运行 `sbt_decode --require-known`、`sbt_ptx --require-known` 与 `ptxas`。
-3) 若为 supported family 且 stage=`full`，则对多组随机有限值样本分别执行：
-   - Spike 输出 vs CPU reference
-   - sbtsim PTX 输出 vs CPU reference
-4) blocked family 只验证 compile-first 阶段继续显式 blocked。
+3) `full` 阶段对多组随机有限值样本执行 Spike/PTX vs CPU reference；blocked family 只验证显式 blocked。
 """
 
 from __future__ import annotations
@@ -39,6 +30,8 @@ import subprocess
 import tempfile
 
 import mma_cpu_ref as mma_ref
+from ventus_feature_probe import format_text as format_feature_text
+from ventus_feature_probe import probe_features_for_env_sh
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -106,6 +99,11 @@ def parse_args() -> argparse.Namespace:
         "--spike-compat-nested-regext",
         action="store_true",
         help="对本 gate 内部调用的 sbt_decode/sbt_ptx 与 PTX backend 显式打开 Spike-compatible nested regext 兼容模式",
+    )
+    ap.add_argument(
+        "--no-auto-skip-features",
+        action="store_true",
+        help="禁用 Ventus MMA toolchain/Spike 能力检测；缺失能力将按原始执行路径显式失败",
     )
     return ap.parse_args()
 
@@ -253,6 +251,25 @@ def ensure_required_paths(args: argparse.Namespace) -> tuple[Path, Path, Path, P
     return exe, sbt_decode, sbt_ptx, src, env_sh
 
 
+def should_skip_mma_gate(args: argparse.Namespace, env_sh: Path) -> bool:
+    if args.no_auto_skip_features:
+        return False
+    statuses = probe_features_for_env_sh(("mma",), env_sh)
+    status = statuses["mma"]
+    print(f"[FEATURE] {format_feature_text(status)}")
+    if status.available:
+        return False
+    skipped = len(KERNELS)
+    print(f"SKIP custom MMA oracle gate feature=mma skipped_kernels={skipped}")
+    print(
+        "[SUMMARY] "
+        f"compile_pass=0/{len(SUPPORTED_KERNELS)} compile_block=0 "
+        "full_pass=0/0 full_block_skip=0 failures=0 "
+        f"feature_skip={skipped}"
+    )
+    return True
+
+
 def bootstrap_spike_case(
     *,
     kernel_name: str,
@@ -369,6 +386,8 @@ def main() -> int:
     sizes = validate_sizes(args.stage, args.sizes)
     cases = build_cases(sizes, args.seed)
     exe, sbt_decode, sbt_ptx, src, env_sh = ensure_required_paths(args)
+    if should_skip_mma_gate(args, env_sh):
+        return 0
     sm_num = normalize_sm(args.sm)
 
     print(f"[INFO] MMA oracle stage={args.stage} sm=sm_{sm_num} sizes={','.join(str(case.n) for case in cases)} seed=0x{args.seed:08x}")

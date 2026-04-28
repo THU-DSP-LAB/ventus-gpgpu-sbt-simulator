@@ -160,6 +160,11 @@
   - 默认切换到临时工作目录执行并在退出时清理，避免污染调用目录；可通过 `--in-place/--workdir/--keep-workdir` 覆盖。
   - 端到端阶段会显式导出 `GPU_SBT_PTX=<repo>/build/sbt_ptx`，确保回归验证的是当前工作树刚构建出的翻译器，而不是 `install/bin` 中可能滞后的安装副本。
 
+- `tools/ventus_feature_probe.py`
+  - current custom OpenCL 语义 gate 的能力探针：oracle 默认按所选 `--env-sh` 实际导出的 `VENTUS_INSTALL_PREFIX/bin/clang` 检查对应 Ventus builtin，同时检查同一 ventus root 下 `spike/riscv/encoding.h`、`spike/riscv/insns/` 与 MMA/SFU 所需 `dependencies/mma-sim` / `dependencies/unfu`。
+  - 覆盖 feature：MMA、Shuffle、SFU、VCVT、packed `f16x2/bf16x2`。探针只给出 available/unavailable 与缺失证据，不生成 mock 成功路径。
+  - `custom_mma_oracle.py` 与 `custom_non_mma_oracle.py` 默认消费该探针结果；缺失 feature 时显式打印 `[FEATURE]` 与 `SKIP`，可用 feature 继续真实执行。
+
 - `tools/ventus_regression_profile.py`
   - 调 `make` + 跑 ventus-env 下的 PoCL/Rodinia/testcases（端到端），统计每个 testcase 的 compile/run/total wall time，并可收集 `sbt_ptx` profile jsonl。
   - 说明：依赖 `ventus-env` 目录存在，且测试列表是硬编码 `TestCase` 数组。
@@ -196,7 +201,11 @@
     - packed `f16x2` / `bf16x2` SFU：按半精度 lane 容差比较。
   - current：shuffle 类 microtest 会在 oracle 中强制以完整 32-lane warp 规模执行，避免 `n < 32` 时因 runner 把 local size 降成 1 而引入伪失败。
   - current：若当前 custom kernel 编译产物出现连续 `regext/regexti` 指向同一条真实指令，oracle gate 通过显式 `--spike-compat-nested-regext` 仅对该验证链打开 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`；`sbt_decode/sbt_ptx` 默认行为仍保持 fail-fast。
+  - current：默认按 `tools/ventus_feature_probe.py` 的检测结果只运行当前工具链/Spike 已支持的 feature；缺失 feature 逐 kernel 打印 `SKIP` 与原因。`--no-auto-skip-features` 可关闭该行为以暴露原始编译/执行错误。
   - 当前 packed SFU microtests 使用 raw packed 输入文件驱动；这是刻意将 “packed 输入构造” 与 “SFU 指令语义” 解耦，避免被 `vcvt_*_fp32 + pack_*x2` 的独立 contract 问题污染结论。
+
+- `tools/custom_non_mma_specs.py`
+  - current custom non-MMA oracle 的 kernel 清单与比较模式数据；用于把测试数据维护从 `custom_non_mma_oracle.py` 的执行编排中拆出。
 
 - `tools/mma_decode_test.cpp`
   - current MMA decode gate，覆盖 `MmaInstInfo`、support-class 边界与首批 committed/deferred/research family 的 repository-local decode 元数据。
@@ -211,6 +220,7 @@
   - current：helper carrier 采用 branch-free 的有限值查表，刻意避免把与 MMA 无关的 `switch -> vbranch/join` helper lowering 差异误报成 MMA 语义失败。
   - current：gate 会先按目标 feature macro materialize 单-kernel 源文件，避免 Ventus PoCL 在多-kernel OpenCL 源上把首个 kernel 错当成 `--init` 入口。
   - current：所有已支持 MMA family 都走 `Spike vs sbtsim PTX vs CPU reference` 三方 gate；默认覆盖一组较小随机样本和一组较大随机样本。其余 non-current MMA family 继续显式 blocked。
+  - current：默认按 `tools/ventus_feature_probe.py` 的 MMA 检测结果决定是否运行 OpenCL 语义 gate；缺失 feature 时打印 `SKIP custom MMA oracle gate` 与缺失证据。`--no-auto-skip-features` 可关闭该行为以暴露原始编译/执行错误。
 
 - `tools/mma_cpu_ref.py`
   - current MMA 共享 CPU reference helper，覆盖当前已支持的 8 条 MMA family。

@@ -28,8 +28,16 @@ import shlex
 import struct
 import subprocess
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
+
+from custom_non_mma_specs import KERNELS
+from custom_non_mma_specs import SHUFFLE_KERNELS
+from custom_non_mma_specs import WARP_LANES
+from custom_non_mma_specs import KernelSpec
+from ventus_feature_probe import NON_MMA_FEATURES
+from ventus_feature_probe import custom_non_mma_kernel_feature
+from ventus_feature_probe import format_text as format_feature_text
+from ventus_feature_probe import probe_features_for_env_sh
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -122,60 +130,23 @@ def maybe_prefix_nested_regext_env(cmd: str, enabled: bool) -> str:
     return f"SBT_COMPAT_SPIKE_NESTED_REGEXT=1 {cmd}"
 
 
-@dataclass(frozen=True)
-class KernelSpec:
-    name: str
-    mode: str
+def select_kernels_by_feature(auto_skip: bool, env_sh: Path) -> tuple[list[KernelSpec], int]:
+    if not auto_skip:
+        return list(KERNELS), 0
+    statuses = probe_features_for_env_sh(NON_MMA_FEATURES, env_sh)
+    for feature in NON_MMA_FEATURES:
+        print(f"[FEATURE] {format_feature_text(statuses[feature])}")
 
-
-SHUFFLE_KERNELS = {
-    "mt_custom_shuffle_idx",
-    "mt_custom_shuffle_up",
-    "mt_custom_shuffle_down",
-    "mt_custom_shuffle_bfly",
-}
-
-WARP_LANES = 32
-
-
-KERNELS: list[KernelSpec] = [
-    KernelSpec("mt_custom_shuffle_idx", "exact_u32"),
-    KernelSpec("mt_custom_shuffle_up", "exact_u32"),
-    KernelSpec("mt_custom_shuffle_down", "exact_u32"),
-    KernelSpec("mt_custom_shuffle_bfly", "exact_u32"),
-    KernelSpec("mt_custom_vcvt_fp16_roundtrip", "exact_u32"),
-    KernelSpec("mt_custom_vcvt_bf16_roundtrip", "exact_u32"),
-    KernelSpec("mt_custom_vadd_f16x2", "exact_u32"),
-    KernelSpec("mt_custom_vmul_f16x2", "exact_u32"),
-    KernelSpec("mt_custom_vfma_f16x2", "exact_u32"),
-    KernelSpec("mt_custom_vadd_bf16x2", "exact_u32"),
-    KernelSpec("mt_custom_vmul_bf16x2", "exact_u32"),
-    KernelSpec("mt_custom_vfma_bf16x2", "exact_u32"),
-    KernelSpec("mt_custom_vex2_f32", "f32_tol"),
-    KernelSpec("mt_custom_vlg2_f32", "f32_tol"),
-    KernelSpec("mt_custom_vrcp_f32", "f32_tol"),
-    KernelSpec("mt_custom_vsqrt_f32", "f32_tol"),
-    KernelSpec("mt_custom_vrsqrt_f32", "f32_tol"),
-    KernelSpec("mt_custom_vsin_f32", "f32_tol"),
-    KernelSpec("mt_custom_vcos_f32", "f32_tol"),
-    KernelSpec("mt_custom_vtanh_f32", "f32_tol"),
-    KernelSpec("mt_custom_vgelu_f32", "f32_tol"),
-    KernelSpec("mt_custom_vsilu_f32", "f32_tol"),
-    KernelSpec("mt_custom_vex2_f16x2", "packed_f16_tol"),
-    KernelSpec("mt_custom_vrcp_f16x2", "packed_f16_tol"),
-    KernelSpec("mt_custom_vsqrt_f16x2", "packed_f16_tol"),
-    KernelSpec("mt_custom_vrsqrt_f16x2", "packed_f16_tol"),
-    KernelSpec("mt_custom_vtanh_f16x2", "packed_f16_tol"),
-    KernelSpec("mt_custom_vgelu_f16x2", "packed_f16_tol"),
-    KernelSpec("mt_custom_vsilu_f16x2", "packed_f16_tol"),
-    KernelSpec("mt_custom_vex2_bf16x2", "packed_bf16_tol"),
-    KernelSpec("mt_custom_vrcp_bf16x2", "packed_bf16_tol"),
-    KernelSpec("mt_custom_vsqrt_bf16x2", "packed_bf16_tol"),
-    KernelSpec("mt_custom_vrsqrt_bf16x2", "packed_bf16_tol"),
-    KernelSpec("mt_custom_vtanh_bf16x2", "packed_bf16_tol"),
-    KernelSpec("mt_custom_vgelu_bf16x2", "packed_bf16_tol"),
-    KernelSpec("mt_custom_vsilu_bf16x2", "packed_bf16_tol"),
-]
+    selected: list[KernelSpec] = []
+    skipped = 0
+    for spec in KERNELS:
+        feature = custom_non_mma_kernel_feature(spec.name)
+        if statuses[feature].available:
+            selected.append(spec)
+            continue
+        skipped += 1
+        print(f"SKIP kernel={spec.name} feature={feature} reason=feature-unavailable")
+    return selected, skipped
 
 
 def compare_exact_u32(name: str, got: list[int], exp: list[int]) -> None:
@@ -378,6 +349,11 @@ def main() -> int:
         action="store_true",
         help="对本 gate 内部调用的 sbt_decode/sbt_ptx 与 PTX backend 显式打开 Spike-compatible nested regext 兼容模式",
     )
+    ap.add_argument(
+        "--no-auto-skip-features",
+        action="store_true",
+        help="禁用 Ventus custom non-MMA toolchain/Spike 能力检测；缺失能力将按原始执行路径显式失败",
+    )
     args = ap.parse_args()
 
     exe = args.exe.resolve()
@@ -391,10 +367,17 @@ def main() -> int:
         if not p.exists():
             raise SystemExit(f"missing required path: {p}")
 
+    selected_kernels, feature_skip = select_kernels_by_feature(not args.no_auto_skip_features, env_sh)
+    if not selected_kernels:
+        print(f"[SUMMARY] pass=0 skipped={feature_skip} failures=0")
+        print("SKIP custom non-MMA oracle gate reason=no-available-feature-kernels")
+        return 0
+
+    pass_count = 0
     with tempfile.TemporaryDirectory(prefix="custom_non_mma_oracle_") as td:
         workdir = Path(td)
         compat_nested_hits: list[str] = []
-        for spec in KERNELS:
+        for spec in selected_kernels:
             out_spike = workdir / f"{spec.name}.spike.bin"
             out_ptx = workdir / f"{spec.name}.ptx.bin"
             ptx_path = workdir / f"{spec.name}.ptx"
@@ -486,11 +469,13 @@ def main() -> int:
                 raise RuntimeError(f"unknown compare mode: {spec.mode}")
 
             print(f"PASS kernel={spec.name} mode={spec.mode} sm=sm_{sm_num}")
+            pass_count += 1
 
         if compat_nested_hits:
             uniq = ", ".join(dict.fromkeys(compat_nested_hits))
             print(f"NOTE nested regext compat used for kernels: {uniq}")
 
+    print(f"[SUMMARY] pass={pass_count} skipped={feature_skip} failures=0")
     print("PASS custom non-MMA oracle gate")
     return 0
 

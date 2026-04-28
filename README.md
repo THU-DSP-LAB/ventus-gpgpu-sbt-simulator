@@ -174,7 +174,7 @@ tools/regress.sh --preset quick --workdir /tmp/sbtsim-regress
 tools/regress.sh --preset quick --keep-workdir
 ```
 
-`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。默认 `quick/all` 路径会以 `--mma-stage=full` 执行 custom MMA gate，确保当前已支持 MMA family 的 compile-first 与三方语义对照默认纳入统一回归。`all` 是 `quick + e2e`，其中 custom non-MMA oracle 会串行执行 36 个 OpenCL kernel 的 Spike/PTX/compile-first 链路，端到端阶段还会继续运行 PoCL/driver 回归；日常修改优先用 `quick` 或单项 gate 定位问题。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。回归脚本收到 `INT/TERM` 时会终止当前 step 的 process group，避免中断后遗留 `ventus_ocl_run` / compiler 子进程。
+`tools/regress.sh` 默认切换到临时目录执行，并在退出后自动删除目录，避免在当前路径残留 `mt_*`、`object0.*` 等中间文件。默认 `quick/all` 路径会以 `--mma-stage=full` 执行 custom MMA gate，确保当前已支持 MMA family 的 compile-first 与三方语义对照默认纳入统一回归。`custom_mma_oracle.py` 与 `custom_non_mma_oracle.py` 会先通过 `tools/ventus_feature_probe.py` 检测所选 `--env-sh` 对应的 `VENTUS_INSTALL_PREFIX/bin/clang` 与同一 ventus root 下的 `spike` 是否支持 MMA / Shuffle / SFU / VCVT / packed custom 指令；缺失时按 feature 显式打印 `[FEATURE]` 与 `SKIP`，只跳过依赖缺失 feature 的 OpenCL 语义 gate，不影响 decode/emit、Rodinia compile-first、PDS 与普通 microtest gate。`all` 是 `quick + e2e`，其中 custom non-MMA oracle 在 feature 可用时会串行执行 36 个 OpenCL kernel 的 Spike/PTX/compile-first 链路，端到端阶段还会继续运行 PoCL/driver 回归；日常修改优先用 `quick` 或单项 gate 定位问题。端到端 preset 会显式把 `GPU_SBT_PTX` 绑定到当前工作树的 `build/sbt_ptx`，避免误用 `../install/bin/sbt_ptx` 的旧安装产物。回归脚本收到 `INT/TERM` 时会终止当前 step 的 process group，避免中断后遗留 `ventus_ocl_run` / compiler 子进程。
 
 ## PoCL/driver 端到端
 ```bash
@@ -230,6 +230,9 @@ tools/microtest_coverage_gate.sh --atol 1e-4 --rtol 1e-4
 # shuffle 类 microtest 需要完整 warp 条件；custom_non_mma_oracle.py 会自动把它们提升到 32-lane 执行。
 # 当前 custom kernels 若出现连续 regext/regexti 前缀，需显式打开 Spike-compatible nested-prefix 兼容模式。
 python3 tools/custom_non_mma_oracle.py --n 8 --spike-compat-nested-regext
+
+# 检查当前工具链/Spike 是否支持 custom 回归所需 feature；缺失原因会逐项列出。
+python3 tools/ventus_feature_probe.py --summary
 
 # fp16 MMA 的 Spike-vs-CPU-reference 独立语义测例：
 # host 随机 seed -> kernel 内有限 fp16 值映射；用于与当前全 MMA gate 共享 CPU reference 口径
