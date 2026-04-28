@@ -1,3 +1,4 @@
+#include "sbt/builtin_semantics.hpp"
 #include "sbt/cfg_verify.hpp"
 #include "sbt/control_semantics.hpp"
 
@@ -96,6 +97,8 @@ public:
       w_[wi] &= ~(1ULL << bi);
   }
 
+  void clear_all() { w_.fill(0ULL); }
+
   VRegSet &operator&=(const VRegSet &o) {
     for (size_t i = 0; i < w_.size(); ++i)
       w_[i] &= o.w_[i];
@@ -177,6 +180,68 @@ static void transfer_vreg_uniform(VRegSet &st, const BundleInst &bi) {
   }
 
   st.set(vd, uniform);
+}
+
+static bool builtin_summary_write_is_uniform(const VRegSet &pre,
+                                             const VectorWriteSummary &write) {
+  switch (write.transfer) {
+  case BuiltinUniformTransfer::WorkGroupUniform:
+    return true;
+  case BuiltinUniformTransfer::WorkItemVarying:
+    return false;
+  case BuiltinUniformTransfer::SameAsInputs:
+    for (int src : write.input_vregs) {
+      if (!pre.test(src))
+        return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+static void apply_builtin_summary(VRegSet &st, const BuiltinSummary &summary) {
+  const VRegSet pre = st;
+  for (const auto &write : summary.vector_writes) {
+    st.set(write.dst_vreg, builtin_summary_write_is_uniform(pre, write));
+  }
+}
+
+static void transfer_vreg_uniform(VRegSet &st, const BundleInst &bi,
+                                  const VerifyOptions &options) {
+  const auto semantics = sbt::control::classify(bi);
+  if (!semantics.is_direct_call) {
+    transfer_vreg_uniform(st, bi);
+    return;
+  }
+
+  if (semantics.direct_target < 0 ||
+      semantics.direct_target > 0xffff'ffffll ||
+      options.sym_by_addr == nullptr) {
+    st.clear_all();
+    return;
+  }
+
+  const uint32_t target = static_cast<uint32_t>(semantics.direct_target);
+  const auto sym_it = options.sym_by_addr->find(target);
+  if (sym_it == options.sym_by_addr->end()) {
+    st.clear_all();
+    return;
+  }
+
+  const std::string &callee = sym_it->second;
+  const auto builtin = sbt::lookup_builtin_call(callee);
+  if (!builtin) {
+    st.clear_all();
+    return;
+  }
+
+  const auto summary = sbt::builtin_summary_for(*builtin);
+  if (!summary) {
+    throw std::runtime_error("builtin semantic metadata drift for inlined "
+                             "builtin '" +
+                             callee + "'");
+  }
+  apply_builtin_summary(st, *summary);
 }
 
 struct Graph final {
@@ -320,7 +385,8 @@ struct VRegUniformData final {
 
 static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg,
                                                  const Graph &g,
-                                                 uint32_t entry) {
+                                                 uint32_t entry,
+                                                 const VerifyOptions &options) {
   const size_t n = g.nodes.size();
   VRegUniformData d;
   d.in.resize(n, VRegSet::empty());
@@ -352,7 +418,7 @@ static VRegUniformData compute_vreg_uniform_must(const FunctionCfg &cfg,
       return st;
     const auto &bb = cfg.blocks[it->second];
     for (size_t inst_i : bb.inst_indices) {
-      transfer_vreg_uniform(st, cfg.insts[inst_i]);
+      transfer_vreg_uniform(st, cfg.insts[inst_i], options);
     }
     return st;
   };
@@ -469,7 +535,8 @@ static bool has_barrier_in_region(uint32_t barrier_block, const Graph &g,
 } // namespace
 
 FunctionVerifyResult verify_function(const FunctionCfg &cfg,
-                                     std::string func_name) {
+                                     std::string func_name,
+                                     const VerifyOptions &options) {
   FunctionVerifyResult out;
   out.func = std::move(func_name);
   out.start = cfg.start;
@@ -484,7 +551,8 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg,
       cfg.blocks.empty() ? cfg.start : cfg.blocks.front().start;
   const std::vector<BitSet> dom = compute_dominators(g, entry);
   const std::vector<BitSet> postdom = compute_postdominators(g);
-  const VRegUniformData vuni = compute_vreg_uniform_must(cfg, g, entry);
+  const VRegUniformData vuni =
+      compute_vreg_uniform_must(cfg, g, entry, options);
 
   std::unordered_map<uint32_t, const BundleInst *> inst_by_pc;
   inst_by_pc.reserve(cfg.insts.size());
@@ -582,7 +650,7 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg,
         for (size_t inst_i : bb.inst_indices) {
           if (inst_i == i)
             break;
-          transfer_vreg_uniform(st, cfg.insts[inst_i]);
+          transfer_vreg_uniform(st, cfg.insts[inst_i], options);
         }
         if (di.rs1_class == sbt::RegClass::V &&
             di.rs2_class == sbt::RegClass::V) {
@@ -692,6 +760,11 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg,
     out.vbranch.push_back(std::move(vb.check));
 
   return out;
+}
+
+FunctionVerifyResult verify_function(const FunctionCfg &cfg,
+                                     std::string func_name) {
+  return verify_function(cfg, std::move(func_name), VerifyOptions{});
 }
 
 } // namespace sbt::cfg

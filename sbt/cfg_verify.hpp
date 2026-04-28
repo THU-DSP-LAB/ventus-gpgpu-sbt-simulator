@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace sbt::cfg {
@@ -53,6 +54,13 @@ struct FunctionVerifyResult final {
   std::vector<UnsupportedJalr> unsupported_jalr;
 };
 
+struct VerifyOptions final {
+  const std::unordered_map<uint32_t, std::string> *sym_by_addr = nullptr;
+};
+
+FunctionVerifyResult verify_function(const FunctionCfg &cfg,
+                                     std::string func_name,
+                                     const VerifyOptions &options);
 FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_name);
 
 } // namespace sbt::cfg

@@ -517,7 +517,8 @@ int main(int argc, char **argv) {
     const auto decoded = sbt::decode_text(slice, fr->start, dopt, patterns);
 
     const auto cfg = sbt::cfg::build_function_cfg(decoded, fr->start, fr->end);
-    const auto verify = sbt::cfg::verify_function(cfg, *func);
+    const sbt::cfg::VerifyOptions verify_options{.sym_by_addr = &sym_by_addr};
+    const auto verify = sbt::cfg::verify_function(cfg, *func, verify_options);
 
     const bool vbranch_ok = std::all_of(
         verify.vbranch.begin(), verify.vbranch.end(),
@@ -554,7 +555,7 @@ int main(int argc, char **argv) {
                                      static_cast<long>(off + len));
       const auto decoded = sbt::decode_text(slice, fr.start, dopt, patterns);
       const auto cfg = sbt::cfg::build_function_cfg(decoded, fr.start, fr.end);
-      const auto verify = sbt::cfg::verify_function(cfg, name);
+      const auto verify = sbt::cfg::verify_function(cfg, name, verify_options);
 
       const bool vbranch_ok = std::all_of(
           verify.vbranch.begin(), verify.vbranch.end(),

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sbt/builtin_semantics.hpp"
 #include "sbt/ptx_emit.hpp"
 #include "sbt/ptx_mma.hpp"
 
@@ -134,31 +135,6 @@ bool try_emit_vector(EmitCtx &ctx, const sbt::DecodedInst &di);
 bool try_emit_mma(EmitCtx &ctx, const sbt::DecodedInst &di);
 bool try_emit_custom(EmitCtx &ctx, const sbt::DecodedInst &di);
 
-enum class BuiltinKind {
-  GetGlobalId,
-  GetLocalId,
-  GetGroupId,
-  GetGlobalSize,
-  WorkitemIdX,
-  WorkitemIdY,
-  WorkitemIdZ,
-  WorkgroupIdX,
-  WorkgroupIdY,
-  WorkgroupIdZ,
-  GlobalIdX,
-  GlobalIdY,
-  GlobalIdZ,
-  SqrtF,
-  FmaxF,
-  Vec4Cos,
-  Vec4Sin,
-  Vec4Tan,
-  Vec4Sqrt,
-  Vec4Fabs,
-  Mad24,
-};
-
-std::optional<BuiltinKind> lookup_builtin_call(std::string_view callee);
 void emit_builtin_call(EmitCtx &ctx, BuiltinKind kind, uint32_t pc_for_err);
 
 void emit_helper_func_signature(std::ostringstream &out, const std::string &ptx_name);

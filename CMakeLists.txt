@@ -21,6 +21,7 @@ add_library(sbt_lib
   sbt/elf_reader.cpp
   sbt/spike_encoding_parser.cpp
   sbt/instruction_metadata.cpp
+  sbt/builtin_semantics.cpp
   sbt/riscv_decode.cpp
   sbt/dump_parser.cpp
   sbt/control_semantics.cpp
@@ -95,6 +96,9 @@ target_link_libraries(mma_decode_test PRIVATE sbt_lib)
 
 add_executable(instruction_metadata_contract_test tools/instruction_metadata_contract_test.cpp)
 target_link_libraries(instruction_metadata_contract_test PRIVATE sbt_lib)
+
+add_executable(cfg_verify_builtin_call_semantics_test tools/cfg_verify_builtin_call_semantics_test.cpp)
+target_link_libraries(cfg_verify_builtin_call_semantics_test PRIVATE sbt_lib)
 
 add_executable(external_mnemonic_contract_test tools/external_mnemonic_contract_test.cpp)
 target_link_libraries(external_mnemonic_contract_test PRIVATE sbt_lib)

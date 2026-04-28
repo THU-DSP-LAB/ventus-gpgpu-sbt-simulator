@@ -10,11 +10,12 @@
 - `regext_bundle_test.cpp`：`regext/regexti` bundling 回归测试
 - `custom_decode_test.cpp`：repository-local custom non-MMA decode 回归测试
 - `instruction_metadata_contract_test.cpp`：shared instruction metadata / Spike want 同步 / CFG build+verify+direct-call control semantics authority / fail-fast 合同测试，并覆盖 poisoned non-`ret` `jalr` 仍被记为 `unsupported_jalr`
+- `cfg_verify_builtin_call_semantics_test.cpp`：CFG verifier 对 builtin helper call summary、ordinary/no-symbol direct-call 保守边界、shared builtin lookup/summary/classifier drift 的合同测试
 - `external_mnemonic_contract_test.cpp`：pretty / JSON / coverage / builtin symbol 等 external mnemonic contract 回归测试
 - `custom_ptx_emit_test.cpp`：custom non-MMA PTX lowering + ptxas compile-first 回归测试
 - `ptx_emit_call_prototype_test.cpp`：PTX helper 前向调用 prototype 回归测试
 - `ptx_emit_leader_lane_abi_test.cpp`：replicated scalar-state / value ABI / divergence 回归测试（文件名沿用历史命名）
-- `check_ptx_emit_name_allowlist.py`：完整 post-split PTX emitter 文件集与 `ptx_emit_internal.hpp` 中剩余 `name` 读取 allowlist 静态检查，并验证 builtin public allowlist / lookup table / control dispatch 同步
+- `check_ptx_emit_name_allowlist.py`：完整 post-split PTX emitter 文件集与 `ptx_emit_internal.hpp` 中剩余 `name` 读取 allowlist 静态检查，并验证 shared builtin public allowlist / lookup table / control dispatch / verifier summary 同步
 - `custom_non_mma_oracle.py`：custom non-MMA 的 Spike-vs-PTX 对照 + compile-first gate
   - current：默认先调用 `ventus_feature_probe.py` 检测 Shuffle / VCVT / packed / SFU 在所选 `--env-sh` 对应的 `VENTUS_INSTALL_PREFIX/bin/clang` 与同一 ventus root 的 `spike` 中是否可用；不可用的 feature 会逐 kernel 显式 `SKIP`，可用 feature 继续真实执行
   - 可传 `--no-auto-skip-features` 关闭 feature skip，此时缺失工具链能力会按原始执行路径显式失败

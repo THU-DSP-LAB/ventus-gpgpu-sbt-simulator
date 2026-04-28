@@ -14,8 +14,8 @@
 - 逐行扫描完整 PTX emitter implementation file set 与 `sbt/ptx_emit_internal.hpp` 中的 `.name` 使用。
 - 若发现比较、前后缀匹配、搜索等 authority-like 用法，立即报错。
 - 对剩余 `.name` 读取做 allowlist 校验，只允许 comment / EmitError detail / scalar-exec diagnostic 相关位置保留。
-- 解析 `ptx_emit_builtin.cpp` 中的 builtin lookup table 和 `emit_builtin_call()` switch，确认 public allowlist 与 control
-  dispatch 都经由 lookup，并且 table 中的每个 `BuiltinKind` 都有 switch case。
+- 解析共享 builtin semantic table 和 `emit_builtin_call()` switch，确认 public allowlist 与 control
+  dispatch 都经由共享 lookup，并且 table 中的每个 `BuiltinKind` 都有 switch case 和 verifier summary。
 """
 
 from __future__ import annotations
@@ -56,10 +56,12 @@ ALLOWED_SNIPPETS = (
 )
 
 BUILTIN_FILE = ROOT / "sbt" / "ptx_emit_builtin.cpp"
+BUILTIN_SEMANTICS_FILE = ROOT / "sbt" / "builtin_semantics.cpp"
 CONTROL_FILE = ROOT / "sbt" / "ptx_emit_control.cpp"
 
 BUILTIN_ENTRY_RE = re.compile(r'\{"([^"]+)",\s*BuiltinKind::([A-Za-z0-9_]+)\}')
 BUILTIN_CASE_RE = re.compile(r"case\s+BuiltinKind::([A-Za-z0-9_]+)\s*:")
+SUMMARY_ENTRY_RE = re.compile(r"\{BuiltinKind::([A-Za-z0-9_]+),\s*k[A-Za-z0-9_]+\}")
 
 
 def main() -> int:
@@ -77,13 +79,14 @@ def main() -> int:
                 errors.append(f"{path}:{lineno}: name usage missing allowlist category: {line.strip()}")
 
     builtin_text = BUILTIN_FILE.read_text(encoding="utf-8")
-    builtin_entries = BUILTIN_ENTRY_RE.findall(builtin_text)
+    builtin_semantics_text = BUILTIN_SEMANTICS_FILE.read_text(encoding="utf-8")
+    builtin_entries = BUILTIN_ENTRY_RE.findall(builtin_semantics_text)
     if not builtin_entries:
-        errors.append(f"{BUILTIN_FILE}: builtin lookup table has no parsed entries")
+        errors.append(f"{BUILTIN_SEMANTICS_FILE}: builtin lookup table has no parsed entries")
     builtin_names = [name for name, _kind in builtin_entries]
     duplicate_names = sorted({name for name in builtin_names if builtin_names.count(name) > 1})
     for name in duplicate_names:
-        errors.append(f"{BUILTIN_FILE}: duplicate builtin lookup entry: {name}")
+        errors.append(f"{BUILTIN_SEMANTICS_FILE}: duplicate builtin lookup entry: {name}")
 
     table_kinds = {kind for _name, kind in builtin_entries}
     dispatch_kinds = set(BUILTIN_CASE_RE.findall(builtin_text))
@@ -91,8 +94,16 @@ def main() -> int:
     for kind in missing_dispatch:
         errors.append(f"{BUILTIN_FILE}: builtin lookup kind lacks emit_builtin_call dispatch case: {kind}")
 
-    if "return detail::lookup_builtin_call(callee).has_value();" not in builtin_text:
-        errors.append(f"{BUILTIN_FILE}: public is_inlined_builtin_call_name() must delegate to lookup_builtin_call()")
+    summary_kinds = set(SUMMARY_ENTRY_RE.findall(builtin_semantics_text))
+    missing_summary = sorted(table_kinds - summary_kinds)
+    for kind in missing_summary:
+        errors.append(f"{BUILTIN_SEMANTICS_FILE}: builtin lookup kind lacks verifier summary: {kind}")
+    extra_summary = sorted(summary_kinds - table_kinds)
+    for kind in extra_summary:
+        errors.append(f"{BUILTIN_SEMANTICS_FILE}: verifier summary kind is not accepted by lookup: {kind}")
+
+    if "return sbt::is_inlined_builtin_call_name(callee);" not in builtin_text:
+        errors.append(f"{BUILTIN_FILE}: public is_inlined_builtin_call_name() must delegate to shared lookup")
 
     control_text = CONTROL_FILE.read_text(encoding="utf-8")
     if "lookup_builtin_call(callee)" not in control_text or "emit_builtin_call(ctx, *builtin, pc)" not in control_text:

@@ -108,6 +108,9 @@ ptxas -arch=sm_89 /tmp/BFS_1.ptx -o /tmp/BFS_1.cubin
 # replicated scalar-state / value ABI / divergence 回归
 ./build/ptx_emit_leader_lane_abi_test
 
+# CFG verifier builtin call summary 回归
+./build/cfg_verify_builtin_call_semantics_test
+
 # external mnemonic contract / emitter allowlist 回归
 ./build/external_mnemonic_contract_test
 python3 tools/check_ptx_emit_name_allowlist.py
@@ -123,7 +126,7 @@ python3 tools/check_ptx_emit_name_allowlist.py
 - Spike-backed 非 custom 指令通过共享 `InstId + InstMetadata` contract 提供 `operand_form`、`imm_kind`、`uniform_transfer_kind`；`DecodedInst.name` 只保留给 pretty print、JSON 输出与 external mnemonic contract。
 - `sbt/riscv_decode` 在 Spike-backed pattern decode 与 scalar decode 两条路径上都会填充共享 metadata；custom non-MMA / MMA 继续保留各自显式 metadata，不回退到字符串推断。
 - `sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与 `tools/sbt_ptx.cpp` 当前统一通过共享 `EmitDescriptor` / ordinary metadata 控制流 helper 消费 `branch/jump/call/return/indirect terminator/structured control/auipc` 语义；supported-path 控制流不再按 `DecodedInst.name` 做 correctness 分派。
-- `sbt/cfg_verify` 的 vector uniform 传播继续只消费共享 `uniform_transfer_kind`；supported-path 指令缺 metadata 或缺控制流结构化语义时都会直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 或 mnemonic 猜测。
+- `sbt/cfg_verify` 的 vector uniform 传播消费共享 `uniform_transfer_kind`，并对 direct call 使用 ELF symbol map 做 call-aware transfer：已知 inlined builtin 应用共享 summary，resolved non-builtin / unresolved / 缺 symbol map 的 direct call 清空全部 vector-uniform facts；supported-path 指令缺 metadata 或缺控制流结构化语义时都会直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 或 mnemonic 猜测。
 - PTX emitter 的 scalar execution classification 现为显式表驱动、默认拒绝未分类项；当前 supported scalar subset 必须逐条声明 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`。
 
 当前 lowering authority / mnemonic contract 口径是：
@@ -132,13 +135,14 @@ python3 tools/check_ptx_emit_name_allowlist.py
   - runtime/PDS：`sbt/ptx_emit_runtime.cpp`
   - memory/address mapping：`sbt/ptx_emit_memory.cpp`
   - call ABI：`sbt/ptx_emit_call.cpp`
-  - builtin lookup/dispatch：`sbt/ptx_emit_builtin.cpp`
+  - builtin lookup/summary：`sbt/builtin_semantics.cpp`
+  - builtin PTX emission：`sbt/ptx_emit_builtin.cpp`
   - domain lowering：`sbt/ptx_emit_{control,scalar,vector,custom,mma_lowering}.cpp`
   - scalar FP：`sbt/ptx_emit_scalar_fp.cpp`
   current supported correctness path 继续消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
 - `sbt/control_semantics.cpp`、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与 `tools/sbt_ptx.cpp` 的 current supported control-flow correctness path 都已改为消费 decode 产出的结构化语义；ordinary/custom/MMA 的 emit 语义同样不再由 `DecodedInst.name` 决定。
 - `DecodedInst.name` 当前允许用途限定为 pretty / JSON / diagnostics / coverage / ABI-visible builtin symbol / comments。
-- `tools/check_ptx_emit_name_allowlist.py` 会静态检查拆分后的完整 emitter 文件集中残余 `name` 读取是否只剩 allowlist 用途，并检查 builtin public allowlist 与 inline dispatch 共用同一 lookup；`build/instruction_metadata_contract_test` 等代表性 supported-path 回归会继续做 control/emitter poison-name 检查，并覆盖 poisoned non-`ret` `jalr` 仍被识别为 `unsupported_jalr`。
+- `tools/check_ptx_emit_name_allowlist.py` 会静态检查拆分后的完整 emitter 文件集中残余 `name` 读取是否只剩 allowlist 用途，并检查 builtin public allowlist、inline dispatch 与 verifier summary 共用共享 lookup；`build/instruction_metadata_contract_test`、`build/cfg_verify_builtin_call_semantics_test` 等代表性 supported-path 回归会继续做 control/emitter poison-name 与 builtin call summary 检查，并覆盖 poisoned non-`ret` `jalr` 仍被识别为 `unsupported_jalr`。
 - decode 期间的 shared-metadata lookup 当前仍保留内部 name-keyed 查表；但 CFG build / CFG verify / direct-call 闭包扫描已不再把 `DecodedInst.name` 当作控制流 semantic authority。
 - historical 记录分别见 `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence/`、`openspec/changes/archive/2026-04-18-unify-cfg-control-semantics/` 与 `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering/`。
 

@@ -14,6 +14,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -470,6 +471,14 @@ int main(int argc, char **argv) {
       };
 
       auto text_end = text.vaddr + static_cast<uint32_t>(text.data.size());
+      std::unordered_map<uint32_t, std::string> sym_by_addr;
+      sym_by_addr.reserve(syms.size());
+      for (const auto &s : syms) {
+        if (!s.name.empty())
+          sym_by_addr.emplace(s.addr, s.name);
+      }
+      const sbt::cfg::VerifyOptions verify_options{.sym_by_addr =
+                                                       &sym_by_addr};
 
       auto compute_range = [&](size_t idx) -> std::optional<FuncRange> {
         if (idx >= syms.size()) return std::nullopt;
@@ -562,7 +571,7 @@ int main(int argc, char **argv) {
 
         const auto decoded = sbt::decode_text(slice, fr.start, opt, patterns);
         const auto cfg = sbt::cfg::build_function_cfg(decoded, fr.start, fr.end);
-        auto res = sbt::cfg::verify_function(cfg, fr.name);
+        auto res = sbt::cfg::verify_function(cfg, fr.name, verify_options);
 
         const size_t vb_ok = std::count_if(res.vbranch.begin(), res.vbranch.end(), [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
         const size_t vb_fail = res.vbranch.size() - vb_ok;
