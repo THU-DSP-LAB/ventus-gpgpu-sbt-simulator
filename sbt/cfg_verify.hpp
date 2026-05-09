@@ -2,6 +2,7 @@
 
 #include "sbt/cfg.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -9,6 +10,56 @@
 #include <vector>
 
 namespace sbt::cfg {
+
+class VRegUniformFacts final {
+public:
+  static constexpr int kMaxVReg = 256;
+
+  static VRegUniformFacts empty() { return VRegUniformFacts(false); }
+  static VRegUniformFacts full() { return VRegUniformFacts(true); }
+
+  bool test(int r) const {
+    if (r < 0 || r >= kMaxVReg)
+      return false;
+    const size_t wi = static_cast<size_t>(r) / 64;
+    const size_t bi = static_cast<size_t>(r) % 64;
+    return (words_[wi] >> bi) & 1ULL;
+  }
+
+  void set(int r, bool v) {
+    if (r < 0 || r >= kMaxVReg)
+      return;
+    const size_t wi = static_cast<size_t>(r) / 64;
+    const size_t bi = static_cast<size_t>(r) % 64;
+    if (v)
+      words_[wi] |= (1ULL << bi);
+    else
+      words_[wi] &= ~(1ULL << bi);
+  }
+
+  void clear_all() { words_.fill(0ULL); }
+
+  VRegUniformFacts &operator&=(const VRegUniformFacts &o) {
+    for (size_t i = 0; i < words_.size(); ++i)
+      words_[i] &= o.words_[i];
+    return *this;
+  }
+
+  bool operator==(const VRegUniformFacts &o) const {
+    return words_ == o.words_;
+  }
+  bool operator!=(const VRegUniformFacts &o) const { return !(*this == o); }
+
+private:
+  explicit VRegUniformFacts(bool fill) {
+    if (fill)
+      words_.fill(~0ULL);
+    else
+      words_.fill(0ULL);
+  }
+
+  std::array<uint64_t, 4> words_{};
+};
 
 struct VBranchCheck final {
   uint32_t vbranch_addr = 0;
@@ -56,11 +107,24 @@ struct FunctionVerifyResult final {
 
 struct VerifyOptions final {
   const std::unordered_map<uint32_t, std::string> *sym_by_addr = nullptr;
+  VRegUniformFacts entry_uniform_vregs = VRegUniformFacts::empty();
+  bool entry_converged = true;
+};
+
+struct DirectCallFacts final {
+  uint32_t call_addr = 0;
+  uint32_t call_block = 0;
+  uint32_t callee_addr = 0;
+  VRegUniformFacts pre_call_uniform_vregs = VRegUniformFacts::empty();
+  bool call_context_converged = true;
 };
 
 FunctionVerifyResult verify_function(const FunctionCfg &cfg,
                                      std::string func_name,
                                      const VerifyOptions &options);
 FunctionVerifyResult verify_function(const FunctionCfg &cfg, std::string func_name);
+
+std::vector<DirectCallFacts>
+collect_direct_call_facts(const FunctionCfg &cfg, const VerifyOptions &options);
 
 } // namespace sbt::cfg

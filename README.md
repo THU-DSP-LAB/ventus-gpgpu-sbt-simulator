@@ -126,7 +126,7 @@ python3 tools/check_ptx_emit_name_allowlist.py
 - Spike-backed 非 custom 指令通过共享 `InstId + InstMetadata` contract 提供 `operand_form`、`imm_kind`、`uniform_transfer_kind`；`DecodedInst.name` 只保留给 pretty print、JSON 输出与 external mnemonic contract。
 - `sbt/riscv_decode` 在 Spike-backed pattern decode 与 scalar decode 两条路径上都会填充共享 metadata；custom non-MMA / MMA 继续保留各自显式 metadata，不回退到字符串推断。
 - `sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与 `tools/sbt_ptx.cpp` 当前统一通过共享 `EmitDescriptor` / ordinary metadata 控制流 helper 消费 `branch/jump/call/return/indirect terminator/structured control/auipc` 语义；supported-path 控制流不再按 `DecodedInst.name` 做 correctness 分派。
-- `sbt/cfg_verify` 的 vector uniform 传播消费共享 `uniform_transfer_kind`，并对 direct call 使用 ELF symbol map 做 call-aware transfer：已知 inlined builtin 应用共享 summary，resolved non-builtin / unresolved / 缺 symbol map 的 direct call 清空全部 vector-uniform facts；supported-path 指令缺 metadata 或缺控制流结构化语义时都会直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 或 mnemonic 猜测。
+- `sbt/cfg_verify` 的 vector uniform 传播消费共享 `uniform_transfer_kind`，并对 direct call 使用 ELF symbol map 做 call-aware transfer：已知 inlined builtin 应用共享 summary；ordinary/unresolved/缺 symbol map 的 direct call 按 Ventus ABI 清除 caller-saved `%v0..%v31` 的 vector-uniform facts、保留 callee-saved `%v32..%v255` facts；`sbt_ptx` 对 reachable direct-call callee 传播 call-site 入口 uniform/convergence facts，用于跨函数 barrier 收敛性验证。supported-path 指令缺 metadata 或缺控制流结构化语义时都会直接报错，不再回退到 `_vx/_vi/_vv/_v` suffix 或 mnemonic 猜测。
 - PTX emitter 的 scalar execution classification 现为显式表驱动、默认拒绝未分类项；当前 supported scalar subset 必须逐条声明 `uniform-pure` / `lane-sensitive` / `fixed-lane-sensitive` / `externally-side-effecting`。
 
 当前 lowering authority / mnemonic contract 口径是：

@@ -95,21 +95,30 @@ If a `barrier` lies in the region of a `vbranch` that cannot be proven uniform a
 - **AND THEN** `sbt_ptx` does not emit PTX that can hang in CUDA `bar.sync`
 
 ### Requirement: Direct calls without verifier-visible summaries SHALL have explicit conservative treatment
-For direct calls that do not have a verifier-visible summary, the system SHALL treat the call as a conservative verifier boundary unless a future change adds non-builtin summaries or interprocedural analysis.
+For direct calls that do not have a verifier-visible summary, the system SHALL treat the call as an explicit ABI-aware verifier boundary unless a future change adds non-builtin summaries or stronger interprocedural analysis.
 
-The verifier MUST NOT silently preserve vector-uniform facts across an unanalyzed direct call. The current implementation clears all vector-uniform facts across such calls.
+The verifier MUST NOT silently preserve caller-saved vector-uniform facts across an unanalyzed direct call. The current implementation clears caller-saved `%v0..%v31` vector-uniform facts across such calls and preserves callee-saved `%v32..%v255` facts according to the Ventus call ABI.
 
-#### Scenario: Resolved helper call without summary clears vector-uniform facts
+#### Scenario: Resolved helper call without summary clears caller-saved vector-uniform facts
 - **GIVEN** a function contains a direct `jal` to a resolved non-builtin helper
 - **AND GIVEN** no verifier summary or interprocedural proof exists for that helper
 - **WHEN** vector-uniform analysis crosses the call
-- **THEN** the verifier clears all vector-uniform facts
+- **THEN** the verifier clears caller-saved `%v0..%v31` vector-uniform facts
+- **AND THEN** the verifier preserves callee-saved `%v32..%v255` vector-uniform facts
 
 #### Scenario: Missing symbol map does not silently assume builtin behavior
 - **GIVEN** a direct call is present in a CFG
 - **AND GIVEN** the verifier was invoked without call-target symbol information
 - **WHEN** vector-uniform analysis crosses the call
-- **THEN** the call is handled as an explicit conservative boundary that clears all vector-uniform facts
+- **THEN** the call is handled as an explicit ABI-aware boundary that clears caller-saved `%v0..%v31` vector-uniform facts
+
+#### Scenario: Reachable callee receives call-site entry facts
+- **GIVEN** `sbt_ptx` translates a kernel plus reachable direct-call callees
+- **AND GIVEN** every call site to a callee proves a callee entry vector register uniform and proves the call context converged
+- **WHEN** the callee contains a `barrier` guarded by a branch over that entry-uniform value
+- **THEN** closure verification accepts that barrier
+- **AND WHEN** any call site enters the callee from a non-converged context
+- **THEN** closure verification rejects reachable barriers in that callee
 
 ### Requirement: Translate kernel entry functions by name and skip `_start` in prototype mode
 The system SHALL translate a selected kernel entry function identified by name (e.g. from runtime `kernel_name`) using ELF `.symtab`, and SHALL NOT require translating the ELF entrypoint `_start` in prototype mode.

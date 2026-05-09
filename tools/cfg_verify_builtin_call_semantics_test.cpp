@@ -5,7 +5,7 @@
 
 需求/作用
 - 回归验证 verifier 对 builtin helper call summary 的处理。
-- 覆盖 no-summary direct call 的保守边界，以及 shared builtin lookup / summary / public classifier 的 drift 防护。
+- 覆盖 no-summary direct call 的 ABI 边界，以及 shared builtin lookup / summary / public classifier 的 drift 防护。
 
 用法
 - 构建后运行：`timeout 60s build/cfg_verify_builtin_call_semantics_test`
@@ -119,7 +119,8 @@ struct Scenario final {
 Scenario make_single_call_branch_cfg(uint32_t start, uint32_t callee_pc,
                                      const std::string &callee,
                                      bool include_barrier,
-                                     bool include_symbol) {
+                                     bool include_symbol,
+                                     int branch_vreg = 0) {
   const uint32_t join_pc = start + 0x80u;
   const uint32_t branch_target = start + 0x60u;
   const uint32_t else_pc = start + 0x14u;
@@ -136,6 +137,9 @@ Scenario make_single_call_branch_cfg(uint32_t start, uint32_t callee_pc,
       make_call(start + 0x0cu, callee_pc),
       make_vbranch(start + 0x10u, branch_target),
   };
+  cfg.insts.back().inst.rs1 = branch_vreg;
+  cfg.insts.back().inst.rs2 = branch_vreg;
+  sbt::finalize_emit_descriptor(cfg.insts.back().inst);
   if (include_barrier)
     cfg.insts.push_back(make_inst(else_pc, "barrier"));
   cfg.insts.push_back(make_jump(else_jump_pc, join_pc));
@@ -164,6 +168,76 @@ Scenario make_single_call_branch_cfg(uint32_t start, uint32_t callee_pc,
 
   if (include_symbol)
     s.sym_by_addr.emplace(callee_pc, callee);
+  return s;
+}
+
+Scenario make_preserved_vreg_call_branch_cfg(uint32_t start, uint32_t callee_pc,
+                                             const std::string &callee) {
+  Scenario s = make_single_call_branch_cfg(start, callee_pc, callee, false,
+                                           true, 32);
+  s.cfg.insts[2] = make_vmv_i(start + 8u, 32, 0);
+  return s;
+}
+
+Scenario make_entry_uniform_barrier_cfg(uint32_t start, int branch_vreg) {
+  const uint32_t join_pc = start + 0x80u;
+  const uint32_t branch_target = start + 0x60u;
+  const uint32_t else_pc = start + 0x14u;
+
+  Scenario s;
+  auto &cfg = s.cfg;
+  cfg.start = start;
+  cfg.end = join_pc + 8u;
+  cfg.insts = {
+      make_auipc(start, 1),
+      make_setrpc(start + 4u, 1, start, join_pc),
+      make_vmv_i(start + 8u, 0, 0),
+      make_vbranch(start + 0x0cu, branch_target),
+      make_inst(else_pc, "barrier"),
+      make_jump(start + 0x18u, join_pc),
+      make_jump(branch_target, join_pc),
+      make_inst(join_pc, "join"),
+      make_inst(join_pc + 4u, "endprg"),
+  };
+  cfg.insts[3].inst.rs1 = branch_vreg;
+  cfg.insts[3].inst.rs2 = 0;
+  sbt::finalize_emit_descriptor(cfg.insts[3].inst);
+
+  for (size_t i = 0; i < cfg.insts.size(); ++i)
+    cfg.inst_index_by_pc.emplace(cfg.insts[i].pc, i);
+
+  append_block(cfg, start, {0, 1, 2, 3},
+               {sbt::cfg::Edge{start, branch_target, sbt::cfg::EdgeKind::Branch},
+                sbt::cfg::Edge{start, else_pc, sbt::cfg::EdgeKind::Fallthrough}});
+  append_block(cfg, else_pc, {4, 5},
+               {sbt::cfg::Edge{else_pc, join_pc, sbt::cfg::EdgeKind::Jump}});
+  append_block(cfg, branch_target, {6},
+               {sbt::cfg::Edge{branch_target, join_pc, sbt::cfg::EdgeKind::Jump}});
+  append_block(cfg, join_pc, {7, 8}, {});
+  return s;
+}
+
+Scenario make_unreachable_call_cfg(uint32_t start, uint32_t reachable_callee,
+                                   uint32_t unreachable_callee) {
+  Scenario s;
+  auto &cfg = s.cfg;
+  cfg.start = start;
+  cfg.end = start + 0x48u;
+  cfg.insts = {
+      make_vmv_i(start, 7, 0),
+      make_call(start + 4u, reachable_callee),
+      make_inst(start + 8u, "endprg"),
+      make_vmv_i(start + 0x40u, 0, 0),
+      make_call(start + 0x44u, unreachable_callee),
+  };
+  for (size_t i = 0; i < cfg.insts.size(); ++i)
+    cfg.inst_index_by_pc.emplace(cfg.insts[i].pc, i);
+
+  append_block(cfg, start, {0, 1, 2}, {});
+  append_block(cfg, start + 0x40u, {3, 4}, {});
+
+  s.sym_by_addr.emplace(reachable_callee, "reachable_helper");
+  s.sym_by_addr.emplace(unreachable_callee, "unreachable_helper");
   return s;
 }
 
@@ -266,7 +340,13 @@ void check_no_summary_call_boundaries() {
                                                   true);
   const auto helper_result = verify(helper, "ordinary_helper");
   require(!helper_result.vbranch[0].proven_uniform,
-          "ordinary resolved helper calls must clear vector-uniform facts");
+          "ordinary resolved helper calls must clear caller-saved vector-uniform facts");
+
+  const auto preserved = make_preserved_vreg_call_branch_cfg(
+      0x6800u, 0x9038u, "ordinary_helper");
+  const auto preserved_result = verify(preserved, "ordinary_preserved_helper");
+  require(preserved_result.vbranch[0].proven_uniform,
+          "ordinary resolved helper calls must preserve callee-saved vector-uniform facts");
 
   const auto missing_symbol = make_single_call_branch_cfg(
       0x7000u, 0x9034u, "_Z12get_group_idj", false, false);
@@ -275,7 +355,51 @@ void check_no_summary_call_boundaries() {
       sbt::cfg::verify_function(missing_symbol.cfg, "missing_symbol",
                                 no_options);
   require(!missing_result.vbranch[0].proven_uniform,
-          "missing symbol map must clear vector-uniform facts");
+          "missing symbol map must clear caller-saved vector-uniform facts");
+}
+
+void check_entry_uniform_facts_allow_barrier() {
+  const auto s = make_entry_uniform_barrier_cfg(0x8000u, 7);
+  auto facts = sbt::cfg::VRegUniformFacts::empty();
+  facts.set(7, true);
+  const sbt::cfg::VerifyOptions options{
+      .sym_by_addr = &s.sym_by_addr,
+      .entry_uniform_vregs = facts,
+      .entry_converged = true,
+  };
+  const auto result =
+      sbt::cfg::verify_function(s.cfg, "entry_uniform_barrier", options);
+  require(result.vbranch.size() == 1, "expected one vbranch");
+  require(result.vbranch[0].proven_uniform,
+          "entry uniform facts must prove callee argument branch uniform");
+  require(result.barriers.size() == 1, "expected one barrier");
+  require(result.barriers[0].ok,
+          "barrier guarded by entry-uniform branch must be accepted");
+
+  const sbt::cfg::VerifyOptions divergent_options{
+      .sym_by_addr = &s.sym_by_addr,
+      .entry_uniform_vregs = facts,
+      .entry_converged = false,
+  };
+  const auto divergent_result = sbt::cfg::verify_function(
+      s.cfg, "entry_divergent_barrier", divergent_options);
+  require(!divergent_result.barriers[0].ok,
+          "barrier must reject divergent direct-call entry context");
+}
+
+void check_unreachable_calls_do_not_emit_facts() {
+  const uint32_t reachable_callee = 0x9100u;
+  const uint32_t unreachable_callee = 0x9200u;
+  const auto s =
+      make_unreachable_call_cfg(0x9000u, reachable_callee, unreachable_callee);
+  const sbt::cfg::VerifyOptions options{.sym_by_addr = &s.sym_by_addr};
+  const auto facts = sbt::cfg::collect_direct_call_facts(s.cfg, options);
+
+  require(facts.size() == 1, "expected only one reachable direct-call fact");
+  require(facts[0].callee_addr == reachable_callee,
+          "unreachable direct call must not emit callee facts");
+  require(facts[0].pre_call_uniform_vregs.test(7),
+          "reachable call fact must keep proven pre-call uniformity");
 }
 
 void check_builtin_metadata_contract() {
@@ -309,6 +433,8 @@ int main() {
   check_get_group_id_nonuniform_dim();
   check_pure_math_transfer();
   check_no_summary_call_boundaries();
+  check_entry_uniform_facts_allow_barrier();
+  check_unreachable_calls_do_not_emit_facts();
   check_builtin_metadata_contract();
   return 0;
 }

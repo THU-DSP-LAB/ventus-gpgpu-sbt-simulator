@@ -10,7 +10,7 @@
 - `regext_bundle_test.cpp`：`regext/regexti` bundling 回归测试
 - `custom_decode_test.cpp`：repository-local custom non-MMA decode 回归测试
 - `instruction_metadata_contract_test.cpp`：shared instruction metadata / Spike want 同步 / CFG build+verify+direct-call control semantics authority / fail-fast 合同测试，并覆盖 poisoned non-`ret` `jalr` 仍被记为 `unsupported_jalr`
-- `cfg_verify_builtin_call_semantics_test.cpp`：CFG verifier 对 builtin helper call summary、ordinary/no-symbol direct-call 保守边界、shared builtin lookup/summary/classifier drift 的合同测试
+- `cfg_verify_builtin_call_semantics_test.cpp`：CFG verifier 对 builtin helper call summary、ordinary/no-symbol direct-call ABI-aware 边界、reachable callee 入口 uniform/convergence facts 传播，以及 shared builtin lookup/summary/classifier drift 的合同测试
 - `external_mnemonic_contract_test.cpp`：pretty / JSON / coverage / builtin symbol 等 external mnemonic contract 回归测试
 - `custom_ptx_emit_test.cpp`：custom non-MMA PTX lowering + ptxas compile-first 回归测试
 - `pds_vector_memory_test.cpp`：current PDS vector-memory lowering 回归测试，覆盖 `vsb.v` byte offset 与 byte-store PTX path

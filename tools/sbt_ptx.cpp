@@ -517,23 +517,8 @@ int main(int argc, char **argv) {
     const auto decoded = sbt::decode_text(slice, fr->start, dopt, patterns);
 
     const auto cfg = sbt::cfg::build_function_cfg(decoded, fr->start, fr->end);
-    const sbt::cfg::VerifyOptions verify_options{.sym_by_addr = &sym_by_addr};
-    const auto verify = sbt::cfg::verify_function(cfg, *func, verify_options);
-
-    const bool vbranch_ok = std::all_of(
-        verify.vbranch.begin(), verify.vbranch.end(),
-        [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
-    const bool barrier_ok =
-        std::all_of(verify.barriers.begin(), verify.barriers.end(),
-                    [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
-    const bool jalr_ok = verify.unsupported_jalr.empty();
-    if (!vbranch_ok || !barrier_ok || !jalr_ok) {
-      std::cerr << "CFG 结构化验证未通过: " << *func << "\n";
-      std::cerr << "  vbranch_ok=" << (vbranch_ok ? "true" : "false")
-                << " barrier_ok=" << (barrier_ok ? "true" : "false")
-                << " jalr_ok=" << (jalr_ok ? "true" : "false") << "\n";
-      return 2;
-    }
+    const sbt::cfg::VerifyOptions base_verify_options{
+        .sym_by_addr = &sym_by_addr};
 
     sbt::ptx::Options popt;
     popt.sm = sm;
@@ -554,25 +539,7 @@ int main(int argc, char **argv) {
                                  text.data.begin() +
                                      static_cast<long>(off + len));
       const auto decoded = sbt::decode_text(slice, fr.start, dopt, patterns);
-      const auto cfg = sbt::cfg::build_function_cfg(decoded, fr.start, fr.end);
-      const auto verify = sbt::cfg::verify_function(cfg, name, verify_options);
-
-      const bool vbranch_ok = std::all_of(
-          verify.vbranch.begin(), verify.vbranch.end(),
-          [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
-      const bool barrier_ok =
-          std::all_of(verify.barriers.begin(), verify.barriers.end(),
-                      [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
-      const bool jalr_ok = verify.unsupported_jalr.empty();
-      if (!vbranch_ok || !barrier_ok || !jalr_ok) {
-        std::ostringstream o;
-        o << "CFG 结构化验证未通过: " << name
-          << " vbranch_ok=" << (vbranch_ok ? "true" : "false")
-          << " barrier_ok=" << (barrier_ok ? "true" : "false")
-          << " jalr_ok=" << (jalr_ok ? "true" : "false");
-        throw std::runtime_error(o.str());
-      }
-      return cfg;
+      return sbt::cfg::build_function_cfg(decoded, fr.start, fr.end);
     };
 
     // Build a reachable set of direct-call callees and emit one PTX module:
@@ -651,6 +618,105 @@ int main(int argc, char **argv) {
         work.push_back(callee_start);
       }
     }
+
+    struct VerifyState final {
+      sbt::cfg::VRegUniformFacts entry_uniform =
+          sbt::cfg::VRegUniformFacts::empty();
+      bool entry_converged = true;
+      bool initialized = false;
+    };
+
+    std::unordered_map<uint32_t, VerifyState> verify_state_by_start;
+    verify_state_by_start.reserve(nodes_by_start.size());
+    verify_state_by_start[fr->start] = VerifyState{
+        .entry_uniform = sbt::cfg::VRegUniformFacts::empty(),
+        .entry_converged = true,
+        .initialized = true,
+    };
+
+    std::vector<uint32_t> fact_work;
+    fact_work.push_back(fr->start);
+    while (!fact_work.empty()) {
+      const uint32_t cur = fact_work.back();
+      fact_work.pop_back();
+
+      const auto node_it = nodes_by_start.find(cur);
+      if (node_it == nodes_by_start.end())
+        continue;
+      const auto state_it = verify_state_by_start.find(cur);
+      if (state_it == verify_state_by_start.end() || !state_it->second.initialized)
+        continue;
+
+      const sbt::cfg::VerifyOptions options{
+          .sym_by_addr = &sym_by_addr,
+          .entry_uniform_vregs = state_it->second.entry_uniform,
+          .entry_converged = state_it->second.entry_converged,
+      };
+      for (const auto &facts :
+           sbt::cfg::collect_direct_call_facts(node_it->second.cfg, options)) {
+        auto callee_name_it = sym_by_addr.find(facts.callee_addr);
+        if (callee_name_it != sym_by_addr.end() &&
+            sbt::ptx::is_inlined_builtin_call_name(callee_name_it->second))
+          continue;
+        if (nodes_by_start.find(facts.callee_addr) == nodes_by_start.end())
+          continue;
+
+        auto &callee_state = verify_state_by_start[facts.callee_addr];
+        bool changed = false;
+        if (!callee_state.initialized) {
+          callee_state.entry_uniform = facts.pre_call_uniform_vregs;
+          callee_state.entry_converged = facts.call_context_converged;
+          callee_state.initialized = true;
+          changed = true;
+        } else {
+          sbt::cfg::VRegUniformFacts merged = callee_state.entry_uniform;
+          merged &= facts.pre_call_uniform_vregs;
+          const bool merged_converged =
+              callee_state.entry_converged && facts.call_context_converged;
+          if (merged != callee_state.entry_uniform ||
+              merged_converged != callee_state.entry_converged) {
+            callee_state.entry_uniform = merged;
+            callee_state.entry_converged = merged_converged;
+            changed = true;
+          }
+        }
+        if (changed)
+          fact_work.push_back(facts.callee_addr);
+      }
+    }
+
+    auto verify_cfg_for = [&](uint32_t start, const Node &n) {
+      const auto state_it = verify_state_by_start.find(start);
+      const VerifyState state =
+          state_it != verify_state_by_start.end() && state_it->second.initialized
+              ? state_it->second
+              : VerifyState{};
+      const sbt::cfg::VerifyOptions options{
+          .sym_by_addr = &sym_by_addr,
+          .entry_uniform_vregs = state.entry_uniform,
+          .entry_converged = state.entry_converged,
+      };
+      const auto verify = sbt::cfg::verify_function(n.cfg, n.name, options);
+
+      const bool vbranch_ok = std::all_of(
+          verify.vbranch.begin(), verify.vbranch.end(),
+          [](const sbt::cfg::VBranchCheck &c) { return c.error.empty(); });
+      const bool barrier_ok =
+          std::all_of(verify.barriers.begin(), verify.barriers.end(),
+                      [](const sbt::cfg::BarrierCheck &c) { return c.ok; });
+      const bool jalr_ok = verify.unsupported_jalr.empty();
+      if (!vbranch_ok || !barrier_ok || !jalr_ok) {
+        std::ostringstream o;
+        o << "CFG 结构化验证未通过: " << n.name
+          << " vbranch_ok=" << (vbranch_ok ? "true" : "false")
+          << " barrier_ok=" << (barrier_ok ? "true" : "false")
+          << " jalr_ok=" << (jalr_ok ? "true" : "false");
+        throw std::runtime_error(o.str());
+      }
+    };
+
+    for (const auto &kv : nodes_by_start)
+      verify_cfg_for(kv.first, kv.second);
 
     // Build adjacency and reject cycles (prototype: no recursion / mutual
     // recursion).

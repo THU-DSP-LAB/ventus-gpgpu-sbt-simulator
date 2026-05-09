@@ -75,16 +75,17 @@
   - current：regext-bundled control-flow instruction 继续区分 `bundle pc` 与 `inst_pc`；target/fallthrough 计算使用 `inst_pc`，block identity 使用 bundle `pc`。
 
 - `sbt/cfg_verify.{hpp,cpp}`
-  - `verify_function(cfg, func_name, VerifyOptions)`：对 `setrpc/vbranch/join/barrier/jalr` 做结构化验证；当前兼容 overload 会以空 options 调用，direct call 在无 symbol map 时按保守边界处理。
+  - `verify_function(cfg, func_name, VerifyOptions)`：对 `setrpc/vbranch/join/barrier/jalr` 做结构化验证；当前兼容 overload 会以空 options 调用，direct call 在无 symbol map 时按 ABI-aware 边界处理。`collect_direct_call_facts(cfg, options)` 会导出 reachable direct call 的 pre-call vector-uniform facts 与 call-context convergence，供 `sbt_ptx` 做 closure 级验证。
   - `setrpc` join PC 解析：当前实现通过 `sbt/control_semantics.cpp` 从 `setrpc` 向前回看近处 `ScalarIntKind::Auipc` 写同一寄存器（窗口大小固定，偏 bring-up）。
   - `vbranch` 校验核心：
     - 解析 join PC（来自最近一次 `setrpc`）
     - join 必须落在 `join` 指令处，且成为基本块入口
     - post-dominator / region side-exit / region single-entry 等结构化条件（循环形态有特殊放宽）
     - 额外：做一份“向量寄存器 uniform must 分析”，用于判断某些 `vbranch` 是否可证明 warp-uniform（从而对 barrier 合法性做更合理的保守处理）
-  - current：结构化控制流分析与 unsupported `jalr` 识别都只消费共享 control helper；vector uniform 传播消费共享 `InstMetadata.uniform_transfer_kind`，并对 direct call 使用 `VerifyOptions::sym_by_addr` 做 call-aware transfer。resolved inlined builtin 会应用 `sbt/builtin_semantics.*` 中的 verifier-visible summary；resolved non-builtin、unresolved target 或缺 symbol map 的 direct call 会清空全部 vector-uniform facts；accepted builtin 若缺 summary 会按 metadata drift 显式失败。
+  - current：结构化控制流分析与 unsupported `jalr` 识别都只消费共享 control helper；vector uniform 传播消费共享 `InstMetadata.uniform_transfer_kind`，并对 direct call 使用 `VerifyOptions::sym_by_addr` 做 call-aware transfer。resolved inlined builtin 会应用 `sbt/builtin_semantics.*` 中的 verifier-visible summary；ordinary/unresolved/缺 symbol map 的 direct call 会按 Ventus ABI 清除 caller-saved `%v0..%v31` 的 vector-uniform facts、保留 callee-saved `%v32..%v255` facts；accepted builtin 若缺 summary 会按 metadata drift 显式失败。
+  - current：`sbt_ptx` 收集 reachable direct-call closure 后，会从 call-site 向 callee 合并入口 vector-uniform facts 与 entry convergence fact；多个 call-site 取交集/AND。该入口事实只用于 callee CFG/barrier 验证，不把普通 callee 返回值乐观传播回 caller。
   - current：`_Z12get_local_idj` / `_Z13get_global_idj` 与 fixed-dim workitem/global id builtin 写入 lane-varying `%v0`；`_Z12get_group_idj` / `_Z15get_global_sizej` 仅在 dim 输入 `%v0` pre-call 已 proven uniform 时保留 uniform proof；workgroup id builtin 写入 work-group-uniform `%v0`；pure math helper 按输入 uniformity 传播。
-  - `barrier` 校验：保守策略——`barrier` 所在块不得落在任何“不可证明收敛”的 vbranch 区域内。
+  - `barrier` 校验：保守策略——`barrier` 所在块不得落在任何“不可证明收敛”的 vbranch 区域内；若函数入口来自 direct call 且 call context 不收敛，也会直接拒绝该函数内 reachable barrier。
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
 
 - `sbt/ptx_emit.hpp` + `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{core,runtime,memory,call,builtin,control,scalar,vector,custom,mma_lowering,scalar_fp}.cpp`
@@ -149,7 +150,7 @@
     - `build/ptx_emit_call_prototype_test`：覆盖“helper 前向调用 + prototype 先声明 + 新 value ABI prototype/definition 同步”。
     - `build/ptx_emit_leader_lane_abi_test`：覆盖 replicated scalar-state、fixed-lane `vmv.x.s`、direct-call value ABI、lazy leader selection 与 `vbranch/join` 无 full-`x` shim 的主线合同（target 名称沿用历史命名）。
     - `build/instruction_metadata_contract_test`：覆盖 `data/spike_want.txt <-> instruction_metadata.cpp` 同步、Spike-backed decode metadata、CFG build / CFG verify / direct-call scan 的 shared control semantics authority、poison-name 不变性（包括 poisoned non-`ret` `jalr` 仍报告为 `unsupported_jalr`），以及 metadata / control descriptor 缺失时的显式失败。
-    - `build/cfg_verify_builtin_call_semantics_test`：覆盖 verifier 对 inlined builtin helper call 的 vector-uniform summary、ordinary/no-symbol direct-call 保守边界，以及 shared builtin lookup / summary / public classifier 的 drift 防护。
+    - `build/cfg_verify_builtin_call_semantics_test`：覆盖 verifier 对 inlined builtin helper call 的 vector-uniform summary、ordinary/no-symbol direct-call ABI-aware 边界、callee entry uniform/convergence facts 传播，以及 shared builtin lookup / summary / public classifier 的 drift 防护。
     - `build/external_mnemonic_contract_test`：覆盖 pretty / JSON / diagnostics / coverage / external builtin symbol 等 external mnemonic contract，确保 authority 迁移后 `DecodedInst.name` 仍稳定服务外部口径。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
     - `build/pds_vector_memory_test`：覆盖 current PDS vector-memory lowering，包含 `vsb.v` byte offset 与 byte-store PTX path。
@@ -263,8 +264,8 @@
 4. 构建期生成并编译进二进制的 subset header（`<build>/generated/spike_encoding_subset.hpp`）→ `std::vector<sbt::Pattern>`
 5. `sbt::decode_text(slice, func_start, DecodeOptions, patterns)`
 6. `sbt::cfg::build_function_cfg(decoded, func_start, func_end)`
-7. `sbt::cfg::verify_function(cfg, func)`（fail-fast）
-8. 扫描 direct call，收集可达函数闭包（递归 decode/CFG/verify）
+7. 扫描 direct call，收集可达函数闭包（递归 decode/CFG）
+8. 从 call-site 向 reachable callee 传播入口 uniform/convergence facts，并对整个 closure 执行 `sbt::cfg::verify_function(...)`（fail-fast）
 9. `sbt::ptx::emit_module(entry_cfg, sym_by_addr, func, funcs, ptx_name_by_addr, Options)` → 写 PTX 文件
 
 ### 2.2 `sbt_decode cfgverify` 的用途
