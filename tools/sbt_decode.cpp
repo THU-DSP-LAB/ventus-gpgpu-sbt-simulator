@@ -115,7 +115,7 @@ static bool is_scalar_store(std::string_view name) { return name == "sb" || name
 
 static bool is_vector_load(std::string_view name) { return name == "vlw12_v" || name == "vlbu12_v" || name == "vlw_v"; }
 
-static bool is_vector_store(std::string_view name) { return name == "vsw12_v" || name == "vsb12_v" || name == "vsw_v"; }
+static bool is_vector_store(std::string_view name) { return name == "vsw12_v" || name == "vsb12_v" || name == "vsb_v" || name == "vsw_v"; }
 
 static bool is_any_branch(std::string_view name) {
   return name == "beq" || name == "bne" || name == "blt" || name == "bge" || name == "bltu" || name == "bgeu" ||

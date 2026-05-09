@@ -771,8 +771,8 @@ static DecodedInst decode_one(uint32_t pc, uint32_t w, const std::vector<Pattern
       else out.imm = sext(imm_i(w), 12);
       break;
     case ImmKind::S12:
-      // `vsw.v` encodes an 11-bit signed offset using S-type split immediate bits [30:25] and [11:7].
-      if (out.name == "vsw_v") {
+      // PDS stores encode an 11-bit signed offset using S-type split immediate bits [30:25] and [11:7].
+      if (out.name == "vsb_v" || out.name == "vsw_v") {
         const uint32_t hi6 = (w >> 25) & 0x3Fu;   // bits [30:25]
         const uint32_t lo5 = (w >> 7) & 0x1Fu;    // bits [11:7]
         const uint32_t imm11 = (hi6 << 5) | lo5;  // bits [10:0]

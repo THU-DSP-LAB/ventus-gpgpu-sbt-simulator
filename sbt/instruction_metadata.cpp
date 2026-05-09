@@ -283,6 +283,7 @@ std::optional<EmitDescriptor> csr_descriptor_for_name(std::string_view name) {
 
 std::optional<EmitDescriptor> vector_memory_descriptor_for_name(std::string_view name) {
   if (name == "vlw_v") return make_vector_memory(MemAccessKind::Load, MemoryAddrKind::Pds, MemWidth::Word, MemValueKind::Integer, MemExtKind::RawBits);
+  if (name == "vsb_v") return make_vector_memory(MemAccessKind::Store, MemoryAddrKind::Pds, MemWidth::Byte, MemValueKind::Integer, MemExtKind::RawBits);
   if (name == "vsw_v") return make_vector_memory(MemAccessKind::Store, MemoryAddrKind::Pds, MemWidth::Word, MemValueKind::Integer, MemExtKind::RawBits);
   if (name == "vlb12_v") return make_vector_memory(MemAccessKind::Load, MemoryAddrKind::Ordinary, MemWidth::Byte, MemValueKind::Integer, MemExtKind::SignExtend);
   if (name == "vlbu12_v") return make_vector_memory(MemAccessKind::Load, MemoryAddrKind::Ordinary, MemWidth::Byte, MemValueKind::Integer, MemExtKind::ZeroExtend);
@@ -483,6 +484,8 @@ static const auto kInstMetadata = std::to_array<InstMetadata>({
     META("vsh12_v", OperandForm::VRs1VectorRs2VectorImm, RegClass::None, RegClass::V, RegClass::V, RegClass::None, ImmKind::S12,
          UniformTransferKind::NotApplicable, ScalarExecKind::None, true),
     META("vsw12_v", OperandForm::VRs1VectorRs2VectorImm, RegClass::None, RegClass::V, RegClass::V, RegClass::None, ImmKind::S12,
+         UniformTransferKind::NotApplicable, ScalarExecKind::None, true),
+    META("vsb_v", OperandForm::VRs1VectorRs2VectorImm, RegClass::None, RegClass::V, RegClass::V, RegClass::None, ImmKind::S12,
          UniformTransferKind::NotApplicable, ScalarExecKind::None, true),
     META("vsw_v", OperandForm::VRs1VectorRs2VectorImm, RegClass::None, RegClass::V, RegClass::V, RegClass::None, ImmKind::S12,
          UniformTransferKind::NotApplicable, ScalarExecKind::None, true),

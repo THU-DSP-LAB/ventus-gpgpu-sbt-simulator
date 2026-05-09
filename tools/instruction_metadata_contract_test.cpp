@@ -48,6 +48,18 @@ uint32_t make_i_word(uint32_t opcode, uint32_t funct3, uint32_t rd,
   return w;
 }
 
+uint32_t make_s_word(uint32_t opcode, uint32_t funct3, uint32_t rs1,
+                     uint32_t rs2, uint32_t imm12) {
+  uint32_t w = 0;
+  w |= (opcode & 0x7Fu);
+  w |= (imm12 & 0x1Fu) << 7;
+  w |= (funct3 & 0x7u) << 12;
+  w |= (rs1 & 0x1Fu) << 15;
+  w |= (rs2 & 0x1Fu) << 20;
+  w |= ((imm12 >> 5) & 0x7Fu) << 25;
+  return w;
+}
+
 uint32_t make_b_word(uint32_t funct3, uint32_t rs1, uint32_t rs2,
                      int32_t imm13) {
   const uint32_t u = static_cast<uint32_t>(imm13);
@@ -233,6 +245,31 @@ void check_decode_metadata_population() {
   require(decoded[0].uniform_transfer_kind ==
               sbt::UniformTransferKind::UniformIfRs1,
           "uniform transfer metadata populated");
+}
+
+void check_pds_byte_store_metadata_population() {
+  const uint32_t word = make_s_word(/*opcode=*/0x2Bu, /*funct3=*/0x0u,
+                                    /*rs1=*/4u, /*rs2=*/5u,
+                                    /*imm12=*/0xFE0u);
+  std::vector<uint8_t> text;
+  append_u32_le(text, word);
+
+  sbt::DecodeOptions opt;
+  opt.require_known = true;
+  const std::vector<sbt::Pattern> patterns = {{
+      sbt::Pattern{"vsb_v", word, 0xFFFF'FFFFu},
+  }};
+  const auto decoded =
+      sbt::decode_text(text, /*text_vaddr=*/0x800016d4u, opt, patterns);
+  require(decoded.size() == 1, "single PDS byte store decoded");
+  require(decoded[0].name == "vsb_v", "PDS byte store mnemonic");
+  require(decoded[0].imm == -32, "PDS byte store uses 11-bit signed offset");
+  require(decoded[0].emit.domain == sbt::EmitDomain::VectorMemory,
+          "PDS byte store is vector memory");
+  require(decoded[0].emit.memory_addr_kind == sbt::MemoryAddrKind::Pds,
+          "PDS byte store address kind");
+  require(decoded[0].emit.mem_width == sbt::MemWidth::Byte,
+          "PDS byte store width");
 }
 
 void check_missing_spike_metadata_fails() {
@@ -487,6 +524,7 @@ void check_control_semantics_fail_fast() {
 int main() {
   check_spike_want_sync();
   check_decode_metadata_population();
+  check_pds_byte_store_metadata_population();
   check_missing_spike_metadata_fails();
   check_missing_scalar_metadata_fails();
   check_cfg_verify_uses_shared_metadata();

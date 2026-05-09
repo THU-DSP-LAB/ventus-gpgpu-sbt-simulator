@@ -118,10 +118,10 @@
     - structured divergence：`vbranch/join` 不再把整份 `x-reg` 文件作为控制流 payload；路径入口与 join 前驱不再插入 full-`x` shim，只有真正的 leader-only scalar side effect 才会在 use point 懒选择 leader。
     - 标量浮点（RV32F, Zfinx 模型）：f32 以 raw bits 存在 X 寄存器；支持 `flw/fsw`、`fadd_s` 等标量 F 指令子集；`rm=DYN` 按 RNE 处理（CSR.frm 未建模），`rm=RMM/Reserved` fail-fast。
     - 数值地址空间：按区间把 u32 地址映射到 `.shared` 或 `.global`（`Shared + Global` current contract），对应 `Options::{shared_base_vaddr,global_base_vaddr}`；低于 shared window 的地址显式 `trap`。
-    - `vlw.v/vsw.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
+    - `vlw.v/vsw.v/vsb.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
       - `.entry` 参数包含 `pds_base_vaddr/pds_size_per_thread/pds_bitmap_base_vaddr/pds_pool_num_blocks`；
       - prologue 以 block 级原子方式从 bitmap 申请 PDS block，写入 shared；
-      - `CSR_PDS = wg_pds_base`，私有访问地址为 `CSR_PDS + align4(offset) * numw * 32 + (warp_id_in_block * 32 + lane) * 4`；
+      - `CSR_PDS = wg_pds_base`，word 访问地址为 `CSR_PDS + align4(offset) * numw * 32 + (warp_id_in_block * 32 + lane) * 4`；`vsb.v` 在该 lane word 地址上追加 `offset & 3` byte 偏移；
       - 再通过统一的数值地址映射 helper 落到 `.global` 访问。
   - 调用（call）：
     - 一小部分 builtin 仍在 emitter 内按 ABI-visible symbol 内联（OpenCL id/query + 少量 helper）；symbol identity 与 verifier summary 由 `sbt/builtin_semantics.*` 共享维护。
@@ -152,6 +152,7 @@
     - `build/cfg_verify_builtin_call_semantics_test`：覆盖 verifier 对 inlined builtin helper call 的 vector-uniform summary、ordinary/no-symbol direct-call 保守边界，以及 shared builtin lookup / summary / public classifier 的 drift 防护。
     - `build/external_mnemonic_contract_test`：覆盖 pretty / JSON / diagnostics / coverage / external builtin symbol 等 external mnemonic contract，确保 authority 迁移后 `DecodedInst.name` 仍稳定服务外部口径。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
+    - `build/pds_vector_memory_test`：覆盖 current PDS vector-memory lowering，包含 `vsb.v` byte offset 与 byte-store PTX path。
     - `python3 tools/check_ptx_emit_name_allowlist.py`：静态检查完整 post-split emitter 文件集中的 `name` 读取只剩显式 allowlist 用途，并检查 shared builtin lookup / dispatch / verifier summary 单一事实源。
 
 - `tools/rodinia_ptx_smoke.sh`

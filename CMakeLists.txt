@@ -112,6 +112,9 @@ target_link_libraries(ptx_emit_leader_lane_abi_test PRIVATE sbt_lib)
 add_executable(custom_ptx_emit_test tools/custom_ptx_emit_test.cpp)
 target_link_libraries(custom_ptx_emit_test PRIVATE sbt_lib)
 
+add_executable(pds_vector_memory_test tools/pds_vector_memory_test.cpp)
+target_link_libraries(pds_vector_memory_test PRIVATE sbt_lib)
+
 add_executable(mma_ptx_emit_test tools/mma_ptx_emit_test.cpp)
 target_link_libraries(mma_ptx_emit_test PRIVATE sbt_lib)
 

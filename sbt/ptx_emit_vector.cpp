@@ -2,36 +2,43 @@
 
 namespace sbt::ptx::detail {
 
+static void emit_pds_addr(EmitCtx &ctx, const sbt::DecodedInst &di, uint32_t pc, bool include_byte_offset) {
+  ctx.emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
+  if (include_byte_offset) {
+    ctx.emit_line("and.b32 " + r(17) + ", " + r(14) + ", 3;");
+  }
+  ctx.emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
+  ctx.emit_line("mul.lo.u32 " + r(15) + ", " + r(15) + ", " + r(12) + ";");
+  ctx.emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
+  ctx.emit_line("shl.b32 " + r(16) + ", " + r(10) + ", 5;");
+  ctx.emit_line("add.u32 " + r(16) + ", " + r(16) + ", " + r(0) + ";");
+  ctx.emit_line("shl.b32 " + r(16) + ", " + r(16) + ", 2;");
+  ctx.emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
+  ctx.emit_compute_csr_pds_u32(r(24), /*scalar=*/false);
+  ctx.emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
+  if (include_byte_offset) {
+    ctx.emit_line("add.u32 " + r(14) + ", " + r(14) + ", " + r(17) + ";");
+  }
+  (void)pc;
+}
+
 static bool try_emit_vector_memory_and_register(EmitCtx &ctx, const sbt::DecodedInst &di) {
   const uint32_t pc = di.pc;
 
   if (is_vector_memory(di, MemAccessKind::Load, MemoryAddrKind::Pds) && di.imm_kind == sbt::ImmKind::I12) {
-    ctx.emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
-    ctx.emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
-    ctx.emit_line("mul.lo.u32 " + r(15) + ", " + r(15) + ", " + r(12) + ";");
-    ctx.emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
-    ctx.emit_line("shl.b32 " + r(16) + ", " + r(10) + ", 5;");
-    ctx.emit_line("add.u32 " + r(16) + ", " + r(16) + ", " + r(0) + ";");
-    ctx.emit_line("shl.b32 " + r(16) + ", " + r(16) + ", 2;");
-    ctx.emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
-    ctx.emit_compute_csr_pds_u32(r(24), /*scalar=*/false);
-    ctx.emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
+    emit_pds_addr(ctx, di, pc, /*include_byte_offset=*/false);
     ctx.emit_addr_map_and_ld_u32(r(20), r(14), pc);
     ctx.emit_line("mov.u32 " + v(di.rd) + ", " + r(20) + ";");
     return true;
   }
   if (is_vector_memory(di, MemAccessKind::Store, MemoryAddrKind::Pds) && di.imm_kind == sbt::ImmKind::S12) {
-    ctx.emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
-    ctx.emit_line("and.b32 " + r(15) + ", " + r(14) + ", 0xfffffffc;");
-    ctx.emit_line("mul.lo.u32 " + r(15) + ", " + r(15) + ", " + r(12) + ";");
-    ctx.emit_line("shl.b32 " + r(15) + ", " + r(15) + ", 5;");
-    ctx.emit_line("shl.b32 " + r(16) + ", " + r(10) + ", 5;");
-    ctx.emit_line("add.u32 " + r(16) + ", " + r(16) + ", " + r(0) + ";");
-    ctx.emit_line("shl.b32 " + r(16) + ", " + r(16) + ", 2;");
-    ctx.emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(16) + ";");
-    ctx.emit_compute_csr_pds_u32(r(24), /*scalar=*/false);
-    ctx.emit_line("add.u32 " + r(14) + ", " + r(24) + ", " + r(15) + ";");
-    ctx.emit_addr_map_and_st_u32(r(14), v(di.rs2), pc);
+    emit_pds_addr(ctx, di, pc, /*include_byte_offset=*/di.emit.mem_width == MemWidth::Byte);
+    if (di.emit.mem_width == MemWidth::Byte) {
+      ctx.emit_line("cvt.u8.u32 " + u8(1) + ", " + v(di.rs2) + ";");
+      ctx.emit_addr_map_and_st_u8(r(14), u8(1), pc);
+    } else {
+      ctx.emit_addr_map_and_st_u32(r(14), v(di.rs2), pc);
+    }
     return true;
   }
 

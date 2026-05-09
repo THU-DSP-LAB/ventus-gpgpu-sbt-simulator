@@ -13,6 +13,7 @@
 - `cfg_verify_builtin_call_semantics_test.cpp`：CFG verifier 对 builtin helper call summary、ordinary/no-symbol direct-call 保守边界、shared builtin lookup/summary/classifier drift 的合同测试
 - `external_mnemonic_contract_test.cpp`：pretty / JSON / coverage / builtin symbol 等 external mnemonic contract 回归测试
 - `custom_ptx_emit_test.cpp`：custom non-MMA PTX lowering + ptxas compile-first 回归测试
+- `pds_vector_memory_test.cpp`：current PDS vector-memory lowering 回归测试，覆盖 `vsb.v` byte offset 与 byte-store PTX path
 - `ptx_emit_call_prototype_test.cpp`：PTX helper 前向调用 prototype 回归测试
 - `ptx_emit_leader_lane_abi_test.cpp`：replicated scalar-state / value ABI / divergence 回归测试（文件名沿用历史命名）
 - `check_ptx_emit_name_allowlist.py`：完整 post-split PTX emitter 文件集与 `ptx_emit_internal.hpp` 中剩余 `name` 读取 allowlist 静态检查，并验证 shared builtin public allowlist / lookup table / control dispatch / verifier summary 同步

@@ -165,6 +165,7 @@ vremu_vx
 vrsub_vi
 vrsub_vx
 vsb12_v
+vsb_v
 vsetvli
 vsh12_v
 vsll_vi
