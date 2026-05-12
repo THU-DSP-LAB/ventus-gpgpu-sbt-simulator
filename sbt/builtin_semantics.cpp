@@ -5,7 +5,7 @@
 namespace sbt {
 namespace {
 
-static constexpr std::array<BuiltinEntry, 22> kBuiltinCalls{{
+static constexpr std::array<BuiltinEntry, 25> kBuiltinCalls{{
     {"_Z13get_global_idj", BuiltinKind::GetGlobalId},
     {"_Z12get_local_idj", BuiltinKind::GetLocalId},
     {"_Z12get_group_idj", BuiltinKind::GetGroupId},
@@ -16,6 +16,9 @@ static constexpr std::array<BuiltinEntry, 22> kBuiltinCalls{{
     {"__builtin_riscv_workgroup_id_x", BuiltinKind::WorkgroupIdX},
     {"__builtin_riscv_workgroup_id_y", BuiltinKind::WorkgroupIdY},
     {"__builtin_riscv_workgroup_id_z", BuiltinKind::WorkgroupIdZ},
+    {"__builtin_riscv_local_size_x", BuiltinKind::LocalSizeX},
+    {"__builtin_riscv_local_size_y", BuiltinKind::LocalSizeY},
+    {"__builtin_riscv_local_size_z", BuiltinKind::LocalSizeZ},
     {"__builtin_riscv_global_id_x", BuiltinKind::GlobalIdX},
     {"__builtin_riscv_global_id_y", BuiltinKind::GlobalIdY},
     {"__builtin_riscv_global_id_z", BuiltinKind::GlobalIdZ},
@@ -60,7 +63,7 @@ static constexpr std::array<VectorWriteSummary, 4> kVec4SameAsCorrespondingInput
     {3, BuiltinUniformTransfer::SameAsInputs, kInputV3},
 }};
 
-static constexpr std::array<BuiltinSummary, 21> kBuiltinSummaries{{
+static constexpr std::array<BuiltinSummary, 24> kBuiltinSummaries{{
     {BuiltinKind::GetGlobalId, kV0WorkItemVarying},
     {BuiltinKind::GetLocalId, kV0WorkItemVarying},
     {BuiltinKind::GetGroupId, kV0SameAsInputV0},
@@ -71,6 +74,9 @@ static constexpr std::array<BuiltinSummary, 21> kBuiltinSummaries{{
     {BuiltinKind::WorkgroupIdX, kV0WorkGroupUniform},
     {BuiltinKind::WorkgroupIdY, kV0WorkGroupUniform},
     {BuiltinKind::WorkgroupIdZ, kV0WorkGroupUniform},
+    {BuiltinKind::LocalSizeX, kV0WorkGroupUniform},
+    {BuiltinKind::LocalSizeY, kV0WorkGroupUniform},
+    {BuiltinKind::LocalSizeZ, kV0WorkGroupUniform},
     {BuiltinKind::GlobalIdX, kV0WorkItemVarying},
     {BuiltinKind::GlobalIdY, kV0WorkItemVarying},
     {BuiltinKind::GlobalIdZ, kV0WorkItemVarying},

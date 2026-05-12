@@ -319,6 +319,26 @@ void check_get_group_id_nonuniform_dim() {
           "get_group_id with non-uniform dim must not prove v0 uniform");
 }
 
+void check_local_size_allows_barrier() {
+  const std::vector<std::string> callees = {
+      "__builtin_riscv_local_size_x",
+      "__builtin_riscv_local_size_y",
+      "__builtin_riscv_local_size_z",
+  };
+  for (size_t i = 0; i < callees.size(); ++i) {
+    const auto s = make_single_call_branch_cfg(
+        0x3800u + static_cast<uint32_t>(i) * 0x100u,
+        0x9018u + static_cast<uint32_t>(i) * 4u, callees[i], true, true);
+    const auto result = verify(s, "local_size_barrier");
+    require(result.vbranch.size() == 1, "expected one vbranch");
+    require(result.vbranch[0].proven_uniform,
+            callees[i] + " must make v0 work-group uniform");
+    require(result.barriers.size() == 1, "expected one barrier");
+    require(result.barriers[0].ok,
+            "barrier guarded by local_size-derived branch must be accepted");
+  }
+}
+
 void check_pure_math_transfer() {
   const auto uniform = make_single_call_branch_cfg(0x4000u, 0x9020u,
                                                    "_Z4sqrtf", false, true);
@@ -431,6 +451,7 @@ int main() {
   check_get_local_id_rejects_barrier();
   check_get_group_id_preserves_uniform_dim();
   check_get_group_id_nonuniform_dim();
+  check_local_size_allows_barrier();
   check_pure_math_transfer();
   check_no_summary_call_boundaries();
   check_entry_uniform_facts_allow_barrier();

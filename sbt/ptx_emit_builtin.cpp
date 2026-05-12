@@ -27,6 +27,9 @@ void emit_builtin_call(EmitCtx &ctx, BuiltinKind kind, uint32_t pc_for_err) {
   case BuiltinKind::WorkgroupIdX: ctx.emit_line("mov.u32 " + v(0) + ", %ctaid.x;"); return;
   case BuiltinKind::WorkgroupIdY: ctx.emit_line("mov.u32 " + v(0) + ", %ctaid.y;"); return;
   case BuiltinKind::WorkgroupIdZ: ctx.emit_line("mov.u32 " + v(0) + ", %ctaid.z;"); return;
+  case BuiltinKind::LocalSizeX: ctx.emit_line("mov.u32 " + v(0) + ", %ntid.x;"); return;
+  case BuiltinKind::LocalSizeY: ctx.emit_line("mov.u32 " + v(0) + ", %ntid.y;"); return;
+  case BuiltinKind::LocalSizeZ: ctx.emit_line("mov.u32 " + v(0) + ", %ntid.z;"); return;
   case BuiltinKind::GlobalIdX: emit_builtin_global_dim(ctx, "%tid.x", "%ntid.x", "%ctaid.x"); return;
   case BuiltinKind::GlobalIdY: emit_builtin_global_dim(ctx, "%tid.y", "%ntid.y", "%ctaid.y"); return;
   case BuiltinKind::GlobalIdZ: emit_builtin_global_dim(ctx, "%tid.z", "%ntid.z", "%ctaid.z"); return;
