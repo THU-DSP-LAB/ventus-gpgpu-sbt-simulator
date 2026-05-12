@@ -115,6 +115,9 @@ target_link_libraries(custom_ptx_emit_test PRIVATE sbt_lib)
 add_executable(pds_vector_memory_test tools/pds_vector_memory_test.cpp)
 target_link_libraries(pds_vector_memory_test PRIVATE sbt_lib)
 
+add_executable(workgroup_broadcast_builtin_test tools/workgroup_broadcast_builtin_test.cpp)
+target_link_libraries(workgroup_broadcast_builtin_test PRIVATE sbt_lib)
+
 add_executable(mma_ptx_emit_test tools/mma_ptx_emit_test.cpp)
 target_link_libraries(mma_ptx_emit_test PRIVATE sbt_lib)
 

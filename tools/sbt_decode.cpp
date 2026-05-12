@@ -642,8 +642,8 @@ int main(int argc, char **argv) {
         *os << "      \"barriers\": [\n";
         for (size_t j = 0; j < r.barriers.size(); ++j) {
           const auto &c = r.barriers[j];
-          *os << "        {\"addr\":\"" << hex_u32(c.barrier_addr) << "\",\"block\":\"" << hex_u32(c.barrier_block) << "\",\"ok\":"
-              << (c.ok ? "true" : "false") << ",\"error\":";
+          *os << "        {\"addr\":\"" << hex_u32(c.barrier_addr) << "\",\"block\":\"" << hex_u32(c.barrier_block) << "\",\"kind\":\""
+              << json_escape(c.kind) << "\",\"ok\":" << (c.ok ? "true" : "false") << ",\"error\":";
           if (c.ok || c.error.empty()) {
             *os << "null";
           } else {

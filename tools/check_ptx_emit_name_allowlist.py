@@ -61,7 +61,9 @@ CONTROL_FILE = ROOT / "sbt" / "ptx_emit_control.cpp"
 
 BUILTIN_ENTRY_RE = re.compile(r'\{"([^"]+)",\s*BuiltinKind::([A-Za-z0-9_]+)\}')
 BUILTIN_CASE_RE = re.compile(r"case\s+BuiltinKind::([A-Za-z0-9_]+)\s*:")
-SUMMARY_ENTRY_RE = re.compile(r"\{BuiltinKind::([A-Za-z0-9_]+),\s*k[A-Za-z0-9_]+\}")
+SUMMARY_ENTRY_RE = re.compile(
+    r"\{BuiltinKind::([A-Za-z0-9_]+),\s*k[A-Za-z0-9_]+(?:,\s*(?:true|false))?\}"
+)
 
 
 def main() -> int:

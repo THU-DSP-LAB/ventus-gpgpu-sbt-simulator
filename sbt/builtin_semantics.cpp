@@ -1,11 +1,12 @@
 #include "sbt/builtin_semantics.hpp"
 
 #include <array>
+#include <string_view>
 
 namespace sbt {
 namespace {
 
-static constexpr std::array<BuiltinEntry, 25> kBuiltinCalls{{
+static constexpr std::array<BuiltinEntry, 34> kBuiltinCalls{{
     {"_Z13get_global_idj", BuiltinKind::GetGlobalId},
     {"_Z12get_local_idj", BuiltinKind::GetLocalId},
     {"_Z12get_group_idj", BuiltinKind::GetGroupId},
@@ -31,6 +32,15 @@ static constexpr std::array<BuiltinEntry, 25> kBuiltinCalls{{
     {"_Z4sqrtDv4_f", BuiltinKind::Vec4Sqrt},
     {"_Z4fabsDv4_f", BuiltinKind::Vec4Fabs},
     {"_Z5mad24iii", BuiltinKind::Mad24},
+    {"_Z20work_group_broadcastfj", BuiltinKind::WorkGroupBroadcast1D32},
+    {"_Z20work_group_broadcastfjj", BuiltinKind::WorkGroupBroadcast2D32},
+    {"_Z20work_group_broadcastfjjj", BuiltinKind::WorkGroupBroadcast3D32},
+    {"_Z20work_group_broadcastij", BuiltinKind::WorkGroupBroadcast1D32},
+    {"_Z20work_group_broadcastijj", BuiltinKind::WorkGroupBroadcast2D32},
+    {"_Z20work_group_broadcastijjj", BuiltinKind::WorkGroupBroadcast3D32},
+    {"_Z20work_group_broadcastjj", BuiltinKind::WorkGroupBroadcast1D32},
+    {"_Z20work_group_broadcastjjj", BuiltinKind::WorkGroupBroadcast2D32},
+    {"_Z20work_group_broadcastjjjj", BuiltinKind::WorkGroupBroadcast3D32},
 }};
 
 static constexpr std::array<int, 0> kNoInputs{};
@@ -63,7 +73,7 @@ static constexpr std::array<VectorWriteSummary, 4> kVec4SameAsCorrespondingInput
     {3, BuiltinUniformTransfer::SameAsInputs, kInputV3},
 }};
 
-static constexpr std::array<BuiltinSummary, 24> kBuiltinSummaries{{
+static constexpr std::array<BuiltinSummary, 27> kBuiltinSummaries{{
     {BuiltinKind::GetGlobalId, kV0WorkItemVarying},
     {BuiltinKind::GetLocalId, kV0WorkItemVarying},
     {BuiltinKind::GetGroupId, kV0SameAsInputV0},
@@ -88,6 +98,9 @@ static constexpr std::array<BuiltinSummary, 24> kBuiltinSummaries{{
     {BuiltinKind::Vec4Sqrt, kVec4SameAsCorrespondingInput},
     {BuiltinKind::Vec4Fabs, kVec4SameAsCorrespondingInput},
     {BuiltinKind::Mad24, kV0SameAsInputV0V1V2},
+    {BuiltinKind::WorkGroupBroadcast1D32, kV0WorkGroupUniform, true},
+    {BuiltinKind::WorkGroupBroadcast2D32, kV0WorkGroupUniform, true},
+    {BuiltinKind::WorkGroupBroadcast3D32, kV0WorkGroupUniform, true},
 }};
 
 } // namespace
@@ -108,6 +121,10 @@ std::optional<BuiltinKind> lookup_builtin_call(std::string_view callee) {
 
 bool is_inlined_builtin_call_name(std::string_view callee) {
   return lookup_builtin_call(callee).has_value();
+}
+
+bool is_work_group_broadcast_call_name(std::string_view callee) {
+  return callee.starts_with("_Z20work_group_broadcast");
 }
 
 std::optional<BuiltinSummary> builtin_summary_for(BuiltinKind kind) {

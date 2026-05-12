@@ -51,6 +51,8 @@ bool try_emit_control(EmitCtx &ctx, const sbt::cfg::BundleInst &bi) {
       emit_builtin_call(ctx, *builtin, pc);
       return true;
     }
+    require(!is_work_group_broadcast_call_name(callee),
+            EmitError("unsupported.work_group_broadcast", ctx.func_name, pc, "callee=" + callee));
 
     require(ctx.mod.ptx_name_by_addr != nullptr, EmitError("unsupported.call", ctx.func_name, pc, "callee=" + callee));
     auto jt = ctx.mod.ptx_name_by_addr->find(target);

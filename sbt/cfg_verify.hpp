@@ -83,6 +83,7 @@ struct VBranchCheck final {
 struct BarrierCheck final {
   uint32_t barrier_addr = 0;
   uint32_t barrier_block = 0;
+  std::string kind = "barrier";
   bool ok = false;
   std::string error;
 };

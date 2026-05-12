@@ -361,6 +361,7 @@ run_custom_unit_tests() {
   run_step_in_root "mma_decode_test" "${BUILD_DIR}/mma_decode_test"
   run_step_in_root "custom_ptx_emit_test" "${BUILD_DIR}/custom_ptx_emit_test"
   run_step_in_root "pds_vector_memory_test" "${BUILD_DIR}/pds_vector_memory_test"
+  run_step_in_root "workgroup_broadcast_builtin_test" "${BUILD_DIR}/workgroup_broadcast_builtin_test"
   run_step_in_root "mma_ptx_emit_test" "${BUILD_DIR}/mma_ptx_emit_test"
 }
 
@@ -459,9 +460,10 @@ main() {
         "${BUILD_DIR}/regext_bundle_test" \
         "${BUILD_DIR}/custom_decode_test" \
         "${BUILD_DIR}/mma_decode_test" \
-        "${BUILD_DIR}/custom_ptx_emit_test" \
-        "${BUILD_DIR}/mma_ptx_emit_test" \
-        "${BUILD_DIR}/ventus_ocl_run"
+      "${BUILD_DIR}/custom_ptx_emit_test" \
+      "${BUILD_DIR}/workgroup_broadcast_builtin_test" \
+      "${BUILD_DIR}/mma_ptx_emit_test" \
+      "${BUILD_DIR}/ventus_ocl_run"
     fi
   else
     cmake_build_if_needed \
@@ -473,6 +475,7 @@ main() {
       "${BUILD_DIR}/mma_decode_test" \
       "${BUILD_DIR}/custom_ptx_emit_test" \
       "${BUILD_DIR}/pds_vector_memory_test" \
+      "${BUILD_DIR}/workgroup_broadcast_builtin_test" \
       "${BUILD_DIR}/mma_ptx_emit_test" \
       "${BUILD_DIR}/ventus_ocl_run"
   fi

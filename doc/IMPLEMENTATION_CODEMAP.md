@@ -82,10 +82,10 @@
     - join 必须落在 `join` 指令处，且成为基本块入口
     - post-dominator / region side-exit / region single-entry 等结构化条件（循环形态有特殊放宽）
     - 额外：做一份“向量寄存器 uniform must 分析”，用于判断某些 `vbranch` 是否可证明 warp-uniform（从而对 barrier 合法性做更合理的保守处理）
-  - current：结构化控制流分析与 unsupported `jalr` 识别都只消费共享 control helper；vector uniform 传播消费共享 `InstMetadata.uniform_transfer_kind`，并对 direct call 使用 `VerifyOptions::sym_by_addr` 做 call-aware transfer。resolved inlined builtin 会应用 `sbt/builtin_semantics.*` 中的 verifier-visible summary；ordinary/unresolved/缺 symbol map 的 direct call 会按 Ventus ABI 清除 caller-saved `%v0..%v31` 的 vector-uniform facts、保留 callee-saved `%v32..%v255` facts；accepted builtin 若缺 summary 会按 metadata drift 显式失败。
+  - current：结构化控制流分析与 unsupported `jalr` 识别都只消费共享 control helper；vector uniform 传播消费共享 `InstMetadata.uniform_transfer_kind`，并对 direct call 使用 `VerifyOptions::sym_by_addr` 做 call-aware transfer。resolved inlined builtin 会应用 `sbt/builtin_semantics.*` 中的 verifier-visible summary；会 lower 为 PTX work-group sync 的 builtin 会额外作为隐式同步点参与收敛性检查；ordinary/unresolved/缺 symbol map 的 direct call 会按 Ventus ABI 清除 caller-saved `%v0..%v31` 的 vector-uniform facts、保留 callee-saved `%v32..%v255` facts；accepted builtin 若缺 summary 会按 metadata drift 显式失败。
   - current：`sbt_ptx` 收集 reachable direct-call closure 后，会从 call-site 向 callee 合并入口 vector-uniform facts 与 entry convergence fact；多个 call-site 取交集/AND。该入口事实只用于 callee CFG/barrier 验证，不把普通 callee 返回值乐观传播回 caller。
-  - current：`_Z12get_local_idj` / `_Z13get_global_idj` 与 fixed-dim workitem/global id builtin 写入 lane-varying `%v0`；`_Z12get_group_idj` / `_Z15get_global_sizej` 仅在 dim 输入 `%v0` pre-call 已 proven uniform 时保留 uniform proof；workgroup id builtin 写入 work-group-uniform `%v0`；pure math helper 按输入 uniformity 传播。
-  - `barrier` 校验：保守策略——`barrier` 所在块不得落在任何“不可证明收敛”的 vbranch 区域内；若函数入口来自 direct call 且 call context 不收敛，也会直接拒绝该函数内 reachable barrier。
+  - current：`_Z12get_local_idj` / `_Z13get_global_idj` 与 fixed-dim workitem/global id builtin 写入 lane-varying `%v0`；`_Z12get_group_idj` / `_Z15get_global_sizej` 仅在 dim 输入 `%v0` pre-call 已 proven uniform 时保留 uniform proof；workgroup id 与 local size builtin 写入 work-group-uniform `%v0`；`work_group_broadcast` 支持 32-bit float/int/uint 的 1D/2D/3D overload，写入 work-group-uniform `%v0`，并因 lowering 使用 `bar.sync` 而要求调用点可证明收敛；pure math helper 按输入 uniformity 传播。
+  - `barrier` / 隐式同步点校验：保守策略——同步点所在块不得落在任何“不可证明收敛”的 vbranch 区域内；若函数入口来自 direct call 且 call context 不收敛，也会直接拒绝该函数内 reachable 同步点。
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
 
 - `sbt/ptx_emit.hpp` + `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{core,runtime,memory,call,builtin,control,scalar,vector,custom,mma_lowering,scalar_fp}.cpp`
@@ -106,7 +106,7 @@
     - current supported correctness path 已 descriptor-driven：ordinary/control/scalar/vector path 消费 `DecodedInst.emit`，custom non-MMA 消费 `DecodedInst.custom`，MMA 消费 `DecodedInst.mma`；`DecodedInst.name` 不再是 emitter semantic authority。
     - emitter 中残余 `name` 读取当前只允许出现在 comments / diagnostics / external reporting；该 allowlist 由 `tools/check_ptx_emit_name_allowlist.py` 对完整 post-split emitter 文件集与 `ptx_emit_internal.hpp` 静态检查，并额外验证 shared builtin lookup / public allowlist / control dispatch / verifier summary 同步。
     - `setrpc/join/vsetvli`：结构化翻译下视为 no-op（主要用于 Stage2 verify）。
-    - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）。
+    - `barrier`：翻译为 `bar.sync 0;`（依赖 Stage2 barrier 合法性检查）；`work_group_broadcast` lowering 内部也发射 `bar.sync`，并通过 shared builtin summary 标记为隐式 work-group 同步点，复用同一收敛性检查。
     - PTX 寄存器 ownership：当前固定 machine/runtime/control 槽位保持 stable，至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`、`%x<256>`、`%v<256>`；`%rd1/%rd3` 仍保留为稳定的 legacy reserved slot，不作为共享 scratch 池重新分配。
     - helper scratch：函数内临时值按类型分配到唯一命名 `%tmp*` virtual temp（`.b32/.b64/.pred/.f32/.b16/.u8/.u16`），并在函数头统一 `.reg` 声明；当前阶段不要求通过重排固定槽位编号来引入这套 scratch 策略。
     - 标量（x-reg）live state：采用 replicated active-lane 表示，任何仍然 live 的 `x-reg` / scalar CSR 在当前 active lanes 上都应保持相等。
@@ -125,7 +125,7 @@
       - `CSR_PDS = wg_pds_base`，word 访问地址为 `CSR_PDS + align4(offset) * numw * 32 + (warp_id_in_block * 32 + lane) * 4`；`vsb.v` 在该 lane word 地址上追加 `offset & 3` byte 偏移；
       - 再通过统一的数值地址映射 helper 落到 `.global` 访问。
   - 调用（call）：
-    - 一小部分 builtin 仍在 emitter 内按 ABI-visible symbol 内联（OpenCL id/query + 少量 helper）；symbol identity 与 verifier summary 由 `sbt/builtin_semantics.*` 共享维护。
+    - 一小部分 builtin 仍在 emitter 内按 ABI-visible symbol 内联（OpenCL id/query、local size、work-group broadcast + 少量 helper）；symbol identity、verifier summary 与隐式同步属性由 `sbt/builtin_semantics.*` 共享维护。
     - 其它 direct call（`jal ra, imm`）会翻译为 PTX `call.uni`，并要求被调函数也被翻译为 `.func`（由 `tools/sbt_ptx.cpp` 的 call graph 闭包收集保证）。
     - helper ABI 已切换到 `mutable_state_blob in/out + machine_ctx_blob in + runtime_env_blob in` 三层 value ABI；`vctx` 不再是主线参数。
     - mutable call state 当前显式携带 `leader_lane`、完整 logical `x-reg`、完整 logical `v-reg`；helper 入口会恢复 runtime/machine/mutable blobs，但 call marshal 不再为了 `x-reg` payload 额外做 leader broadcast。
@@ -150,7 +150,8 @@
     - `build/ptx_emit_call_prototype_test`：覆盖“helper 前向调用 + prototype 先声明 + 新 value ABI prototype/definition 同步”。
     - `build/ptx_emit_leader_lane_abi_test`：覆盖 replicated scalar-state、fixed-lane `vmv.x.s`、direct-call value ABI、lazy leader selection 与 `vbranch/join` 无 full-`x` shim 的主线合同（target 名称沿用历史命名）。
     - `build/instruction_metadata_contract_test`：覆盖 `data/spike_want.txt <-> instruction_metadata.cpp` 同步、Spike-backed decode metadata、CFG build / CFG verify / direct-call scan 的 shared control semantics authority、poison-name 不变性（包括 poisoned non-`ret` `jalr` 仍报告为 `unsupported_jalr`），以及 metadata / control descriptor 缺失时的显式失败。
-    - `build/cfg_verify_builtin_call_semantics_test`：覆盖 verifier 对 inlined builtin helper call 的 vector-uniform summary、ordinary/no-symbol direct-call ABI-aware 边界、callee entry uniform/convergence facts 传播，以及 shared builtin lookup / summary / public classifier 的 drift 防护。
+    - `build/cfg_verify_builtin_call_semantics_test`：覆盖 verifier 对 inlined builtin helper call 的 vector-uniform summary、隐式 work-group 同步点、ordinary/no-symbol direct-call ABI-aware 边界、callee entry uniform/convergence facts 传播，以及 shared builtin lookup / summary / public classifier 的 drift 防护。
+    - `build/workgroup_broadcast_builtin_test`：覆盖 `work_group_broadcast` 32-bit overload 的 shared-memory inline lowering 与 unsupported overload fail-fast。
     - `build/external_mnemonic_contract_test`：覆盖 pretty / JSON / diagnostics / coverage / external builtin symbol 等 external mnemonic contract，确保 authority 迁移后 `DecodedInst.name` 仍稳定服务外部口径。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
     - `build/pds_vector_memory_test`：覆盖 current PDS vector-memory lowering，包含 `vsb.v` byte offset 与 byte-store PTX path。

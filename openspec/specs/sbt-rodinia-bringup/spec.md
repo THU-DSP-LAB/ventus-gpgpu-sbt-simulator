@@ -56,6 +56,8 @@ The verifier MUST NOT treat a builtin call as an opaque `jal` whose returned vec
 
 Scalar register effects are outside this requirement unless a later verifier proof depends on them.
 
+For inlined builtins whose PTX lowering contains a work-group synchronization point, the summary model MUST explicitly mark that convergence requirement so CFG verification can reject divergent call sites before PTX emission.
+
 #### Scenario: `get_local_id(0)` makes `%v0` lane-varying
 - **GIVEN** a function initializes `%v0` uniformly with dimension `0`
 - **AND GIVEN** the function calls `_Z12get_local_idj`
@@ -81,10 +83,16 @@ Scalar register effects are outside this requirement unless a later verifier pro
 - **THEN** the verifier-visible summary table is updated in the same change
 - **AND THEN** automated checks fail if an inlined builtin has no verifier-visible summary
 
+#### Scenario: `work_group_broadcast` is a converged builtin sync point
+- **GIVEN** a function calls an inlined `work_group_broadcast` helper
+- **WHEN** CFG verification analyzes the call
+- **THEN** the call is treated as a work-group synchronization point that must execute convergently
+- **AND THEN** the returned `%v0` value is treated as work-group-uniform
+
 ### Requirement: Barrier legality SHALL use call-aware vector-uniform facts
 The system SHALL evaluate `barrier` legality using vector-uniform facts after applying builtin helper summaries and explicit conservative handling for direct calls that have no verifier-visible summary.
 
-If a `barrier` lies in the region of a `vbranch` that cannot be proven uniform after call-aware analysis, translation MUST fail before PTX emission.
+If a `barrier` or builtin-lowered work-group synchronization point lies in the region of a `vbranch` that cannot be proven uniform after call-aware analysis, translation MUST fail before PTX emission.
 
 #### Scenario: Divergent builtin-derived branch rejects barriers before PTX emission
 - **GIVEN** a function calls `_Z12get_local_idj`
@@ -92,6 +100,14 @@ If a `barrier` lies in the region of a `vbranch` that cannot be proven uniform a
 - **AND GIVEN** one or more `barrier` instructions lie inside the branch region before reconvergence
 - **WHEN** `sbt_decode cfgverify` or `sbt_ptx --require-known` analyzes the function
 - **THEN** verification fails with a barrier convergence diagnostic
+- **AND THEN** `sbt_ptx` does not emit PTX that can hang in CUDA `bar.sync`
+
+#### Scenario: Divergent branch rejects builtin-lowered synchronization before PTX emission
+- **GIVEN** a function calls `_Z12get_local_idj`
+- **AND GIVEN** a later `vbranch` uses the returned local ID in a branch condition
+- **AND GIVEN** an inlined `work_group_broadcast` helper call lies inside the branch region before reconvergence
+- **WHEN** `sbt_decode cfgverify` or `sbt_ptx --require-known` analyzes the function
+- **THEN** verification fails with a convergence diagnostic for the builtin synchronization point
 - **AND THEN** `sbt_ptx` does not emit PTX that can hang in CUDA `bar.sync`
 
 ### Requirement: Direct calls without verifier-visible summaries SHALL have explicit conservative treatment

@@ -282,6 +282,48 @@ Scenario make_two_call_branch_cfg(uint32_t start, uint32_t first_callee_pc,
   return s;
 }
 
+Scenario make_divergent_branch_builtin_sync_cfg(uint32_t start,
+                                                uint32_t local_id_callee_pc,
+                                                uint32_t sync_callee_pc,
+                                                const std::string &sync_callee) {
+  const uint32_t join_pc = start + 0x80u;
+  const uint32_t branch_target = start + 0x60u;
+  const uint32_t else_pc = start + 0x14u;
+  const uint32_t else_jump_pc = start + 0x18u;
+
+  Scenario s;
+  auto &cfg = s.cfg;
+  cfg.start = start;
+  cfg.end = join_pc + 8u;
+  cfg.insts = {
+      make_auipc(start, 1),
+      make_setrpc(start + 4u, 1, start, join_pc),
+      make_vmv_i(start + 8u, 0, 0),
+      make_call(start + 0x0cu, local_id_callee_pc),
+      make_vbranch(start + 0x10u, branch_target),
+      make_call(else_pc, sync_callee_pc),
+      make_jump(else_jump_pc, join_pc),
+      make_jump(branch_target, join_pc),
+      make_inst(join_pc, "join"),
+      make_inst(join_pc + 4u, "endprg"),
+  };
+  for (size_t i = 0; i < cfg.insts.size(); ++i)
+    cfg.inst_index_by_pc.emplace(cfg.insts[i].pc, i);
+
+  append_block(cfg, start, {0, 1, 2, 3, 4},
+               {sbt::cfg::Edge{start, branch_target, sbt::cfg::EdgeKind::Branch},
+                sbt::cfg::Edge{start, else_pc, sbt::cfg::EdgeKind::Fallthrough}});
+  append_block(cfg, else_pc, {5, 6},
+               {sbt::cfg::Edge{else_pc, join_pc, sbt::cfg::EdgeKind::Jump}});
+  append_block(cfg, branch_target, {7},
+               {sbt::cfg::Edge{branch_target, join_pc, sbt::cfg::EdgeKind::Jump}});
+  append_block(cfg, join_pc, {8, 9}, {});
+
+  s.sym_by_addr.emplace(local_id_callee_pc, "_Z12get_local_idj");
+  s.sym_by_addr.emplace(sync_callee_pc, sync_callee);
+  return s;
+}
+
 sbt::cfg::FunctionVerifyResult verify(const Scenario &s,
                                       const std::string &name) {
   const sbt::cfg::VerifyOptions options{.sym_by_addr = &s.sym_by_addr};
@@ -337,6 +379,34 @@ void check_local_size_allows_barrier() {
     require(result.barriers[0].ok,
             "barrier guarded by local_size-derived branch must be accepted");
   }
+}
+
+void check_work_group_broadcast_rejects_divergent_region() {
+  const auto s = make_divergent_branch_builtin_sync_cfg(
+      0x3c00u, 0x9024u, 0x9028u, "_Z20work_group_broadcastfj");
+  const auto result = verify(s, "broadcast_in_divergent_region");
+  require(result.vbranch.size() == 1, "expected one vbranch");
+  require(!result.vbranch[0].proven_uniform,
+          "get_local_id-derived branch must not be proven uniform");
+  require(result.barriers.size() == 1,
+          "work_group_broadcast must be modeled as one converged sync point");
+  require(result.barriers[0].kind == "_Z20work_group_broadcastfj",
+          "sync diagnostic should identify work_group_broadcast");
+  require(!result.barriers[0].ok,
+          "work_group_broadcast in a divergent branch region must be rejected");
+}
+
+void check_work_group_broadcast_allows_uniform_region() {
+  const auto s = make_single_call_branch_cfg(
+      0x3d00u, 0x902cu, "_Z20work_group_broadcastfj", false, true);
+  const auto result = verify(s, "broadcast_uniform_region");
+  require(result.vbranch.size() == 1, "expected one vbranch");
+  require(result.vbranch[0].proven_uniform,
+          "work_group_broadcast result must be work-group uniform");
+  require(result.barriers.size() == 1,
+          "work_group_broadcast must be tracked as one converged sync point");
+  require(result.barriers[0].ok,
+          "work_group_broadcast after uniform proof must be accepted");
 }
 
 void check_pure_math_transfer() {
@@ -452,6 +522,8 @@ int main() {
   check_get_group_id_preserves_uniform_dim();
   check_get_group_id_nonuniform_dim();
   check_local_size_allows_barrier();
+  check_work_group_broadcast_rejects_divergent_region();
+  check_work_group_broadcast_allows_uniform_region();
   check_pure_math_transfer();
   check_no_summary_call_boundaries();
   check_entry_uniform_facts_allow_barrier();

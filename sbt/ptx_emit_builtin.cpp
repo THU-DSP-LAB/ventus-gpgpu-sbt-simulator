@@ -41,8 +41,36 @@ void emit_builtin_call(EmitCtx &ctx, BuiltinKind kind, uint32_t pc_for_err) {
   case BuiltinKind::Vec4Sqrt: ctx.emit_builtin_vec4_sqrt(pc_for_err); return;
   case BuiltinKind::Vec4Fabs: ctx.emit_builtin_vec4_fabs(pc_for_err); return;
   case BuiltinKind::Mad24: ctx.emit_builtin_mad24iii(pc_for_err); return;
+  case BuiltinKind::WorkGroupBroadcast1D32: ctx.emit_builtin_work_group_broadcast(1u, pc_for_err); return;
+  case BuiltinKind::WorkGroupBroadcast2D32: ctx.emit_builtin_work_group_broadcast(2u, pc_for_err); return;
+  case BuiltinKind::WorkGroupBroadcast3D32: ctx.emit_builtin_work_group_broadcast(3u, pc_for_err); return;
   }
   throw EmitError("unsupported.call", ctx.func_name, pc_for_err, "builtin dispatch");
+}
+
+void EmitCtx::emit_builtin_work_group_broadcast(uint32_t dimensions, uint32_t pc_for_err) {
+  require(dimensions >= 1u && dimensions <= 3u,
+          EmitError("invalid.work_group_broadcast", func_name, pc_for_err, "dimensions"));
+
+  const std::string is_source = tmp_pred();
+  const std::string cmp = tmp_pred();
+  const std::string tid = tmp_b32();
+  emit_line("mov.u32 " + tid + ", %tid.x;");
+  emit_line("setp.eq.u32 " + is_source + ", " + tid + ", " + v(1) + ";");
+  if (dimensions >= 2u) {
+    emit_line("mov.u32 " + tid + ", %tid.y;");
+    emit_line("setp.eq.u32 " + cmp + ", " + tid + ", " + v(2) + ";");
+    emit_line("and.pred " + is_source + ", " + is_source + ", " + cmp + ";");
+  }
+  if (dimensions >= 3u) {
+    emit_line("mov.u32 " + tid + ", %tid.z;");
+    emit_line("setp.eq.u32 " + cmp + ", " + tid + ", " + v(3) + ";");
+    emit_line("and.pred " + is_source + ", " + is_source + ", " + cmp + ";");
+  }
+  emit_line("@" + is_source + " st.shared.u32 [__sbt_workgroup_broadcast_slot], " + v(0) + ";");
+  emit_line("bar.sync 0;");
+  emit_line("ld.shared.u32 " + v(0) + ", [__sbt_workgroup_broadcast_slot];");
+  emit_line("bar.sync 0;");
 }
 
 void EmitCtx::emit_builtin_get_id(std::string_view kind, uint32_t pc_for_err) {

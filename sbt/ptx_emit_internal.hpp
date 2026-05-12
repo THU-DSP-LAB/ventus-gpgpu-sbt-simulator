@@ -236,6 +236,8 @@ struct EmitCtx final {
 
   void emit_compute_csr_pds_u32(const std::string &dst_r, bool scalar);
 
+  void emit_builtin_work_group_broadcast(uint32_t dimensions, uint32_t pc_for_err);
+
   struct AddrMapTemps final {
     std::string addr;
     std::string in_shared_lo;

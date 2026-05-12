@@ -21,6 +21,7 @@ EmitResult emit_module(const sbt::cfg::FunctionCfg &entry_cfg, const std::unorde
   out << ".shared .align 4 .u32 __sbt_pds_block_idx;\n";
   out << ".shared .align 4 .u32 __sbt_pds_wg_base;\n";
   out << ".shared .align 4 .u32 __sbt_pds_exit_count;\n\n";
+  out << ".shared .align 4 .u32 __sbt_workgroup_broadcast_slot;\n\n";
 
   detail::ModuleInfo mod;
   mod.ptx_name_by_addr = &ptx_name_by_addr;

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <queue>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -472,10 +473,12 @@ static bool is_jump_block(const FunctionCfg &cfg, uint32_t block_start,
   return true;
 }
 
-static bool has_barrier_in_region(uint32_t barrier_block, const Graph &g,
-                                  const std::vector<VBranchDerived> &vbs,
-                                  std::string &out_reason) {
-  const auto it = g.idx_of.find(barrier_block);
+static bool has_converged_sync_in_region(uint32_t sync_block,
+                                         std::string_view sync_kind,
+                                         const Graph &g,
+                                         const std::vector<VBranchDerived> &vbs,
+                                         std::string &out_reason) {
+  const auto it = g.idx_of.find(sync_block);
   if (it == g.idx_of.end())
     return false;
   const size_t b_i = it->second;
@@ -483,12 +486,46 @@ static bool has_barrier_in_region(uint32_t barrier_block, const Graph &g,
     if (vb.check.proven_uniform)
       continue;
     if (vb.region.test(b_i)) {
-      out_reason = "barrier 位于 vbranch@" + hex_u32(vb.check.vbranch_addr) +
+      out_reason = std::string(sync_kind) + " 位于 vbranch@" +
+                   hex_u32(vb.check.vbranch_addr) +
                    " 的分支区域内（无法证明收敛）";
       return true;
     }
   }
   return false;
+}
+
+static std::optional<std::string> converged_sync_kind_for_inst(
+    const BundleInst &bi, const VerifyOptions &options) {
+  if (sbt::control::classify(bi).is_barrier)
+    return std::string("barrier");
+
+  const auto semantics = sbt::control::classify(bi);
+  if (!semantics.is_direct_call || semantics.direct_target < 0 ||
+      semantics.direct_target > 0xffff'ffffll ||
+      options.sym_by_addr == nullptr) {
+    return std::nullopt;
+  }
+
+  const auto sym_it =
+      options.sym_by_addr->find(static_cast<uint32_t>(semantics.direct_target));
+  if (sym_it == options.sym_by_addr->end())
+    return std::nullopt;
+
+  const auto builtin = sbt::lookup_builtin_call(sym_it->second);
+  if (!builtin)
+    return std::nullopt;
+
+  const auto summary = sbt::builtin_summary_for(*builtin);
+  if (!summary) {
+    throw std::runtime_error("builtin semantic metadata drift for inlined "
+                             "builtin '" +
+                             sym_it->second + "'");
+  }
+  if (!summary->requires_converged_work_group)
+    return std::nullopt;
+
+  return sym_it->second;
 }
 
 static bool block_in_divergent_region(uint32_t block, const Graph &g,
@@ -720,28 +757,31 @@ FunctionVerifyResult verify_function(const FunctionCfg &cfg,
     }
   }
 
-  // Barrier checks (conservative): barrier block must not be in any vbranch
-  // region and the function must not be entered from a divergent call context.
+  // Barrier-like checks (conservative): every PTX work-group synchronization
+  // point must not be in any vbranch region, and the function must not be
+  // entered from a divergent direct-call context.
   for (const auto &bi : cfg.insts) {
-    if (!sbt::control::classify(bi).is_barrier)
+    const auto sync_kind = converged_sync_kind_for_inst(bi, options);
+    if (!sync_kind)
       continue;
     BarrierCheck bc;
     bc.barrier_addr = bi.pc;
+    bc.kind = *sync_kind;
     auto it = cfg.inst_pc_to_block.find(bi.pc);
     if (it == cfg.inst_pc_to_block.end()) {
       bc.ok = false;
-      bc.error = "barrier 未映射到基本块";
+      bc.error = bc.kind + " 未映射到基本块";
       out.barriers.push_back(std::move(bc));
       continue;
     }
     bc.barrier_block = it->second;
     if (!options.entry_converged) {
       bc.ok = false;
-      bc.error = "barrier 所在函数入口来自非收敛 direct-call 上下文";
+      bc.error = bc.kind + " 所在函数入口来自非收敛 direct-call 上下文";
     } else {
       std::string reason;
-      if (has_barrier_in_region(bc.barrier_block, analysis.graph, analysis.vbs,
-                                reason)) {
+      if (has_converged_sync_in_region(bc.barrier_block, bc.kind,
+                                       analysis.graph, analysis.vbs, reason)) {
         bc.ok = false;
         bc.error = std::move(reason);
       } else {
