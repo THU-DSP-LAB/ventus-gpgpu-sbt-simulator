@@ -2,8 +2,11 @@
 
 namespace sbt::ptx::detail {
 
+static constexpr uint32_t kPdsPrivateWindowMask = 0x7ffu;
+
 static void emit_pds_addr(EmitCtx &ctx, const sbt::DecodedInst &di, uint32_t pc, bool include_byte_offset) {
   ctx.emit_line("add.s32 " + r(14) + ", " + v(di.rs1) + ", " + std::to_string(di.imm) + ";");
+  ctx.emit_line("and.b32 " + r(14) + ", " + r(14) + ", " + hex_u32(kPdsPrivateWindowMask) + ";");
   if (include_byte_offset) {
     ctx.emit_line("and.b32 " + r(17) + ", " + r(14) + ", 3;");
   }

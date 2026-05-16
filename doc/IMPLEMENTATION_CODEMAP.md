@@ -122,7 +122,8 @@
     - `vlw.v/vsw.v/vsb.v`：按 Ventus PDS（private memory）语义实现为“全局 PDS buffer + 数值地址映射”：
       - `.entry` 参数包含 `pds_base_vaddr/pds_size_per_thread/pds_bitmap_base_vaddr/pds_pool_num_blocks`；
       - prologue 以 block 级原子方式从 bitmap 申请 PDS block，写入 shared；
-      - `CSR_PDS = wg_pds_base`，word 访问地址为 `CSR_PDS + align4(offset) * numw * 32 + (warp_id_in_block * 32 + lane) * 4`；`vsb.v` 在该 lane word 地址上追加 `offset & 3` byte 偏移；
+      - current：PDS load/store offset 遵循 Spike 的 signed 11-bit 语义；`base + offset` 的 effective private offset 按 11-bit window 回绕后进入 lane/warp interleave；超出 `[-1024, 1023]` 的 private frame offset 必须由 Ventus LLVM 后端先 materialize 到 adjusted base，再交给 `vlw.v/vsw.v/vsb.v`；
+      - `CSR_PDS = wg_pds_base`，word 访问地址为 `CSR_PDS + align4((base + offset) & 0x7ff) * numw * 32 + (warp_id_in_block * 32 + lane) * 4`；`vsb.v` 在该 lane word 地址上追加 `((base + offset) & 3)` byte 偏移；
       - 再通过统一的数值地址映射 helper 落到 `.global` 访问。
   - 调用（call）：
     - 一小部分 builtin 仍在 emitter 内按 ABI-visible symbol 内联（OpenCL id/query、local size、work-group broadcast + 少量 helper）；symbol identity、verifier summary 与隐式同步属性由 `sbt/builtin_semantics.*` 共享维护。
@@ -154,7 +155,7 @@
     - `build/workgroup_broadcast_builtin_test`：覆盖 `work_group_broadcast` 32-bit overload 的 shared-memory inline lowering 与 unsupported overload fail-fast。
     - `build/external_mnemonic_contract_test`：覆盖 pretty / JSON / diagnostics / coverage / external builtin symbol 等 external mnemonic contract，确保 authority 迁移后 `DecodedInst.name` 仍稳定服务外部口径。
     - `build/custom_ptx_emit_test` / `build/mma_ptx_emit_test`：覆盖 custom non-MMA 与 current MMA lowering 的 `%tmp*` 声明/使用、native/composite tuple emission，以及 `ptxas` compile-first 合法性。
-    - `build/pds_vector_memory_test`：覆盖 current PDS vector-memory lowering，包含 `vsb.v` byte offset 与 byte-store PTX path。
+    - `build/pds_vector_memory_test`：覆盖 current PDS vector-memory lowering，包含 11-bit private window 回绕、`vsb.v` byte offset 与 byte-store PTX path。
     - `python3 tools/check_ptx_emit_name_allowlist.py`：静态检查完整 post-split emitter 文件集中的 `name` 读取只剩显式 allowlist 用途，并检查 shared builtin lookup / dispatch / verifier summary 单一事实源。
 
 - `tools/rodinia_ptx_smoke.sh`
@@ -284,4 +285,4 @@
 - **控制流约束**：kernel 内 `jalr` 仅允许标准 `ret`；不可结构化 CFG 直接拒绝（不做 software SIMT stack）。
 - **call 约束**：仅支持 direct call（`jal ra, imm`）+ 少量内联 builtin；非 `ret` 形态 `jalr` 仍 unsupported。
 - **ABI/元数据**：当前 `.entry` 参数为 `(global_base, knl_vaddr, pds_base_vaddr, pds_size_per_thread, pds_bitmap_base_vaddr, pds_pool_num_blocks)`；helper `runtime_env_blob` 也只携带一个 `global_base`。prologue 会按当前 `_start` ABI 初始化 `x2/x3/x4/x8/x10`：`x3(gp)` 来自 ELF `__global_pointer$`，`x2/x8` 使用 `CSR_KNL + KNL_LDS_STACK_SIZE_PER_WF`，`x10(a0)` 来自 `CSR_KNL + KNL_ARG_BASE`；`CSR_PRINT` 当前按 `CSR_KNL + KNL_PRINT_ADDR` 建模。kernel 自身若有 `addi s0, s0, imm` 则视为 frame 分配，不在 prologue 中额外补偿。
-- **PDS（private）**：入口 prologue 由 `thread_linear_id==0` 原子申请/写回 `wg_pds_base`，kernel 退出前释放；`vlw.v/vsw.v` 与 `CSR_PDS` 都基于该 `wg_pds_base` 计算，不再按 full-grid block 线性编号寻址。
+- **PDS（private）**：入口 prologue 由 `thread_linear_id==0` 原子申请/写回 `wg_pds_base`，kernel 退出前释放；`vlw.v/vsw.v` 与 `CSR_PDS` 都基于该 `wg_pds_base` 计算，不再按 full-grid block 线性编号寻址。PDS vector-memory lowering 会先把 `base + offset` 回绕到 11-bit private window，再执行 lane/warp interleave。

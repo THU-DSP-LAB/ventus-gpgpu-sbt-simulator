@@ -145,7 +145,7 @@ python3 tools/check_ptx_emit_name_allowlist.py
   current supported correctness path 继续消费 `DecodedInst.emit` / `DecodedInst.custom` / `DecodedInst.mma`，ordinary/custom/MMA 的 emit 语义不再由 `DecodedInst.name` 决定。
 - `sbt/control_semantics.cpp`、`sbt/cfg.cpp`、`sbt/cfg_verify.cpp` 与 `tools/sbt_ptx.cpp` 的 current supported control-flow correctness path 都已改为消费 decode 产出的结构化语义；ordinary/custom/MMA 的 emit 语义同样不再由 `DecodedInst.name` 决定。
 - `DecodedInst.name` 当前允许用途限定为 pretty / JSON / diagnostics / coverage / ABI-visible builtin symbol / comments。
-- `tools/check_ptx_emit_name_allowlist.py` 会静态检查拆分后的完整 emitter 文件集中残余 `name` 读取是否只剩 allowlist 用途，并检查 builtin public allowlist、inline dispatch 与 verifier summary 共用共享 lookup；`build/instruction_metadata_contract_test`、`build/cfg_verify_builtin_call_semantics_test`、`build/workgroup_broadcast_builtin_test`、`build/pds_vector_memory_test` 等代表性 supported-path 回归会继续做 control/emitter poison-name、builtin call summary / 隐式同步点检查、work-group broadcast lowering 与 PDS vector-memory lowering 检查，并覆盖 poisoned non-`ret` `jalr` 仍被识别为 `unsupported_jalr`。
+- `tools/check_ptx_emit_name_allowlist.py` 会静态检查拆分后的完整 emitter 文件集中残余 `name` 读取是否只剩 allowlist 用途，并检查 builtin public allowlist、inline dispatch 与 verifier summary 共用共享 lookup；`build/instruction_metadata_contract_test`、`build/cfg_verify_builtin_call_semantics_test`、`build/workgroup_broadcast_builtin_test`、`build/pds_vector_memory_test` 等代表性 supported-path 回归会继续做 control/emitter poison-name、builtin call summary / 隐式同步点检查、work-group broadcast lowering 与 PDS vector-memory lowering（含 11-bit private window 回绕）检查，并覆盖 poisoned non-`ret` `jalr` 仍被识别为 `unsupported_jalr`。
 - decode 期间的 shared-metadata lookup 当前仍保留内部 name-keyed 查表；但 CFG build / CFG verify / direct-call 闭包扫描已不再把 `DecodedInst.name` 当作控制流 semantic authority。
 - historical 记录分别见 `openspec/changes/archive/2026-04-18-reduce-lowering-name-dependence/`、`openspec/changes/archive/2026-04-18-unify-cfg-control-semantics/` 与 `openspec/changes/archive/2026-04-25-modularize-ptx-emit-lowering/`。
 
@@ -214,6 +214,7 @@ cd ../rodinia/opencl/bfs
 - `VENTUS_PTX_HEAP_MB` 仍用于限制 driver 在 `0x9000_0000` 以上的 runtime allocation 窗口；它不再代表 PTX 侧独立 `Heap` 地址空间
 - driver 在单一 `Global` VMM backing 下按页稀疏映射，但 heap-window 内的小 runtime allocation 仍按请求大小推进；落在 heap window 的 ELF `PT_LOAD` 也必须能与已存在的 runtime 页共存
 - heap-window 之外的 `Global` ELF `PT_LOAD` 可以存在，但不会推进 runtime allocation 游标；PDS bitmap 需要扩容时，driver 允许分配新的内部 bitmap，而不是要求旧 bitmap 必须仍是最后一个 allocation
+- current PTX PDS vector-memory lowering 会在 `base + offset` 后按 11-bit private window 回绕，再执行 lane/warp interleave。
 - 当前阶段空闲 VMM 页不会在 `free` 时立刻 `unmap/release`；driver 会保留这些空页到 device close，以减少连续 kernel launch 场景下的反复映射开销
 
 若要确保端到端运行验证的是当前工作树中的翻译器实现，应显式导出 `GPU_SBT_PTX=$PWD/build/sbt_ptx`；`tools/regress.sh` 与 `tools/ventus_regression_profile.py` 在检测到该二进制存在时会自动这样做。

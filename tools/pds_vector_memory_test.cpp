@@ -69,6 +69,8 @@ int main() {
 
   require(ptx.find("and.b32 %r17, %r14, 3;") != std::string::npos,
           "PDS byte store keeps byte offset within the lane word");
+  require(ptx.find("and.b32 %r14, %r14, 0x000007ff;") != std::string::npos,
+          "PDS vector memory wraps the effective private offset to the 11-bit window");
   require(ptx.find("add.u32 %r14, %r14, %r17;") != std::string::npos,
           "PDS byte store applies byte offset to mapped PDS address");
   require(ptx.find("cvt.u8.u32") != std::string::npos,
