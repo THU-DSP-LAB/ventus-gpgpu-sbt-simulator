@@ -232,17 +232,22 @@ void EmitCtx::emit_prologue() {
     emit_st_x_u32_scalar(/*x3=*/3, r(15), /*pc_for_err=*/cfg.start);
   }
 
-  // x2 = shared_base + warp_id * ldsStackSizePerWf
+  emit_load_knl_u32_scalar(r(17), kKnlLdsStackSizePerWfOffset, /*pc_for_err=*/cfg.start);
+  emit_load_knl_u32_scalar(r(18), kKnlLdsNonStackSizeOffset, /*pc_for_err=*/cfg.start);
+
+  // x2 = shared_base + ldsNonStackSize + warp_id * ldsStackSizePerWf
   emit_line("mul.lo.u32 " + r(15) + ", " + r(10) + ", " + r(17) + ";");
+  emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(18) + ";");
   emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
   emit_st_x_u32_scalar(/*x2=*/2, r(15), /*pc_for_err=*/cfg.start);
 
-  // Match `_start` ABI: s0 (x8) points to the base of the kernel LDS region:
-  //   s0 = CSR_LDS + CSR_NUMW*ldsStackSizePerWf
+  // Match `_start` ABI: s0 (x8) points past the per-workgroup LDS stack region:
+  //   s0 = CSR_LDS + ldsNonStackSize + CSR_NUMW*ldsStackSizePerWf
   // In this backend `shared_base_vaddr` models the CSR_LDS numeric base, and `warps_per_block` models CSR_NUMW.
   // Note: kernels may further adjust s0 in their own prologue (e.g. `addi s0, s0, <frame_bytes>`). We treat that
   // as frame allocation and do not attempt to compensate it here.
   emit_line("mul.lo.u32 " + r(15) + ", " + r(12) + ", " + r(17) + ";");
+  emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + r(18) + ";");
   emit_line("add.u32 " + r(15) + ", " + r(15) + ", " + hex_u32(opt.shared_base_vaddr) + ";");
   emit_st_x_u32_scalar(/*x8=*/8, r(15), /*pc_for_err=*/cfg.start);
 

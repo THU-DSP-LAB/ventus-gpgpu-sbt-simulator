@@ -161,7 +161,7 @@ python3 tools/check_ptx_emit_name_allowlist.py
 
 `regext/regexti` 默认仍按严格 bundling 处理；若需临时兼容 Spike 对连续前缀的现有行为，可设置环境变量 `SBT_COMPAT_SPIKE_NESTED_REGEXT=1`。打开后，`sbt_decode` 与 `sbt_ptx` 在遇到连续 `regext`/`regexti` 指向同一条真实指令时，不再报 `nested regext prefix`，而是按 Spike 现有顺序覆盖前缀状态继续解码；这是临时兼容方案，不改变默认 fail-fast 路径。
 
-当前 `.entry` prologue 会按当前 Ventus `_start` ABI 对齐运行时初始状态：初始化 `x2/x3/x4/x8/x10`，其中 `x3(gp)` 来自 ELF `__global_pointer$`，`x2/x8` 使用 `KNL_LDS_STACK_SIZE_PER_WF`，`CSR_PRINT` 通过 `CSR_KNL + KNL_PRINT_ADDR` 建模。
+当前 `.entry` prologue 会按当前 Ventus `_start` ABI 对齐运行时初始状态：初始化 `x2/x3/x4/x8/x10`，其中 `x3(gp)` 来自 ELF `__global_pointer$`，`x2/x8` 使用 `KNL_LDS_NON_STACK_SIZE` 与 `KNL_LDS_STACK_SIZE_PER_WF`，`CSR_PRINT` 通过 `CSR_KNL + KNL_PRINT_ADDR` 建模。
 
 ## 统一回归入口（推荐）
 ```bash

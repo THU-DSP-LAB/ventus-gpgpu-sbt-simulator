@@ -128,6 +128,10 @@ int main() {
           "kernel ABI should not keep legacy heap_base");
   require(ptx.find(".param .u64 global_base") != std::string::npos,
           "kernel ABI should expose one global_base parameter");
+  require(ptx.find("add.u32 %r16, %r30, 60;") != std::string::npos,
+          "entry prologue should read KNL_LDS_NON_STACK_SIZE");
+  require(count_substr(ptx, "add.u32 %r15, %r15, %r18;") >= 2,
+          "entry prologue should add LDS non-stack prefix to x2 and x8");
   require(ptx.find("@%p0 st.param.u32") == std::string::npos,
           "mutable-state ABI must not predicate st.param");
   require(ptx.find("@%p0 ld.param.u32") == std::string::npos,

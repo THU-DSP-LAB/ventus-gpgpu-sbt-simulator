@@ -56,6 +56,7 @@ static constexpr uint32_t kFullWarpMask = 0xffffffffu;
 static constexpr uint32_t kKnlArgBaseOffset = 4u;
 static constexpr uint32_t kKnlPrintAddrOffset = 48u;
 static constexpr uint32_t kKnlLdsStackSizePerWfOffset = 56u;
+static constexpr uint32_t kKnlLdsNonStackSizeOffset = 60u;
 
 enum class VirtualTempKind : size_t {
   B32 = 0,

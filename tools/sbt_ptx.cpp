@@ -470,7 +470,7 @@ int main(int argc, char **argv) {
             }
             // Keep stdout compatible with existing driver usage.
             std::cout << "已生成 PTX: " << out_path << "\n";
-            std::cout << "提示: 需要 dynamic shared >= warps_per_block*ldsStackSizePerWf + ldsSize（其中 ldsStackSizePerWf 来自 KNL metadata）\n";
+            std::cout << "提示: 需要 dynamic shared >= ldsSize；ldsSize 应包含 KNL_LDS_NON_STACK_SIZE 与 warps_per_block*ldsStackSizePerWf\n";
             return 0;
           }
         }
@@ -851,7 +851,7 @@ int main(int argc, char **argv) {
     }
 
     std::cout << "已生成 PTX: " << out_path << "\n";
-    std::cout << "提示: 需要 dynamic shared >= warps_per_block*ldsStackSizePerWf + ldsSize（其中 ldsStackSizePerWf 来自 KNL metadata）\n";
+    std::cout << "提示: 需要 dynamic shared >= ldsSize；ldsSize 应包含 KNL_LDS_NON_STACK_SIZE 与 warps_per_block*ldsStackSizePerWf\n";
     return 0;
   } catch (const sbt::ptx::EmitError &e) {
     std::cerr << "PTX 生成失败: " << e.what() << "\n";
