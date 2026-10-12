@@ -124,6 +124,7 @@ python3 tools/check_ptx_emit_name_allowlist.py
 当前 PTX emitter 的寄存器 current 口径是：
 - 固定 machine/runtime/control 槽位继续保留，当前至少包括 `%r0/%r1/%r2`、`%p0`、`%rd0/%rd2/%rd4`、`%r26..%r29`，以及逻辑寄存器文件 `%x<256>` / `%v<256>`。
 - lowering scratch 统一走函数级唯一命名的 `%tmp*` 虚拟临时寄存器，例如 `%tmp_b32_*`、`%tmp_b64_*`、`%tmp_p_*`、`%tmp_f32_*`、`%tmp_b16_*`、`%tmp_u8_*`、`%tmp_u16_*`；这些寄存器在函数头统一 `.reg` 声明，本阶段不要求重排固定槽位编号。
+- 函数 assembly 前统一消除同宽拷贝、死 scratch、整数恒等操作、自拷贝和紧邻标签跳转，只声明实际使用的 temp 与 fixed group；`.b32` 的 `%x/%v` 可直接用于 `.f32` 指令。见 [PTX 冗余消除](doc/PTX_REDUNDANCY_CLEANUP.md)。
 
 当前 instruction metadata / scalar execution current 口径是：
 - Spike-backed 非 custom 指令通过共享 `InstId + InstMetadata` contract 提供 `operand_form`、`imm_kind`、`uniform_transfer_kind`；`DecodedInst.name` 只保留给 pretty print、JSON 输出与 external mnemonic contract。

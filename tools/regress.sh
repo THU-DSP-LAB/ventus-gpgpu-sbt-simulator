@@ -44,6 +44,7 @@ DO_BUILD="auto" # auto|yes|no
 TIMEOUT_SCALE="1.0"
 JOBS=""
 MMA_STAGE="full"
+UNIT_TEST_TIMEOUT_SECONDS=180
 WORKDIR_MODE="temp" # temp|inplace|custom
 WORKDIR_OPTION_SET="no"
 WORKDIR_PATH=""
@@ -353,16 +354,23 @@ cmake_build_if_needed() {
 
 run_regext_bundle_test() {
   # regext_bundle_test currently uses default ../spike/riscv/encoding.h relative to cwd.
-  run_step_in_root "regext_bundle_test" "${BUILD_DIR}/regext_bundle_test"
+  run_cpp_unit_test regext_bundle_test
+}
+
+run_cpp_unit_test() {
+  local test_name="$1"
+  run_step_in_root "${test_name}" timeout "${UNIT_TEST_TIMEOUT_SECONDS}" "${BUILD_DIR}/${test_name}"
 }
 
 run_custom_unit_tests() {
-  run_step_in_root "custom_decode_test" "${BUILD_DIR}/custom_decode_test"
-  run_step_in_root "mma_decode_test" "${BUILD_DIR}/mma_decode_test"
-  run_step_in_root "custom_ptx_emit_test" "${BUILD_DIR}/custom_ptx_emit_test"
-  run_step_in_root "pds_vector_memory_test" "${BUILD_DIR}/pds_vector_memory_test"
-  run_step_in_root "workgroup_broadcast_builtin_test" "${BUILD_DIR}/workgroup_broadcast_builtin_test"
-  run_step_in_root "mma_ptx_emit_test" "${BUILD_DIR}/mma_ptx_emit_test"
+  local test_name
+  for test_name in custom_decode_test mma_decode_test custom_ptx_emit_test \
+    ptx_cleanup_test pds_vector_memory_test workgroup_broadcast_builtin_test mma_ptx_emit_test \
+    instruction_metadata_contract_test cfg_verify_builtin_call_semantics_test external_mnemonic_contract_test \
+    ptx_emit_call_prototype_test ptx_emit_leader_lane_abi_test; do
+    run_cpp_unit_test "${test_name}"
+  done
+  run_step_in_root "emitter mnemonic allowlist" python3 "${ROOT_DIR}/tools/check_ptx_emit_name_allowlist.py"
 }
 
 run_custom_non_mma_oracle_gate() {
@@ -474,6 +482,12 @@ main() {
       "${BUILD_DIR}/custom_decode_test" \
       "${BUILD_DIR}/mma_decode_test" \
       "${BUILD_DIR}/custom_ptx_emit_test" \
+      "${BUILD_DIR}/ptx_cleanup_test" \
+      "${BUILD_DIR}/instruction_metadata_contract_test" \
+      "${BUILD_DIR}/cfg_verify_builtin_call_semantics_test" \
+      "${BUILD_DIR}/external_mnemonic_contract_test" \
+      "${BUILD_DIR}/ptx_emit_call_prototype_test" \
+      "${BUILD_DIR}/ptx_emit_leader_lane_abi_test" \
       "${BUILD_DIR}/pds_vector_memory_test" \
       "${BUILD_DIR}/workgroup_broadcast_builtin_test" \
       "${BUILD_DIR}/mma_ptx_emit_test" \

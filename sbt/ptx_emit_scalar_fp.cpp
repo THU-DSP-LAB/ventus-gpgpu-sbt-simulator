@@ -94,16 +94,6 @@ void EmitCtx::emit_scalar_fclass_s(const sbt::DecodedInst &di, uint32_t pc_for_e
 
   emit_line(scalar_prefix() + "mov.u32 " + mask + ", 0;");
 
-  // Derive per-class predicates.
-  // -inf / +inf
-  emit_line(scalar_prefix() + "and.pred " + p(12) + ", " + p(7) + ", " + p(1) + ";"); // -inf
-  emit_line(scalar_prefix() + "not.pred " + p(13) + ", " + p(1) + ";");
-  emit_line(scalar_prefix() + "and.pred " + p(13) + ", " + p(7) + ", " + p(13) + ";"); // +inf
-  // -0 / +0
-  emit_line(scalar_prefix() + "and.pred " + p(14) + ", " + p(5) + ", " + p(1) + ";"); // -0
-  emit_line(scalar_prefix() + "not.pred " + p(15) + ", " + p(1) + ";");
-  emit_line(scalar_prefix() + "and.pred " + p(15) + ", " + p(5) + ", " + p(15) + ";"); // +0
-
   auto or_if = [&](const std::string &pred, uint32_t bit) {
     emit_line(scalar_prefix() + "selp.u32 " + bit_mask + ", " + std::to_string(bit) + ", 0, " + pred + ";");
     emit_line(scalar_prefix() + "or.b32 " + mask + ", " + mask + ", " + bit_mask + ";");

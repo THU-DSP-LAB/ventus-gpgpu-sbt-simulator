@@ -235,6 +235,9 @@ __kernel void mt_rv32i_branch_cov(__global const uint *A, __global uint *B) {
   const uint b = A[1] | 3u;
 
   uint br0, br1, br2;
+  uint unsigned_lt, unsigned_gt;
+  const uint kUnsignedLtHashShift = 17u;
+  const uint kUnsignedGtHashShift = 23u;
   __asm__ __volatile__(
       "blt %1, %2, 1f\n"
       "addi %0, x0, 3\n"
@@ -264,7 +267,29 @@ __kernel void mt_rv32i_branch_cov(__global const uint *A, __global uint *B) {
       : "=r"(br2)
       : "r"(a), "r"(b));
 
-  B[gid] = (br0 ^ u32_rotl(br1, 9) ^ u32_rotl(br2, 3)) ^ (gid * 19u);
+  // Both unsigned comparisons affect the output; for unequal inputs they also
+  // exercise the taken and untaken BLTU paths within the same invocation.
+  __asm__ __volatile__(
+      "bltu %1, %2, 1f\n"
+      "addi %0, x0, 0\n"
+      "bge x0, x0, 2f\n"
+      "1:\n"
+      "addi %0, x0, 1\n"
+      "2:\n"
+      : "=r"(unsigned_lt)
+      : "r"(a), "r"(b));
+  __asm__ __volatile__(
+      "bltu %1, %2, 1f\n"
+      "addi %0, x0, 0\n"
+      "bge x0, x0, 2f\n"
+      "1:\n"
+      "addi %0, x0, 1\n"
+      "2:\n"
+      : "=r"(unsigned_gt)
+      : "r"(b), "r"(a));
+
+  B[gid] = (br0 ^ u32_rotl(br1, 9) ^ u32_rotl(br2, 3) ^
+            u32_rotl(unsigned_lt, kUnsignedLtHashShift) ^ u32_rotl(unsigned_gt, kUnsignedGtHashShift)) ^ (gid * 19u);
 }
 
 __kernel void mt_int_cov(__global const uint *A, __global uint *B) {

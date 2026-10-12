@@ -6,7 +6,7 @@
 
 需求/作用
 - 对回归所需的 Ventus custom feature 做显式能力检测。
-- 同时检查设备端 clang 是否识别对应 builtin、Spike `encoding.h`/insn 文件是否声明执行入口，以及 MMA/SFU 所需依赖目录是否存在。
+- 同时检查设备端 clang 是否识别对应 builtin、Spike `encoding.h`/insn 文件是否声明执行入口，以及当前 repository-local MMA/SFU 实现文件是否存在。
 - 输出可读报告或 shell 变量，供回归脚本按 feature 显式 skip。
 
 用法
@@ -76,7 +76,7 @@ __kernel void k(__global uint *out) {
 """,
         spike_decls=("mma_m16n8k16",),
         spike_insns=("mma_m16n8k16.h",),
-        spike_deps=("dependencies/mma-sim",),
+        spike_deps=("riscv/ventus_mma.h", "riscv/ventus_custom_arith.h", "riscv/ventus_custom.cc"),
     ),
     "shuffle": FeatureSpec(
         name="shuffle",
@@ -98,7 +98,7 @@ __kernel void k(__global unsigned int *out) {
 """,
         spike_decls=("vex2_approx_f32",),
         spike_insns=("vex2_approx_f32.h",),
-        spike_deps=("dependencies/unfu",),
+        spike_deps=("riscv/ventus_custom_arith.h", "riscv/ventus_custom.cc"),
     ),
     "vcvt": FeatureSpec(
         name="vcvt",

@@ -29,6 +29,7 @@ add_library(sbt_lib
   sbt/cfg_verify.cpp
   sbt/ptx_mma.cpp
   sbt/ptx_emit.cpp
+  sbt/ptx_cleanup.cpp
   sbt/ptx_emit_core.cpp
   sbt/ptx_emit_runtime.cpp
   sbt/ptx_emit_memory.cpp
@@ -111,6 +112,9 @@ target_link_libraries(ptx_emit_leader_lane_abi_test PRIVATE sbt_lib)
 
 add_executable(custom_ptx_emit_test tools/custom_ptx_emit_test.cpp)
 target_link_libraries(custom_ptx_emit_test PRIVATE sbt_lib)
+
+add_executable(ptx_cleanup_test tools/ptx_cleanup_test.cpp)
+target_link_libraries(ptx_cleanup_test PRIVATE sbt_lib)
 
 add_executable(pds_vector_memory_test tools/pds_vector_memory_test.cpp)
 target_link_libraries(pds_vector_memory_test PRIVATE sbt_lib)

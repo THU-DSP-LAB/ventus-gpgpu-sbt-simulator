@@ -1,4 +1,7 @@
 #include "sbt/ptx_emit_internal.hpp"
+#include "sbt/ptx_cleanup.hpp"
+
+#include <algorithm>
 
 namespace sbt::ptx::detail {
 
@@ -16,21 +19,25 @@ void EmitCtx::require_uniform_pure_scalar(const sbt::DecodedInst &di, uint32_t p
 }
 
 void EmitCtx::emit_fixed_reg_decls() {
-  out << "  .reg .b32 %r<32>;\n";
-  out << "  .reg .b64 %rd<32>;\n";
-  out << "  .reg .pred %p<16>;\n";
-  out << "  .reg .f32 %f<16>;\n";
-  out << "  .reg .b16 %h<16>;\n";
-  out << "  .reg .u8 %ub<4>;\n";
-  out << "  .reg .u16 %uh<16>;\n";
-  out << "  .reg .b32 %x<256>;\n";
-  out << "  .reg .b32 %v<256>;\n";
+  static constexpr std::array<std::pair<std::string_view, std::string_view>, 9> groups{{
+      {"%r", ".b32 %r<32>"}, {"%rd", ".b64 %rd<32>"}, {"%p", ".pred %p<16>"},
+      {"%f", ".f32 %f<16>"}, {"%h", ".b16 %h<16>"}, {"%ub", ".u8 %ub<4>"},
+      {"%uh", ".u16 %uh<16>"}, {"%x", ".b32 %x<256>"}, {"%v", ".b32 %v<256>"}}};
+  const auto used = ptx_registers(body.str());
+  for (const auto &[prefix, declaration] : groups) {
+    const bool present = std::any_of(used.begin(), used.end(), [&](const auto &reg) {
+      return reg.starts_with(prefix) && reg.size() > prefix.size() && reg[prefix.size()] >= '0' && reg[prefix.size()] <= '9';
+    });
+    if (present) out << "  .reg " << declaration << ";\n";
+  }
 }
 
 void EmitCtx::emit_virtual_temp_reg_decls() {
+  const auto used = ptx_registers(body.str());
   for (size_t kind = 0; kind < kVirtualTempSpecs.size(); ++kind) {
     const auto &spec = kVirtualTempSpecs[kind];
     for (uint32_t idx = 0; idx < virtual_temp_counts[kind]; ++idx) {
+      if (!used.contains(std::string(spec.name_prefix) + std::to_string(idx))) continue;
       out << "  .reg " << spec.ptx_type << " " << spec.name_prefix << idx << ";\n";
     }
   }
@@ -132,6 +139,8 @@ void EmitCtx::emit_body() {
     emit_fallthrough_edge_if_needed(bb);
   }
 
+  const auto optimized_body = cleanup_ptx_body(body.str());
+  body.str(optimized_body);
   if (is_entry) emit_entry_header();
   else emit_func_header();
   emit_fixed_reg_decls();

@@ -176,7 +176,6 @@ void EmitCtx::emit_prologue() {
   emit_line("ld.param.u32 " + r(29) + ", [pds_size_per_thread];");
   emit_line("ld.param.u32 " + r(26) + ", [pds_bitmap_base_vaddr];");
   emit_line("ld.param.u32 " + r(27) + ", [pds_pool_num_blocks];");
-  emit_load_knl_u32_scalar(r(17), kKnlLdsStackSizePerWfOffset, /*pc_for_err=*/cfg.start);
 
   // lane id (0..31)
   emit_line("mov.u32 " + r(0) + ", %laneid;");
@@ -207,12 +206,6 @@ void EmitCtx::emit_prologue() {
   // Using `cvta.to.shared` here can produce an address that tools/runtime treat as out-of-bounds.
   emit_line("mov.u64 " + rd(2) + ", __sbt_shmem;");
 
-  // Reserved legacy shared scalar backing slot (kept only to avoid register-map churn).
-  emit_line("mul.lo.u32 " + r(13) + ", " + r(10) + ", " + r(17) + ";");
-  emit_line("cvt.u64.u32 " + rd(13) + ", " + r(13) + ";");
-  emit_line("add.u64 " + rd(3) + ", " + rd(2) + ", " + rd(13) + ";");
-
-  emit_line("mov.u64 " + rd(3) + ", 0;");
   emit_select_leader_from_active_mask();
 
   // Fail fast if pds_base_vaddr is outside the supported Global numeric address range.
@@ -268,7 +261,6 @@ void EmitCtx::emit_func_prologue() {
   emit_load_runtime_env_blob("__sbt_runtime_env_in");
   emit_load_machine_ctx_blob("__sbt_machine_ctx_in");
   emit_line("mov.u64 " + rd(2) + ", __sbt_shmem;");
-  emit_line("mov.u64 " + rd(3) + ", 0;");
   emit_restore_mutable_state_blob("__sbt_mutable_state_in");
 }
 

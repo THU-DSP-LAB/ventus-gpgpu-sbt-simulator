@@ -13,6 +13,7 @@
 - `cfg_verify_builtin_call_semantics_test.cpp`：CFG verifier 对 builtin helper call summary、隐式 work-group 同步点、ordinary/no-symbol direct-call ABI-aware 边界、reachable callee 入口 uniform/convergence facts 传播，以及 shared builtin lookup/summary/classifier drift 的合同测试
 - `external_mnemonic_contract_test.cpp`：pretty / JSON / coverage / builtin symbol 等 external mnemonic contract 回归测试
 - `custom_ptx_emit_test.cpp`：custom non-MMA PTX lowering + ptxas compile-first 回归测试
+- `ptx_cleanup_test.cpp`：current PTX 冗余消除及寄存器重定义、谓词、循环携带值、类型与副作用边界回归
 - `pds_vector_memory_test.cpp`：current PDS vector-memory lowering 回归测试，覆盖 11-bit private window 回绕、`vsb.v` byte offset 与 byte-store PTX path
 - `workgroup_broadcast_builtin_test.cpp`：current `work_group_broadcast` 32-bit overload 的 PTX shared-memory inline lowering 与 unsupported overload fail-fast 回归测试
 - `ptx_emit_call_prototype_test.cpp`：PTX helper 前向调用 prototype 回归测试
@@ -32,7 +33,7 @@
   - current：默认覆盖较小/较大两档随机样本；逐 kernel 报告 `PASS` / `BLOCK` / `FAIL`，non-current MMA family 继续显式 `BLOCK`
 - `custom_non_mma_specs.py`：custom non-MMA oracle 的 kernel 清单与比较模式数据
 - `ventus_feature_probe.py`：custom feature 能力探针
-  - current：检测 MMA / Shuffle / SFU / VCVT / packed custom 指令，分别验证 clang builtin、Spike `DECLARE_INSN`/insn 文件，以及 MMA/SFU 所需 `dependencies/mma-sim` / `dependencies/unfu`
+  - current：检测 MMA / Shuffle / SFU / VCVT / packed custom 指令，分别验证 clang builtin、Spike `DECLARE_INSN`/insn 文件，以及当前 repository-local `ventus_mma.h` / `ventus_custom_arith.h` / `ventus_custom.cc` 实现文件
   - `--summary` 打印完整人类可读报告；`--format shell` 可给外层脚本消费
 - `mma_cpu_ref.py`：当前 MMA 共享 CPU reference helper
   - 覆盖当前已支持的 8 条 MMA family，提供随机 seed 生成、CPU 参考计算与 `fp16` / `f32` 容差比较
@@ -41,6 +42,7 @@
   - current：该脚本通过共享 `mma_cpu_ref.py` 维护 `fp16 -> fp16` 两条 family 的 CPU reference 与 Spike 语义，不直接替代统一 MMA semantic gate
   - 比较规则：`NaN` 按分类相等，非 `NaN` half lane 默认要求 `<= 1 ULP`
 - `regress.sh`：统一回归入口（聚合 smoke/gate/端到端；默认临时工作目录执行并自动清理，可用参数覆盖）
+  - quick/all 包含全部 C++ 合同单测及 emitter mnemonic allowlist；C++ 单测使用 180 秒硬超时。
   - current：默认 `--mma-stage=full`，确保统一回归默认覆盖当前已支持 MMA family 的 compile-first 与三方 semantic gate
   - 端到端阶段会强制使用当前树的 `build/sbt_ptx` 作为 `GPU_SBT_PTX`
   - `--mma-stage` 控制 `custom_mma_oracle.py` 阶段，默认 `full`

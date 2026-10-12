@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+背景：全量回归需要把真实 ELF 解码结果与 Ventus 指令表对照。
+需求/作用：统计 mnemonic 覆盖率，在失败时明确列出尚未覆盖的指令。
+用法：python3 tools/ventus_inst_coverage.py --decoded-json <files...> --require-full。
+实现原理/处理步骤：归一化指令表，聚合解码结果，应用既有 exceptions，然后检查完整覆盖。
+"""
 import argparse
 import json
 from pathlib import Path
@@ -94,6 +100,8 @@ def main() -> int:
         f"target_unique={total} exceptions_in_target={exc} effective_target_unique={effective_total} "
         f"decoded_unique={len(decoded)} covered_unique={cov} uncovered_unique={uncovered} ratio={ratio:.3f}"
     )
+    if uncovered:
+        print("uncovered_mnemonics=" + ",".join(sorted(effective_target - decoded)))
 
     ok = True
     if args.require_full and uncovered != 0:

@@ -113,7 +113,9 @@ int main() {
                                    sbt::CustomDataType::F16x2));
   insts.push_back(make_custom_inst(kEntryPc + 32u, "vsilu_approx_bf16x2", 20, 21, -1, -1, sbt::CustomFamily::Sfu, sbt::CustomSubOp::Silu,
                                    sbt::CustomDataType::Bf16x2));
-  insts.push_back(make_endprg(kEntryPc + 36u));
+  insts.push_back(make_custom_inst(kEntryPc + 36u, "vex2_approx_f32", 6, 6, -1, -1, sbt::CustomFamily::Sfu, sbt::CustomSubOp::Ex2,
+                                   sbt::CustomDataType::Fp32));
+  insts.push_back(make_endprg(kEntryPc + 40u));
 
   const auto cfg = make_cfg(kEntryPc, std::move(insts));
   std::unordered_map<uint32_t, std::string> sym_by_addr;
@@ -140,6 +142,7 @@ int main() {
   require(ptx.find("cvt.f32.bf16") != std::string::npos, "bf16x2 composite convert up");
   require(ptx.find("cvt.rn.bf16.f32") != std::string::npos, "bf16x2 composite convert down");
   require(count_substr(ptx, "ex2.approx.f32") >= 2, "composed SFU path uses ex2");
+  require(ptx.find("ex2.approx.f32 %v6, %v6;") != std::string::npos, "in-place SFU must not require bitcast moves");
   require(ptx.find(".reg .b32 %tmp_b32_0;") != std::string::npos, "virtual temp b32 declaration");
   require(ptx.find(".reg .pred %tmp_p_0;") != std::string::npos, "virtual temp pred declaration");
   require(ptx.find("mov.u32 %tmp_b32_0") != std::string::npos, "virtual temp use should appear in PTX body");

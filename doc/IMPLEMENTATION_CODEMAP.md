@@ -89,6 +89,7 @@
   - 输出：`FunctionVerifyResult`（含每条 vbranch 与 barrier 的细节记录，以及 `unsupported_jalr` 列表）。
 
 - `sbt/ptx_emit.hpp` + `sbt/ptx_emit.cpp` + `sbt/ptx_emit_internal.hpp` + `sbt/ptx_emit_{core,runtime,memory,call,builtin,control,scalar,vector,custom,mma_lowering,scalar_fp}.cpp`
+  - `sbt/ptx_cleanup.{hpp,cpp}`：function assembly 前统一消除同宽拷贝、死 scratch、整数恒等操作与紧邻标签跳转；声明仅保留实际使用的寄存器。详见 [PTX_REDUNDANCY_CLEANUP.md](PTX_REDUNDANCY_CLEANUP.md)。
   - `emit_module(entry_cfg, sym_by_addr, entry_name, funcs, ptx_name_by_addr, opt)`：输出一个 PTX module，包含 1 个 `.entry <kernel>` + 若干 `.func <callee>`（用于 direct call）。
   - `emit_kernel(...)`：兼容接口（单函数 `.entry`，不含通用 call graph）。
   - current 结构分层：
@@ -168,7 +169,7 @@
   - 端到端阶段会显式导出 `GPU_SBT_PTX=<repo>/build/sbt_ptx`，确保回归验证的是当前工作树刚构建出的翻译器，而不是 `install/bin` 中可能滞后的安装副本。
 
 - `tools/ventus_feature_probe.py`
-  - current custom OpenCL 语义 gate 的能力探针：oracle 默认按所选 `--env-sh` 实际导出的 `VENTUS_INSTALL_PREFIX/bin/clang` 检查对应 Ventus builtin，同时检查同一 ventus root 下 `spike/riscv/encoding.h`、`spike/riscv/insns/` 与 MMA/SFU 所需 `dependencies/mma-sim` / `dependencies/unfu`。
+  - current custom OpenCL 语义 gate 的能力探针：oracle 默认按所选 `--env-sh` 实际导出的 `VENTUS_INSTALL_PREFIX/bin/clang` 检查对应 Ventus builtin，同时检查同一 ventus root 下 `spike/riscv/encoding.h`、`spike/riscv/insns/` 与 repository-local `ventus_mma.h` / `ventus_custom_arith.h` / `ventus_custom.cc` 实现文件。
   - 覆盖 feature：MMA、Shuffle、SFU、VCVT、packed `f16x2/bf16x2`。探针只给出 available/unavailable 与缺失证据，不生成 mock 成功路径。
   - `custom_mma_oracle.py` 与 `custom_non_mma_oracle.py` 默认消费该探针结果；缺失 feature 时显式打印 `[FEATURE]` 与 `SKIP`，可用 feature 继续真实执行。
 

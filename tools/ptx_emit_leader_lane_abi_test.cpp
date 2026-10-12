@@ -691,7 +691,7 @@ int main() {
 
   require(ptx.find("shfl.sync.idx.b32 %r14") == std::string::npos,
           "scalar branch should not broadcast replicated scalar operands before bra.uni");
-  require(ptx.find("mov.u32 %r14, %x5;") != std::string::npos,
+  require(ptx.find("setp.eq.u32 %p1, %x5, %x6;") != std::string::npos,
           "scalar branch should read replicated scalar operands directly from xreg state");
   require(ptx.find("bra.uni BB_80001308;") != std::string::npos,
           "scalar branch should remain bra.uni-based");
@@ -710,13 +710,14 @@ int main() {
           "regext-bundled vbranch should still resolve direct branch targets");
   require(regext_scalar_branch_ptx.find("bra.uni BB_8000170c;") != std::string::npos,
           "regext-bundled scalar branch should still resolve branch target block labels");
-  require(regext_scalar_branch_ptx.find("bra.uni BB_80001708;") != std::string::npos,
-          "regext-bundled scalar branch should still resolve fallthrough block labels");
+  require(regext_scalar_branch_ptx.find("bra.uni BB_80001708;") == std::string::npos &&
+              regext_scalar_branch_ptx.find("BB_80001708:\n") != std::string::npos,
+          "regext-bundled scalar branch should fall through to the adjacent block without a redundant branch");
   require(vmv_x_s_ptx.find("shfl.sync.idx.b32 %x5, %x5, 0, 0x1f, %r1;") != std::string::npos,
           "vmv.x.s should re-replicate the extracted scalar value from architectural lane 0");
   require(vmv_x_s_ptx.find("trap;") != std::string::npos,
           "vmv.x.s should reject unsupported runtime shapes when the fixed source lane is inactive");
-  require(vmv_x_s_ptx.find("mov.u32 %r14, %x5;") != std::string::npos,
+  require(vmv_x_s_ptx.find("add.s32 %r15, %x5, 1;") != std::string::npos,
           "later scalar consumers should read the re-replicated vmv.x.s result directly");
 
   require(vbranch_store_ptx.find("_sbt_path_entry_") == std::string::npos,
